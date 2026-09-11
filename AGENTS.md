@@ -1,5 +1,7 @@
 # Project boundaries
 
+- Read [docs/DECISIONS.md](docs/DECISIONS.md) first for accepted decisions, their rationale, and review triggers. When changing a key decision, append a new numbered entry with its source and supersession links; retain the old rationale. New user instructions take precedence over older decisions.
+
 - This repository contains publicly shareable interface code. Never add real job records, resume files, private repository content, or credentials to tracked files or `dist/`.
 - Personal data lives in IndexedDB and a user-selected private GitHub repository. Local source configuration belongs in ignored `.local/config.json`.
 - Keep GitHub writes limited to the configured JSON path. Verify the repository is private and the branch exists before first-time initialization.

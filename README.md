@@ -97,6 +97,7 @@ pnpm verify
 
 “数据与同步”新增完整备份、本机快照、版本与连接检查。删除、导入、恢复、升级和同步前自动保留快照（最近20个）；快照仍属于浏览器存储，请下载独立备份。
 
+- [关键决策与选择原因](docs/DECISIONS.md)
 - [架构与代码职责](docs/ARCHITECTURE.md)
 - [数据升级与恢复](docs/DATA_AND_RECOVERY.md)
 - [开发、发布与排障](docs/MAINTENANCE.md)
