@@ -413,6 +413,30 @@ label textarea {
   display: grid;
   gap: 16px;
 }
+.date-presets {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+  margin-top: -6px;
+}
+.date-presets > span {
+  color: var(--muted);
+  font-size: 0.8125rem;
+  margin-right: 2px;
+}
+.date-preset {
+  min-height: 40px;
+  padding: 4px 9px;
+  border: 1px solid var(--line);
+  background: var(--soft);
+  font-size: 0.8125rem;
+}
+.date-preset[aria-pressed='true'] {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-bg);
+}
 .detail-head {
   padding: 22px;
   border-bottom: 1px solid var(--line);
@@ -935,6 +959,9 @@ details > p {
 }
 @media (pointer: coarse) {
   button {
+    min-height: 44px;
+  }
+  .date-preset {
     min-height: 44px;
   }
   .text-button {

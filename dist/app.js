@@ -6,6 +6,7 @@ import { createBackup } from './workspace.js';
 import { APP_VERSION } from './version.js';
 import { MAX_BACKUP_BYTES, utf8Bytes } from './limits.js';
 import { createViews } from './views.js';
+import { addCalendarDays, getTaskDefaults } from './planning.js';
 import { applyTaskChoice, applyVerificationChoice } from './today.js';
 import {
   STAGES,
@@ -61,6 +62,19 @@ const { jobRow, detail, todayView, boardView } = createViews(
 );
 function pendingTasksForView(id) {
   return pendingTasks(id);
+}
+function datePresetValue(button) {
+  return button.dataset.dueOffset === ''
+    ? ''
+    : addCalendarDays(today(), Number(button.dataset.dueOffset));
+}
+function syncDatePresets(form) {
+  const value = form?.elements.namedItem('dueAt')?.value ?? '';
+  form
+    ?.querySelectorAll('[data-due-offset]')
+    .forEach((button) =>
+      button.setAttribute('aria-pressed', String(datePresetValue(button) === value)),
+    );
 }
 const useSsh = () => !!localSsh && equal(state?.config, localSsh.target);
 let deferredRender = false;
@@ -172,10 +186,13 @@ function render(preserveDrafts = false) {
           direction: active.selectionDirection,
         }
       : null;
-  const drafts = preserveDrafts
+  const preservedForms = preserveDrafts
     ? ['activity-form', 'task-form', 'settings-form'].flatMap((id) => {
         const form = document.getElementById(id);
-        return form ? [{ id, values: Object.fromEntries(new FormData(form)) }] : [];
+        if (!form) return [];
+        const currentDraft = id === 'settings-form' ? null : drafts.capture(form);
+        if (id !== 'settings-form' && !Object.keys(currentDraft?.values ?? {}).length) return [];
+        return [{ id, values: Object.fromEntries(new FormData(form)) }];
       })
     : [];
   header();
@@ -198,7 +215,7 @@ function render(preserveDrafts = false) {
             ? listView()
             : boardView();
   bindForms();
-  for (const draft of drafts) {
+  for (const draft of preservedForms) {
     const form = document.getElementById(draft.id);
     if (form)
       for (const [name, value] of Object.entries(draft.values)) {
@@ -226,6 +243,13 @@ function bindForms() {
       opportunityId: selected,
       source: draftSource?.kind === kind ? draftSource : undefined,
     });
+  const taskForm = $('#task-form');
+  if (taskForm) {
+    const dueAt = taskForm.elements.namedItem('dueAt');
+    dueAt.addEventListener('input', () => syncDatePresets(taskForm));
+    dueAt.addEventListener('change', () => syncDatePresets(taskForm));
+    syncDatePresets(taskForm);
+  }
   draftSource = null;
   const search = $('#search');
   if (search)
@@ -243,15 +267,33 @@ function bindForms() {
     e.preventDefault();
     const captured = drafts.capture(e.target);
     const f = new FormData(e.target),
-      id = formOpportunityId;
+      id = formOpportunityId,
+      input = {
+        text: String(f.get('text')).trim(),
+        dueAt: String(f.get('dueAt')),
+      },
+      untouchedDefault =
+        e.target.dataset.suggestedDefault === 'true' && !Object.keys(captured?.values ?? {}).length;
     try {
       const warning = await change(
         (data) => {
+          if (untouchedDefault) {
+            const opportunity = live(data.opportunities).find((item) => item.id === id),
+              activities = live(data.activities).filter((item) => item.opportunityId === id),
+              tasks = live(data.tasks).filter(
+                (item) => item.opportunityId === id && item.status === '待办',
+              ),
+              currentDefaults = getTaskDefaults(opportunity, activities, tasks, today());
+            if (!equal(input, currentDefaults)) {
+              const error = new Error('岗位状态刚发生变化，已刷新下一步建议，请重新确认。');
+              error.code = 'STALE_TASK_DEFAULT';
+              throw error;
+            }
+          }
           data.tasks.push({
             id: uid(),
             opportunityId: id,
-            text: String(f.get('text')).trim(),
-            dueAt: String(f.get('dueAt')),
+            ...input,
             status: '待办',
             createdAt: new Date().toISOString(),
           });
@@ -262,6 +304,7 @@ function bindForms() {
       );
       notify('下一步已安排，本机已保存。' + warning);
     } catch (e) {
+      if (e.code === 'STALE_TASK_DEFAULT') await reload();
       report(e);
     }
   });
@@ -716,6 +759,15 @@ document.addEventListener('click', async (e) => {
       render();
       return;
     }
+    if (b.hasAttribute('data-due-offset')) {
+      const form = b.closest('#task-form'),
+        dueAt = form?.elements.namedItem('dueAt');
+      if (dueAt) {
+        dueAt.value = datePresetValue(b);
+        dueAt.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+      return;
+    }
     if (b.dataset.planJob) {
       selected = b.dataset.planJob;
       view = 'today';
@@ -846,11 +898,14 @@ $('#file-input').addEventListener('change', async (e) => {
 channel?.addEventListener('message', async () => {
   state = await readState();
   statusRender();
-  if (
-    !document.querySelector('dialog[open]') &&
-    !['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName)
-  )
-    render();
+  const active = document.activeElement,
+    inputFocused = ['INPUT', 'TEXTAREA', 'SELECT'].includes(active?.tagName),
+    pristineSuggestedTask =
+      active?.form?.id === 'task-form' &&
+      active.form.dataset.suggestedDefault === 'true' &&
+      !Object.keys(drafts.capture(active.form)?.values ?? {}).length;
+  if (!document.querySelector('dialog[open]') && (!inputFocused || pristineSuggestedTask))
+    render(pristineSuggestedTask);
 });
 window.addEventListener('offline', () => notify('当前离线，记录继续保存在本机。'));
 window.addEventListener('online', () => notify('网络已恢复，可以点击“立即同步”。'));

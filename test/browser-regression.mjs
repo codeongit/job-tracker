@@ -167,8 +167,8 @@ function githubMock(initialRemote, { readGate, readStarted } = {}) {
   return state;
 }
 
-async function isolatedContext(t, api) {
-  const context = await browser.newContext({ serviceWorkers: 'block' });
+async function isolatedContext(t, api, contextOptions = {}) {
+  const context = await browser.newContext({ ...contextOptions, serviceWorkers: 'block' });
   context.setDefaultTimeout(10000);
   const failures = [];
   context.on('page', (page) => page.on('pageerror', (error) => failures.push(error.message)));
@@ -386,6 +386,219 @@ test('今日行动列出未设下一步岗位，今日新增置顶且可原地�
     true,
     'Planning from Today keeps the view open and focuses the new-task field',
   );
+});
+
+test('下一步预填两天后，快捷日期仅保存草稿且手动覆盖可精确提交', { timeout: 45000 }, async (t) => {
+  const context = await isolatedContext(t, undefined, {
+      viewport: { width: 390, height: 844 },
+      hasTouch: true,
+    }),
+    page = await openPage(context);
+  const dates = await page.evaluate(async () => {
+    const { today } = await import('/model.js'),
+      { addCalendarDays } = await import('/planning.js'),
+      current = today();
+    return {
+      today: current,
+      createdAt: new Date().toISOString(),
+      tomorrow: addCalendarDays(current, 1),
+      twoDaysLater: addCalendarDays(current, 2),
+      manual: addCalendarDays(current, 5),
+    };
+  });
+  const data = emptyData();
+  data.opportunities.push(
+    {
+      id: 'sent-resume-unplanned-job',
+      company: '简历已发送示例公司',
+      role: '后端工程师',
+      stage: '沟通中',
+      resumeState: '已发送',
+      createdAt: dates.createdAt,
+    },
+    {
+      id: 'draft-switch-target',
+      company: '切换岗位示例公司',
+      role: '产品经理',
+      stage: '已触达',
+      priority: '暂缓',
+      createdAt: dates.createdAt,
+    },
+  );
+  await seed(page, fixtureState(data));
+  const initial = await savedState(page);
+
+  await page.locator('[data-plan-job="sent-resume-unplanned-job"]').click();
+  const form = page.locator('#task-form'),
+    text = form.locator('input[name="text"]'),
+    dueAt = form.locator('input[name="dueAt"]'),
+    twoDaysButton = form.getByRole('button', { name: /计划日期设为2天后/ }),
+    tomorrowButton = form.getByRole('button', { name: /计划日期设为明天/ });
+  assert.equal(await text.inputValue(), '询问面试安排');
+  assert.equal(await dueAt.inputValue(), dates.twoDaysLater);
+  assert.equal(await twoDaysButton.getAttribute('aria-pressed'), 'true');
+  assert.equal(
+    await form
+      .locator('.date-preset')
+      .evaluateAll((buttons) =>
+        buttons.every((button) => button.getBoundingClientRect().height >= 44),
+      ),
+    true,
+  );
+  assert.equal(
+    await form.locator('.date-presets').evaluate((row) => row.scrollWidth <= row.clientWidth),
+    true,
+  );
+  assert.equal(await savedDrafts(page).then((drafts) => drafts.length), 0);
+
+  await tomorrowButton.click();
+  assert.equal(await dueAt.inputValue(), dates.tomorrow);
+  assert.equal(await tomorrowButton.getAttribute('aria-pressed'), 'true');
+  assert.equal(await twoDaysButton.getAttribute('aria-pressed'), 'false');
+  assert.deepEqual(await savedState(page), initial, 'A date preset must not submit a task');
+  assert.deepEqual(
+    (await savedDrafts(page)).find(
+      (draft) => draft.kind === 'task' && draft.opportunityId === 'sent-resume-unplanned-job',
+    )?.values,
+    { text: '询问面试安排', dueAt: dates.tomorrow },
+    'The date preset is retained as an unsubmitted task draft',
+  );
+
+  await text.fill('手动确认下一轮面试时间');
+  await dueAt.fill(dates.manual);
+  await page.locator('[data-plan-job="draft-switch-target"]').click();
+  assert.match(await page.locator('.detail-panel').innerText(), /切换岗位示例公司/);
+  await page.locator('[data-plan-job="sent-resume-unplanned-job"]').click();
+  assert.equal(await text.inputValue(), '手动确认下一轮面试时间');
+  assert.equal(await dueAt.inputValue(), dates.manual);
+  assert.equal(await form.locator('[data-due-offset][aria-pressed="true"]').count(), 0);
+
+  await form.locator('button[type="submit"]').click();
+  await page.waitForFunction(() =>
+    document.querySelector('#notice')?.textContent.includes('下一步已安排'),
+  );
+  const saved = await savedState(page),
+    submitted = saved.data.tasks.find(
+      (task) => task.opportunityId === 'sent-resume-unplanned-job' && task.status === '待办',
+    );
+  assert.ok(submitted);
+  assert.equal(submitted.text, '手动确认下一轮面试时间');
+  assert.equal(submitted.dueAt, dates.manual);
+  assert.equal(saved.data.tasks.length, 1);
+  assert.equal(
+    (await savedDrafts(page)).some(
+      (draft) => draft.kind === 'task' && draft.opportunityId === 'sent-resume-unplanned-job',
+    ),
+    false,
+  );
+  assert.equal(await text.inputValue(), '');
+  assert.equal(await dueAt.inputValue(), '');
+});
+
+test(
+  '同步更新简历状态时，未编辑的行动建议会刷新且不写入任务或草稿',
+  { timeout: 45000 },
+  async (t) => {
+    const local = emptyData();
+    local.opportunities.push({
+      id: 'synced-default-job',
+      company: '同步默认值示例公司',
+      role: '后端工程师',
+      stage: '沟通中',
+      resumeState: '被索要',
+    });
+    const remote = clone(local);
+    remote.opportunities[0].resumeState = '已发送';
+    const api = githubMock(remote),
+      context = await isolatedContext(t, api),
+      page = await openPage(context);
+    await seed(page, fixtureState(local, local));
+    await configureToken(page);
+    await page.locator('[data-view="today"]').click();
+
+    const text = page.locator('#task-form input[name="text"]'),
+      dueAt = page.locator('#task-form input[name="dueAt"]');
+    assert.equal(await text.inputValue(), '发送简历');
+    const originalDueAt = await dueAt.inputValue();
+    assert.notEqual(originalDueAt, '');
+    assert.deepEqual(await savedDrafts(page), []);
+    assert.equal((await savedState(page)).data.tasks.length, 0);
+
+    await text.focus();
+    await page.locator('#sync-button').evaluate((button) => button.click());
+    await page.waitForFunction(
+      () => document.querySelector('#task-form input[name="text"]')?.value === '询问面试安排',
+    );
+    const saved = await savedState(page);
+    assert.equal(saved.data.opportunities[0].resumeState, '已发送');
+    assert.equal(saved.data.tasks.length, 0);
+    assert.deepEqual(await savedDrafts(page), []);
+    const refreshedDueAt = await page.evaluate(async () => {
+      const { today } = await import('/model.js'),
+        { addCalendarDays } = await import('/planning.js');
+      return addCalendarDays(today(), 2);
+    });
+    assert.equal(await dueAt.inputValue(), refreshedDueAt);
+    assert.equal(api.writes.length, 0);
+  },
+);
+
+test('弹窗阻止重绘时，另一页新增待办后旧默认不能重复提交', { timeout: 45000 }, async (t) => {
+  const context = await isolatedContext(t),
+    first = await openPage(context);
+  const data = emptyData();
+  data.opportunities.push({
+    id: 'stale-default-job',
+    company: '旧默认并发示例公司',
+    role: '后端工程师',
+    stage: '沟通中',
+    resumeState: '已发送',
+  });
+  await seed(first, fixtureState(data));
+  const second = await openPage(context);
+  await list(first);
+  await list(second);
+
+  const staleText = first.locator('#task-form input[name="text"]'),
+    staleDueAt = first.locator('#task-form input[name="dueAt"]');
+  assert.equal(await staleText.inputValue(), '询问面试安排');
+  const originalDueAt = await staleDueAt.inputValue();
+  assert.notEqual(originalDueAt, '');
+  await first.evaluate(() => {
+    window.__staleDefaultBroadcast = new BroadcastChannel('job-tracker-updates');
+    window.__staleDefaultBroadcastCount = 0;
+    window.__staleDefaultBroadcast.onmessage = () => window.__staleDefaultBroadcastCount++;
+  });
+  await first.locator('[data-action="edit"][data-id="stale-default-job"]').click();
+  await first.locator('#editor-dialog').waitFor({ state: 'visible' });
+
+  assert.equal(await second.locator('#task-form input[name="text"]').inputValue(), '询问面试安排');
+  await second.locator('#task-form button[type="submit"]').click();
+  await second.waitForFunction(() =>
+    document.querySelector('#notice')?.textContent.includes('下一步已安排'),
+  );
+  await first.waitForFunction(() => window.__staleDefaultBroadcastCount > 0);
+  await settleBrowserEvents(first);
+  assert.equal(await staleText.inputValue(), '询问面试安排');
+  assert.equal(await staleDueAt.inputValue(), originalDueAt);
+  assert.equal((await savedState(first)).data.tasks.length, 1);
+
+  await first.locator('#editor-form [data-close="editor-dialog"]').first().click();
+  await first.locator('#editor-dialog').waitFor({ state: 'hidden' });
+  assert.equal(await staleText.inputValue(), '询问面试安排');
+  await first.locator('#task-form button[type="submit"]').click();
+  await first.waitForFunction(() =>
+    document.querySelector('#notice')?.textContent.includes('岗位状态刚发生变化'),
+  );
+
+  const saved = await savedState(first);
+  assert.equal(saved.data.tasks.length, 1);
+  assert.equal(saved.generation, 1);
+  assert.equal(saved.data.tasks[0].opportunityId, 'stale-default-job');
+  assert.equal(saved.data.tasks[0].text, '询问面试安排');
+  assert.equal(await first.locator('#task-form input[name="text"]').inputValue(), '');
+  assert.equal(await first.locator('#task-form input[name="dueAt"]').inputValue(), '');
+  assert.deepEqual(await savedDrafts(first), []);
 });
 
 test(
@@ -1132,7 +1345,15 @@ test('中文新增草稿刷新及关页重开后可继续，提交前不改正�
 test('岗位间行动和沟通草稿隔离，保存只清除已提交的那一份', { timeout: 45000 }, async (t) => {
   const context = await isolatedContext(t),
     page = await openPage(context);
-  await seed(page);
+  const data = fixtureData();
+  data.tasks.push({
+    id: 'existing-beijing-task',
+    opportunityId: 'e2e-beijing',
+    text: '北京：已有待办',
+    dueAt: '',
+    status: '待办',
+  });
+  await seed(page, fixtureState(data));
   const initial = await savedState(page);
   await list(page);
   await page.locator('[data-job="e2e-shanghai"]').click();
@@ -1142,6 +1363,7 @@ test('岗位间行动和沟通草稿隔离，保存只清除已提交的那一�
   await page.locator('#activity-form select[name="type"]').selectOption('对方回复');
   await page.locator('[data-job="e2e-beijing"]').click();
   assert.equal(await page.locator('#task-form input[name="text"]').inputValue(), '');
+  assert.equal(await page.locator('#task-form input[name="dueAt"]').inputValue(), '');
   assert.equal(await page.locator('#activity-form textarea[name="text"]').inputValue(), '');
   await page.locator('#task-form input[name="text"]').fill('北京：准备作品集');
   await page.locator('#activity-form textarea[name="text"]').fill('北京：尚未提交沟通');
@@ -1173,6 +1395,7 @@ test('岗位间行动和沟通草稿隔离，保存只清除已提交的那一�
     '上海：已沟通的中文草稿',
   );
   assert.equal(await page.locator('#task-form input[name="text"]').inputValue(), '');
+  assert.equal(await page.locator('#task-form input[name="dueAt"]').inputValue(), '');
 
   await page.reload();
   await page.locator('#draft-button').waitFor();
@@ -1190,9 +1413,9 @@ test('岗位间行动和沟通草稿隔离，保存只清除已提交的那一�
   assert.ok(remaining.every((draft) => draft.opportunityId === 'e2e-beijing'));
   const saved = await savedState(page);
   assert.equal(saved.generation, initial.generation + 2);
-  assert.equal(saved.data.tasks.length, 1);
-  assert.equal(saved.data.tasks[0].opportunityId, 'e2e-shanghai');
-  assert.equal(saved.data.tasks[0].text, '上海：询问下一轮时间');
+  assert.equal(saved.data.tasks.length, 2);
+  const shanghaiTask = saved.data.tasks.find((task) => task.opportunityId === 'e2e-shanghai');
+  assert.equal(shanghaiTask?.text, '上海：询问下一轮时间');
   assert.equal(saved.data.activities.length, 1);
   assert.equal(saved.data.activities[0].opportunityId, 'e2e-shanghai');
   assert.equal(saved.data.activities[0].text, '上海：已沟通的中文草稿');
