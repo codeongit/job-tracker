@@ -2,11 +2,12 @@ import { DiskBackups } from './disk-backups.mjs';
 import { APP_VERSION } from '../dist/version.js';
 import http from 'node:http';
 import { readFile, stat } from 'node:fs/promises';
-import { resolve, extname, sep } from 'node:path';
+import { extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
 import { createSshStore } from './ssh-store.mjs';
 import { handleLocalApi } from './local-api.mjs';
+import { resolvePublicPath } from './static-files.mjs';
 const root = fileURLToPath(new URL('../dist/', import.meta.url));
 let config = {};
 try {
@@ -85,13 +86,8 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     const pathname = decodeURIComponent(url.pathname),
-      path = resolve(root, pathname === '/' ? 'index.html' : '.' + pathname);
-    if (
-      !path.startsWith(root + sep) ||
-      pathname.split('/').some((p) => p.startsWith('.')) ||
-      (await stat(path)).isDirectory()
-    )
-      throw new Error('Not found');
+      path = resolvePublicPath(root, pathname);
+    if ((await stat(path)).isDirectory()) throw new Error('Not found');
     const file = await readFile(path);
     res.writeHead(200, { 'Content-Type': types[extname(path)] || 'application/octet-stream' });
     res.end(req.method === 'HEAD' ? undefined : file);
