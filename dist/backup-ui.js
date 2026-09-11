@@ -3,18 +3,27 @@ import { parseBackup } from './workspace.js';
 import { listSnapshots, restoreBackup } from './storage.js';
 import { $, esc, download } from './ui.js';
 
-export function createBackupUI({ isSyncing, restored, report }) {
+export function createBackupUI({
+  isSyncing,
+  restored,
+  report,
+  prepareDrafts = () => ({ commit() {}, rollback() {} }),
+}) {
   async function showRestore(backup) {
     if (isSyncing()) throw new Error('请等待同步结束，再恢复备份。');
     const incoming = parseBackup(backup);
     $('#import-content').innerHTML =
-      `<div class="dialog-header"><h2>恢复 JSON 备份</h2><button class="close" data-close="import-dialog" aria-label="关闭">×</button></div><div class="dialog-body"><p>备份包含 ${live(incoming.data.opportunities).length} 个岗位、${live(incoming.data.activities).length} 条沟通记录。</p><p class="section-gap">合并恢复：备份中的同 ID 记录优先，保留本机独有记录。</p><p>回到快照：本机记录恢复到备份内容，快照之外的已有记录标记为删除；下次同步会提交这些修改。</p>${incoming.workspace?.pending ? '<p class="warning">此完整备份包含未解决冲突，仅可回到快照，同时恢复备份中的同步目标和冲突双方。</p>' : ''}<p class="section-gap">执行前会自动保存本机快照。普通恢复保留当前同步目标；恢复后不会自动上传。</p></div><div class="dialog-footer"><button class="secondary" data-close="import-dialog">取消</button><button class="secondary" id="restore-snapshot">回到快照</button><button class="primary" id="restore-button" ${incoming.workspace?.pending ? 'disabled' : ''}>合并恢复备份</button></div>`;
+      `<div class="dialog-header"><h2>恢复 JSON 备份</h2><button class="close" data-close="import-dialog" aria-label="关闭">×</button></div><div class="dialog-body"><p>备份包含 ${live(incoming.data.opportunities).length} 个岗位、${live(incoming.data.activities).length} 条沟通记录、${incoming.drafts.length} 份草稿。</p><p class="section-gap">合并恢复：备份中的同 ID 记录优先，保留本机独有记录。</p><p>回到快照：本机记录恢复到备份内容，快照之外的已有记录标记为删除；下次同步会提交这些修改。</p>${incoming.workspace?.pending ? '<p class="warning">此完整备份包含未解决冲突，仅可回到快照，同时恢复备份中的同步目标和冲突双方。</p>' : ''}<p class="section-gap">执行前会自动保存本机快照。普通恢复保留当前同步目标；恢复后不会自动上传。</p></div><div class="dialog-footer"><button class="secondary" data-close="import-dialog">取消</button><button class="secondary" id="restore-snapshot">回到快照</button><button class="primary" id="restore-button" ${incoming.workspace?.pending ? 'disabled' : ''}>合并恢复备份</button></div>`;
     $('#import-dialog').showModal();
+    let restoring = false;
     for (const [id, mode] of [
       ['restore-button', 'merge'],
       ['restore-snapshot', 'snapshot'],
     ]) {
       document.getElementById(id).onclick = async () => {
+        if (restoring) return;
+        let prepared,
+          committed = false;
         try {
           if (isSyncing()) throw new Error('请等待同步结束，再恢复备份。');
           if (
@@ -22,11 +31,18 @@ export function createBackupUI({ isSyncing, restored, report }) {
             !confirm('回到此快照？快照外的本机记录将标记为删除，操作前会自动备份。')
           )
             return;
+          restoring = true;
+          prepared = prepareDrafts(incoming.drafts);
           const next = await restoreBackup(backup, mode);
+          committed = true;
+          prepared.commit();
           $('#import-dialog').close();
           await restored(next);
         } catch (e) {
+          if (!committed) prepared?.rollback();
           report(e);
+        } finally {
+          restoring = false;
         }
       };
     }

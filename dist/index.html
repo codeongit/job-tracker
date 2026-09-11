@@ -50,6 +50,7 @@
               <p id="page-caption" class="muted">正在载入你的工作台。</p>
             </div>
             <div class="page-actions">
+              <button id="draft-button" class="secondary">草稿箱</button>
               <button id="import-button" class="secondary">导入记录</button
               ><button id="new-button" class="primary">＋ 新增岗位</button>
             </div>
@@ -68,6 +69,7 @@
       accept=".md,.markdown,.json,text/markdown,application/json"
       hidden
     />
+    <dialog id="draft-dialog" class="dialog wide"><div id="draft-content"></div></dialog>
     <noscript>求职工作台需要启用 JavaScript，才能在本地保存及同步记录。</noscript>
   </body>
 </html>

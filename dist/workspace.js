@@ -1,3 +1,4 @@
+import { validateDrafts } from './draft-data.js';
 import { clone, emptyData, GROUPS, validateData, removeOpportunity } from './model.js';
 import { APP_VERSION, BACKUP_VERSION, DATA_VERSION, WORKSPACE_VERSION } from './version.js';
 
@@ -102,16 +103,17 @@ export function migrateWorkspace(input) {
   return s;
 }
 
-export const createBackup = (state) => ({
+export const createBackup = (state, drafts = []) => ({
   backupVersion: BACKUP_VERSION,
   appVersion: APP_VERSION,
   exportedAt: new Date().toISOString(),
   workspace: migrateWorkspace(state),
+  drafts: validateDrafts(drafts),
 });
 
 export function parseBackup(input) {
   if (input?.backupVersion !== undefined) {
-    if (input.backupVersion !== BACKUP_VERSION)
+    if (![1, BACKUP_VERSION].includes(input.backupVersion))
       throw new Error('备份来自更新版本，请先更新工作台。');
     if (
       !input.workspace ||
@@ -121,10 +123,22 @@ export function parseBackup(input) {
       !input.workspace.base
     )
       throw new Error('完整备份缺少工作区内容或格式无效，已停止恢复。');
+    if (
+      Object.keys(input).some(
+        (k) => !['backupVersion', 'appVersion', 'exportedAt', 'workspace', 'drafts'].includes(k),
+      )
+    )
+      throw new Error('备份包含未知字段。');
+    if (input.backupVersion === 1 && input.drafts !== undefined)
+      throw new Error('旧版备份不支持草稿字段。');
     const workspace = migrateWorkspace(input.workspace);
-    return { data: workspace.data, workspace };
+    return {
+      data: workspace.data,
+      workspace,
+      drafts: input.backupVersion === 2 ? validateDrafts(input.drafts) : [],
+    };
   }
-  return { data: migrateData(input), workspace: null };
+  return { data: migrateData(input), workspace: null, drafts: [] };
 }
 
 export function restoreWorkspace(current, backup, mode) {

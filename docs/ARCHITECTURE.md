@@ -23,6 +23,15 @@
 
 新增字段、导入逻辑、任务状态等业务规则放入模型或专门纯函数模块；页面不直接操作 Git。渲染不能替换正在组合输入的控件。跨标签保存后使用 BroadcastChannel 通知，更新时保留另一页的草稿；实际保存使用数据库中最新状态。
 
+## 草稿与磁盘模块
+
+- `dist/draft-data.js`：草稿字段白名单、原记录基线校验；设置/PAT 不属于草稿。
+- `dist/drafts.js`：输入时同步写入 localStorage，草稿使用页面拥有的 ID 和不可变版本键；恢复时创建新 ID，清理仅删除精确版本，避免影响另一页的新输入。满200份或配额错误明确提示。
+- `dist/disk-backup.js`：读取完整状态并合并草稿，2.5秒聚合、30秒重试、Web Locks 协调同源页面；仅有内容变化或跨日才写入。读取状态不会触发“已保存”循环。
+- `scripts/disk-backups.mjs`：固定私有目录、来源 UUID 分隔、50MB完整备份上限；临时文件 fsync 后独占建立每日首份，再原子替换 latest，成功后保留30个日期。普通目录权限0700、文件0600，拒绝符号链接和任意路径。
+
+备份会话独立于 SSH 能力，同样校验 Host、Origin 与随机会话。恢复备份先预检并准备整批草稿，失败时删除本批新副本；工作区恢复成功后才完成草稿导入。不自动正式提交草稿或上传 GitHub。
+
 ## 数据流
 
 用户保存 → IndexedDB 事务 → 待同步状态 → 手动同步读取远端 → 按 base/local/remote 合并 → 无冲突时写入 → 确认实际上传快照。
@@ -31,7 +40,7 @@
 
 ## 公开和私有内容
 
-公开仓库只含界面代码、说明和合成测试。IndexedDB、下载备份、`.local/config.json`、`.local/ssh-cache.git` 均为私有。禁止把真实记录、源 Markdown、简历或令牌放入 `dist/` 或测试 fixture。PAT 只在页面内存，SSH key 由系统 Git/SSH 使用。
+公开仓库只含界面代码、说明和合成测试。IndexedDB、草稿 localStorage、下载备份、`.local/backups/`、`.local/config.json`、`.local/ssh-cache.git` 均为私有。禁止把真实记录、源 Markdown、简历或令牌放入 `dist/` 或测试 fixture。PAT 只在页面内存，SSH key 由系统 Git/SSH 使用。
 
 本机 SSH 固定目标、独立缓存、普通 push，只修改指定 JSON；不操作 Obsidian 工作树。网页手机访问使用 REST，不能调用本机 SSH key。
 

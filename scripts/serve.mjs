@@ -1,3 +1,4 @@
+import { DiskBackups } from './disk-backups.mjs';
 import { APP_VERSION } from '../dist/version.js';
 import http from 'node:http';
 import { readFile, stat } from 'node:fs/promises';
@@ -24,6 +25,7 @@ const bridge = config.sshSync
       fileURLToPath(new URL('../.local/ssh-cache.git', import.meta.url)),
     )
   : null;
+const backups = new DiskBackups(fileURLToPath(new URL('../.local/backups/', import.meta.url)));
 const types = {
   '.html': 'text/html; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
@@ -41,7 +43,8 @@ const server = http.createServer(async (req, res) => {
     res.end();
     return;
   }
-  if (await handleLocalApi(req, res, { port, secret, bridge, target: config.sshSync })) return;
+  if (await handleLocalApi(req, res, { port, secret, bridge, target: config.sshSync, backups }))
+    return;
   if (req.method !== 'GET' && req.method !== 'HEAD') {
     res.writeHead(405);
     res.end();
@@ -56,6 +59,7 @@ const server = http.createServer(async (req, res) => {
           appVersion: APP_VERSION,
           nodeMajor: Number(process.versions.node.split('.')[0]),
           sshConfigured: !!bridge,
+          backupEnabled: true,
         }),
       );
       return;

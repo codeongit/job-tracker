@@ -1,4 +1,4 @@
-import { clone } from './model.js';
+import { clone, equal } from './model.js';
 import { migrateWorkspace, restoreWorkspace } from './workspace.js';
 import { WORKSPACE_VERSION } from './version.js';
 
@@ -74,7 +74,9 @@ export async function updateState(transform, { reason = '' } = {}) {
     const tx = db.transaction(['workspace', 'snapshots'], 'readwrite');
     const store = tx.objectStore('workspace'),
       req = store.get('state');
-    let next, failure;
+    let next,
+      failure,
+      changed = false;
     req.onsuccess = () => {
       try {
         const raw = req.result,
@@ -82,6 +84,7 @@ export async function updateState(transform, { reason = '' } = {}) {
         if (raw && (reason || raw.workspaceVersion !== WORKSPACE_VERSION))
           snapshot(tx, raw, reason || '工作区升级前');
         next = migrateWorkspace(transform(clone(current)));
+        changed = !equal(raw, next);
         store.put(next, 'state');
       } catch (e) {
         failure = e;
@@ -89,7 +92,7 @@ export async function updateState(transform, { reason = '' } = {}) {
       }
     };
     tx.oncomplete = () => {
-      window.dispatchEvent(new Event('workspace-saved'));
+      if (changed) window.dispatchEvent(new Event('workspace-saved'));
       resolve(next);
     };
     tx.onerror = () => {

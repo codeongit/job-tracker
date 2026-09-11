@@ -227,6 +227,17 @@ async function savedState(page) {
   return page.evaluate(async () => (await import('/storage.js')).readState());
 }
 
+async function savedDrafts(page) {
+  return page.evaluate(async () => new (await import('/drafts.js')).DraftStore().list());
+}
+
+async function resumeDraft(page, matches) {
+  const draft = (await savedDrafts(page)).find(matches);
+  assert.ok(draft, 'The requested unsubmitted draft is still available');
+  await page.locator('#draft-button').click();
+  await page.locator(`[data-draft-restore="${draft.id}"]`).click();
+}
+
 async function list(page) {
   await page.locator('nav [data-view="list"]').click();
   await page.locator('#search').waitFor();
@@ -654,3 +665,368 @@ test('未知工作区字段阻止启动时仍可导出完整原始状态', { tim
     content = JSON.parse(await readFile(await download.path(), 'utf8'));
   assert.deepEqual(content.workspace, raw);
 });
+
+test('中文新增草稿刷新及关页重开后可继续，提交前不改正式工作区', { timeout: 45000 }, async (t) => {
+  const context = await isolatedContext(t);
+  let page = await openPage(context);
+  await seed(page, fixtureState(emptyData()));
+  const initial = await savedState(page);
+  await page.locator('#new-button').click();
+  const company = page.locator('#editor-form input[name="company"]');
+  await company.focus();
+  const companyNode = await company.elementHandle();
+  const cdp = await context.newCDPSession(page);
+  await cdp.send('Input.imeSetComposition', {
+    text: 'zhongwen',
+    selectionStart: 8,
+    selectionEnd: 8,
+  });
+  await cdp.send('Input.imeSetComposition', {
+    text: '中文草稿公司',
+    selectionStart: 6,
+    selectionEnd: 6,
+  });
+  await commitChineseInput(cdp, '中文草稿公司');
+  assert.equal(await company.inputValue(), '中文草稿公司');
+  assert.equal(
+    await companyNode.evaluate((node) => node.isConnected && node === document.activeElement),
+    true,
+  );
+  await page.locator('#editor-form input[name="role"]').fill('尚未提交的工程师');
+  await page.locator('#editor-form textarea[name="notes"]').fill('刷新也保留的中文\n第二行 🚀');
+  const originalDrafts = await savedDrafts(page);
+  assert.equal(originalDrafts.length, 1);
+  assert.equal(originalDrafts[0].values.company, '中文草稿公司');
+  assert.deepEqual(await savedState(page), initial);
+
+  await page.reload();
+  await page.locator('#draft-button').waitFor();
+  assert.deepEqual(await savedDrafts(page), originalDrafts);
+  await resumeDraft(page, (draft) => draft.kind === 'editor');
+  assert.equal(
+    await page.locator('#editor-form input[name="role"]').inputValue(),
+    '尚未提交的工程师',
+  );
+  assert.equal(
+    await page.locator('#editor-form textarea[name="notes"]').inputValue(),
+    '刷新也保留的中文\n第二行 🚀',
+  );
+  await page.locator('#editor-form textarea[name="notes"]').fill('关页前最后输入：继续保留 🚀');
+  // Reopen only a page within this test's temporary context. Do not touch the
+  // user's browser profile or use browser-global storage fixtures.
+  await page.close();
+  page = await openPage(context);
+  assert.deepEqual(await savedState(page), initial);
+  await resumeDraft(page, (draft) => draft.kind === 'editor');
+  assert.equal(
+    await page.locator('#editor-form textarea[name="notes"]').inputValue(),
+    '关页前最后输入：继续保留 🚀',
+  );
+  await page.locator('#editor-form button[type="submit"]').click();
+  await page.locator('#editor-dialog').waitFor({ state: 'hidden' });
+  const saved = await savedState(page);
+  assert.equal(saved.generation, initial.generation + 1);
+  assert.equal(saved.data.opportunities.length, 1);
+  assert.equal(saved.data.opportunities[0].company, '中文草稿公司');
+  assert.equal(saved.data.opportunities[0].notes, '关页前最后输入：继续保留 🚀');
+  assert.deepEqual(await savedDrafts(page), []);
+});
+
+test('岗位间行动和沟通草稿隔离，保存只清除已提交的那一份', { timeout: 45000 }, async (t) => {
+  const context = await isolatedContext(t),
+    page = await openPage(context);
+  await seed(page);
+  const initial = await savedState(page);
+  await list(page);
+  await page.locator('[data-job="e2e-shanghai"]').click();
+  await page.locator('#task-form input[name="text"]').fill('上海：询问下一轮时间');
+  await page.locator('#task-form input[name="dueAt"]').fill('2026-10-02');
+  await page.locator('#activity-form textarea[name="text"]').fill('上海：已沟通的中文草稿');
+  await page.locator('#activity-form select[name="type"]').selectOption('对方回复');
+  await page.locator('[data-job="e2e-beijing"]').click();
+  assert.equal(await page.locator('#task-form input[name="text"]').inputValue(), '');
+  assert.equal(await page.locator('#activity-form textarea[name="text"]').inputValue(), '');
+  await page.locator('#task-form input[name="text"]').fill('北京：准备作品集');
+  await page.locator('#activity-form textarea[name="text"]').fill('北京：尚未提交沟通');
+  assert.equal((await savedDrafts(page)).length, 4);
+  assert.deepEqual(await savedState(page), initial);
+
+  await page.locator('[data-job="e2e-shanghai"]').click();
+  assert.equal(
+    await page.locator('#task-form input[name="text"]').inputValue(),
+    '上海：询问下一轮时间',
+  );
+  assert.equal(await page.locator('#task-form input[name="dueAt"]').inputValue(), '2026-10-02');
+  assert.equal(
+    await page.locator('#activity-form textarea[name="text"]').inputValue(),
+    '上海：已沟通的中文草稿',
+  );
+  await page.locator('#task-form button[type="submit"]').click();
+  await page.waitForFunction(() =>
+    document.querySelector('#notice')?.textContent.includes('下一步已安排'),
+  );
+  let remaining = await savedDrafts(page);
+  assert.equal(remaining.length, 3);
+  assert.equal(
+    remaining.some((draft) => draft.kind === 'task' && draft.opportunityId === 'e2e-shanghai'),
+    false,
+  );
+  assert.equal(
+    await page.locator('#activity-form textarea[name="text"]').inputValue(),
+    '上海：已沟通的中文草稿',
+  );
+  assert.equal(await page.locator('#task-form input[name="text"]').inputValue(), '');
+
+  await page.reload();
+  await page.locator('#draft-button').waitFor();
+  await resumeDraft(
+    page,
+    (draft) => draft.kind === 'activity' && draft.opportunityId === 'e2e-shanghai',
+  );
+  assert.equal(await page.locator('#activity-form select[name="type"]').inputValue(), '对方回复');
+  await page.locator('#activity-form button[type="submit"]').click();
+  await page.waitForFunction(() =>
+    document.querySelector('#notice')?.textContent.includes('沟通记录已保存'),
+  );
+  remaining = await savedDrafts(page);
+  assert.equal(remaining.length, 2);
+  assert.ok(remaining.every((draft) => draft.opportunityId === 'e2e-beijing'));
+  const saved = await savedState(page);
+  assert.equal(saved.generation, initial.generation + 2);
+  assert.equal(saved.data.tasks.length, 1);
+  assert.equal(saved.data.tasks[0].opportunityId, 'e2e-shanghai');
+  assert.equal(saved.data.tasks[0].text, '上海：询问下一轮时间');
+  assert.equal(saved.data.activities.length, 1);
+  assert.equal(saved.data.activities[0].opportunityId, 'e2e-shanghai');
+  assert.equal(saved.data.activities[0].text, '上海：已沟通的中文草稿');
+  await resumeDraft(
+    page,
+    (draft) => draft.kind === 'task' && draft.opportunityId === 'e2e-beijing',
+  );
+  assert.equal(
+    await page.locator('#task-form input[name="text"]').inputValue(),
+    '北京：准备作品集',
+  );
+});
+
+test('岗位校验失败保留完整草稿，刷新后补正再保存', { timeout: 45000 }, async (t) => {
+  const context = await isolatedContext(t),
+    page = await openPage(context);
+  await seed(page, fixtureState(emptyData()));
+  const initial = await savedState(page);
+  await page.locator('#new-button').click();
+  await page.locator('#editor-form input[name="company"]').fill('校验失败示例公司');
+  await page.locator('#editor-form input[name="role"]').fill('测试岗位');
+  await page.locator('#editor-form textarea[name="notes"]').fill('不能因为未填结束原因而丢失');
+  await page.locator('#editor-form select[name="stage"]').selectOption('已结束');
+  await page.locator('#editor-form button[type="submit"]').click();
+  assert.match(await page.locator('#editor-error').innerText(), /结束原因/);
+  const beforeReload = await savedDrafts(page);
+  assert.equal(beforeReload.length, 1);
+  assert.equal(beforeReload[0].values.stage, '已结束');
+  assert.deepEqual(await savedState(page), initial);
+  await page.reload();
+  await page.locator('#draft-button').waitFor();
+  assert.deepEqual(await savedDrafts(page), beforeReload);
+  await resumeDraft(page, (draft) => draft.kind === 'editor');
+  assert.equal(
+    await page.locator('#editor-form textarea[name="notes"]').inputValue(),
+    '不能因为未填结束原因而丢失',
+  );
+  await page.locator('#editor-form select[name="endReason"]').selectOption('主动放弃');
+  await page.locator('#editor-form button[type="submit"]').click();
+  await page.locator('#editor-dialog').waitFor({ state: 'hidden' });
+  assert.equal((await savedState(page)).data.opportunities[0].endReason, '主动放弃');
+  assert.deepEqual(await savedDrafts(page), []);
+});
+
+test(
+  '设置中的 PAT 不进入草稿、网站存储或完整备份，刷新后令牌清空',
+  { timeout: 45000 },
+  async (t) => {
+    const context = await isolatedContext(t),
+      page = await openPage(context);
+    await seed(page);
+    await list(page);
+    await page.locator('#task-form input[name="text"]').fill('用于核实备份含草稿的合成行动');
+    // Finish the input's native change event before comparing with settings;
+    // advancing the draft revision on blur is expected behavior.
+    await page.locator('#page-title').click();
+    const drafts = await savedDrafts(page);
+    await configureToken(page);
+    assert.deepEqual(await savedDrafts(page), drafts, 'Settings never creates a business draft');
+    const browserStorage = await page.evaluate(() => ({
+      local: { ...localStorage },
+      session: { ...sessionStorage },
+    }));
+    assert.equal(JSON.stringify(browserStorage).includes(fakeToken), false);
+    assert.equal(JSON.stringify(await savedState(page)).includes(fakeToken), false);
+    const waiting = page.waitForEvent('download');
+    await page.locator('[data-action="export-json"]').click();
+    const download = await waiting;
+    const text = await readFile(await download.path(), 'utf8');
+    assert.equal(text.includes(fakeToken), false);
+    assert.ok(text.includes('用于核实备份含草稿的合成行动'));
+    await page.reload();
+    await page.locator('[data-view="settings"]').click();
+    assert.equal(await page.locator('#settings-form input[name="token"]').inputValue(), '');
+    assert.deepEqual(await savedDrafts(page), drafts);
+  },
+);
+
+test(
+  '未改动的编辑取消后，另一页更新同岗位，再次编辑使用最新基线',
+  { timeout: 45000 },
+  async (t) => {
+    const context = await isolatedContext(t),
+      first = await openPage(context);
+    await seed(first);
+    const second = await openPage(context);
+    await list(first);
+    await first.locator('[data-action="edit"][data-id="e2e-shanghai"]').click();
+    await first.locator('#editor-form .dialog-footer [data-close="editor-dialog"]').click();
+    assert.deepEqual(
+      await savedDrafts(first),
+      [],
+      'Opening an unchanged editor creates no stored draft',
+    );
+    await first.locator('#page-title').click();
+    await list(second);
+    await second.locator('[data-action="edit"][data-id="e2e-shanghai"]').click();
+    await second.locator('#editor-form textarea[name="notes"]').fill('另一个页面先保存的新备注');
+    await second.locator('#editor-form button[type="submit"]').click();
+    await second.locator('#editor-dialog').waitFor({ state: 'hidden' });
+    await first.waitForFunction(() =>
+      document.querySelector('#app-content')?.textContent.includes('另一个页面先保存的新备注'),
+    );
+    await first.locator('[data-action="edit"][data-id="e2e-shanghai"]').click();
+    assert.equal(
+      await first.locator('#editor-form textarea[name="notes"]').inputValue(),
+      '另一个页面先保存的新备注',
+    );
+    assert.equal(await first.locator('#editor-error').innerText(), '');
+    await first.locator('#editor-form textarea[name="notes"]').fill('基于最新记录继续修改');
+    await first.locator('#editor-form button[type="submit"]').click();
+    await first.locator('#editor-dialog').waitFor({ state: 'hidden' });
+    assert.equal((await savedState(first)).data.opportunities[0].notes, '基于最新记录继续修改');
+    assert.equal((await savedState(first)).generation, 2);
+    assert.deepEqual(await savedDrafts(first), []);
+  },
+);
+
+test(
+  '旧编辑草稿重开后保留原始基线，不能覆盖另一页已保存的新记录',
+  { timeout: 45000 },
+  async (t) => {
+    const context = await isolatedContext(t),
+      first = await openPage(context);
+    await seed(first);
+    await list(first);
+    await first.locator('[data-action="edit"][data-id="e2e-shanghai"]').click();
+    await first.locator('#editor-form textarea[name="notes"]').fill('尚未提交的旧版本修改');
+    const originalDraft = (await savedDrafts(first))[0];
+    assert.equal(originalDraft.original.notes, '原始备注');
+    await first.close();
+    const second = await openPage(context);
+    await list(second);
+    await second.locator('[data-action="edit"][data-id="e2e-shanghai"]').click();
+    await second.locator('#editor-form textarea[name="notes"]').fill('另一页面已经正式保存');
+    await second.locator('#editor-form button[type="submit"]').click();
+    await second.locator('#editor-dialog').waitFor({ state: 'hidden' });
+    const beforeResume = await savedState(second);
+    assert.equal(
+      (await savedDrafts(second)).length,
+      1,
+      'Submitting another page must not clear the older draft',
+    );
+    await resumeDraft(second, (draft) => draft.id === originalDraft.id);
+    assert.equal(
+      await second.locator('#editor-form textarea[name="notes"]').inputValue(),
+      '尚未提交的旧版本修改',
+    );
+    assert.match(await second.locator('#editor-error').innerText(), /新修改|其他页面|原岗位/);
+    await second.locator('#editor-form button[type="submit"]').click();
+    assert.match(await second.locator('#editor-error').innerText(), /其他页面|修改/);
+    assert.deepEqual(await savedState(second), beforeResume);
+    const remaining = await savedDrafts(second);
+    assert.equal(remaining.length, 1);
+    assert.equal(remaining[0].original.notes, '原始备注');
+    assert.equal(remaining[0].values.notes, '尚未提交的旧版本修改');
+  },
+);
+
+test(
+  '恢复草稿超过上限或存储配额失败时，正式工作区和已有草稿均不改变',
+  { timeout: 60000 },
+  async (t) => {
+    for (const failure of ['limit', 'quota']) {
+      await t.test(failure, async (t) => {
+        const context = await isolatedContext(t),
+          page = await openPage(context);
+        await seed(page);
+        const backup = await page.evaluate(async (failure) => {
+          const { DraftStore } = await import('/drafts.js');
+          const { readState } = await import('/storage.js');
+          const { createBackup } = await import('/workspace.js');
+          const draft = (text) => ({
+            id: crypto.randomUUID(),
+            revision: crypto.randomUUID(),
+            kind: 'task',
+            opportunityId: 'e2e-shanghai',
+            values: { text, dueAt: '' },
+            updatedAt: new Date().toISOString(),
+          });
+          const store = new DraftStore();
+          for (let i = 0; i < (failure === 'limit' ? 200 : 1); i++)
+            store.save(draft(`已有合成草稿 ${i}`));
+          const workspace = await readState();
+          workspace.data.opportunities[0].notes = '此备份本来会改变工作区';
+          const result = createBackup(workspace, [draft('待恢复第一份'), draft('待恢复第二份')]);
+          if (failure === 'quota') {
+            const original = Storage.prototype.setItem;
+            let writes = 0;
+            window.__restoreStorageSetItem = () => {
+              Storage.prototype.setItem = original;
+            };
+            Storage.prototype.setItem = function (key, value) {
+              if (
+                this === localStorage &&
+                key.startsWith('job-tracker-draft-v1:') &&
+                ++writes === 2
+              )
+                throw new DOMException('合成草稿存储配额不足', 'QuotaExceededError');
+              return original.call(this, key, value);
+            };
+          }
+          return result;
+        }, failure);
+        const initial = await savedState(page),
+          initialDrafts = await savedDrafts(page);
+        const initialSnapshots = await page.evaluate(async () =>
+          (await import('/storage.js')).listSnapshots(),
+        );
+        await page.locator('#file-input').setInputFiles({
+          name: 'synthetic-draft-restore.json',
+          mimeType: 'application/json',
+          buffer: Buffer.from(JSON.stringify(backup)),
+        });
+        await page.locator('#restore-button').click();
+        await page.waitForFunction((failure) => {
+          const notice = document.querySelector('#notice')?.textContent || '';
+          return notice.includes(failure === 'limit' ? '200' : '配额');
+        }, failure);
+        assert.deepEqual(await savedState(page), initial);
+        assert.deepEqual(
+          await savedDrafts(page),
+          initialDrafts,
+          'A partial draft import is rolled back',
+        );
+        assert.deepEqual(
+          await page.evaluate(async () => (await import('/storage.js')).listSnapshots()),
+          initialSnapshots,
+        );
+        await page.evaluate(() => window.__restoreStorageSetItem?.());
+      });
+    }
+  },
+);

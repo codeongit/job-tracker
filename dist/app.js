@@ -1,3 +1,5 @@
+import { createDraftManager } from './drafts.js';
+import { createDiskBackup } from './disk-backup.js';
 import { createBackupUI } from './backup-ui.js';
 import { settingsView } from './settings-view.js';
 import { createBackup } from './workspace.js';
@@ -35,7 +37,23 @@ let state,
   parsedImport = null,
   noticeTimer,
   localSsh = null,
-  diagnostic = '';
+  diagnostic = '',
+  draftSource = null;
+const drafts = createDraftManager({
+  report,
+  onCount: (count) => {
+    const button = $('#draft-button');
+    if (button) button.textContent = `草稿箱${count ? `（${count}）` : ''}`;
+  },
+});
+const diskBackup = createDiskBackup({
+  readWorkspace: readRawState,
+  readDrafts: () => drafts.store.list(),
+  onStatus: (status) => {
+    const el = $('#disk-backup-status');
+    if (el) el.textContent = status.message;
+  },
+});
 const { jobRow, detail, todayView, boardView } = createViews(
   () => ({ state, selected }),
   pendingTasksForView,
@@ -70,10 +88,12 @@ async function reload(preserveDrafts = false) {
   state = await readState();
   render(preserveDrafts);
 }
-async function change(transform, reason) {
+async function change(transform, reason, savedDraft) {
   state = await editData(transform, { reason });
+  const warning = savedDraft ? drafts.complete(savedDraft.form, savedDraft.captured) : '';
   channel?.postMessage('changed');
   render();
+  return warning || '';
 }
 function statusRender() {
   const dirty = !equal(state.data, state.base);
@@ -161,7 +181,14 @@ function render(preserveDrafts = false) {
   statusRender();
   $('#app-content').innerHTML =
     view === 'settings'
-      ? settingsView({ state, ssh: useSsh(), token, syncing, diagnostic })
+      ? settingsView({
+          state,
+          ssh: useSsh(),
+          token,
+          syncing,
+          diagnostic,
+          backupStatus: diskBackup.status(),
+        })
       : !live(state.data.opportunities).length
         ? emptyView()
         : view === 'today'
@@ -188,6 +215,17 @@ function render(preserveDrafts = false) {
   }
 }
 function bindForms() {
+  const formOpportunityId = selected;
+  for (const [id, kind] of [
+    ['task-form', 'task'],
+    ['activity-form', 'activity'],
+  ])
+    drafts.bind(document.getElementById(id), {
+      kind,
+      opportunityId: selected,
+      source: draftSource?.kind === kind ? draftSource : undefined,
+    });
+  draftSource = null;
   const search = $('#search');
   if (search)
     bindCommittedTextInput(search, (value) => {
@@ -202,47 +240,57 @@ function bindForms() {
   });
   $('#task-form')?.addEventListener('submit', async (e) => {
     e.preventDefault();
+    const captured = drafts.capture(e.target);
     const f = new FormData(e.target),
-      id = selected;
+      id = formOpportunityId;
     try {
-      await change((data) => {
-        data.tasks.push({
-          id: uid(),
-          opportunityId: id,
-          text: String(f.get('text')).trim(),
-          dueAt: String(f.get('dueAt')),
-          status: '待办',
-          createdAt: new Date().toISOString(),
-        });
-        return validateData(data);
-      });
-      notify('下一步已安排，本机已保存。');
+      const warning = await change(
+        (data) => {
+          data.tasks.push({
+            id: uid(),
+            opportunityId: id,
+            text: String(f.get('text')).trim(),
+            dueAt: String(f.get('dueAt')),
+            status: '待办',
+            createdAt: new Date().toISOString(),
+          });
+          return validateData(data);
+        },
+        undefined,
+        { form: e.target, captured },
+      );
+      notify('下一步已安排，本机已保存。' + warning);
     } catch (e) {
       report(e);
     }
   });
   $('#activity-form')?.addEventListener('submit', async (e) => {
     e.preventDefault();
+    const captured = drafts.capture(e.target);
     const f = new FormData(e.target),
-      id = selected;
+      id = formOpportunityId;
     try {
-      await change((data) => {
-        data.activities.push({
-          id: uid(),
-          opportunityId: id,
-          text: String(f.get('text')).trim(),
-          date: String(f.get('date')),
-          type: String(f.get('type')),
-          createdAt: new Date().toISOString(),
-        });
-        if (f.get('type') === '发送简历') {
-          const o = data.opportunities.find((o) => o.id === id);
-          o.resumeState = '已发送';
-          o.updatedAt = new Date().toISOString();
-        }
-        return validateData(data);
-      });
-      notify('沟通记录已保存。');
+      const warning = await change(
+        (data) => {
+          data.activities.push({
+            id: uid(),
+            opportunityId: id,
+            text: String(f.get('text')).trim(),
+            date: String(f.get('date')),
+            type: String(f.get('type')),
+            createdAt: new Date().toISOString(),
+          });
+          if (f.get('type') === '发送简历') {
+            const o = data.opportunities.find((o) => o.id === id);
+            o.resumeState = '已发送';
+            o.updatedAt = new Date().toISOString();
+          }
+          return validateData(data);
+        },
+        undefined,
+        { form: e.target, captured },
+      );
+      notify('沟通记录已保存。' + warning);
     } catch (e) {
       report(e);
     }
@@ -275,8 +323,10 @@ function bindForms() {
     }
   });
 }
-function openEditor(id = '') {
-  const original = state.data.opportunities.find((o) => o.id === id) || {};
+function openEditor(id = '', source) {
+  if (id && !live(state.data.opportunities).some((o) => o.id === id))
+    throw new Error('这个草稿对应的岗位已删除，内容仍可在草稿箱查看和复制。');
+  let original = state.data.opportunities.find((o) => o.id === id) || {};
   const o = {
     company: '',
     role: '',
@@ -322,9 +372,26 @@ function openEditor(id = '') {
       .join(
         '',
       )}<label class="span-2">备注<textarea name="notes">${esc(o.notes)}</textarea></label><label class="span-2">岗位描述<textarea name="description">${esc(o.description)}</textarea></label></div></div><div class="dialog-footer">${id ? `<button class="text-button danger" type="button" data-delete="${esc(id)}">删除岗位</button>` : ''}<button class="secondary" type="button" data-close="editor-dialog">取消</button><button class="primary" type="submit">保存岗位</button></div></form>`;
+  const editing = drafts.bind($('#editor-form'), {
+    kind: 'editor',
+    opportunityId: id,
+    original,
+    source,
+  });
+  if (editing?.original) original = editing.original;
+  if (
+    id &&
+    !equal(
+      original,
+      state.data.opportunities.find((o) => o.id === id),
+    )
+  )
+    $('#editor-error').textContent =
+      '原岗位已有新修改。草稿保留供核对；请复制需要的内容，丢弃旧草稿后重新编辑。';
   $('#editor-dialog').showModal();
   $('#editor-form').addEventListener('submit', async (e) => {
     e.preventDefault();
+    const captured = drafts.capture(e.target);
     const input = Object.fromEntries(new FormData(e.target));
     for (const k in input) input[k] = input[k].trim();
     if (input.stage === '已结束' && !input.endReason) {
@@ -335,34 +402,41 @@ function openEditor(id = '') {
     const stamp = new Date().toISOString(),
       jobId = id || uid();
     try {
-      await change((data) => {
-        const current = data.opportunities.find((x) => x.id === jobId);
-        if (id && !equal(current, original))
-          throw new Error('这个岗位刚在其他页面发生了修改，请重新打开后编辑。');
-        if (current) {
-          if (current.stage !== input.stage)
-            data.activities.push({
-              id: uid(),
-              opportunityId: jobId,
-              date: today(),
-              type: '阶段变化',
-              text: `阶段从「${current.stage}」调整为「${input.stage}」`,
-              createdAt: stamp,
-            });
-          Object.assign(current, input, { updatedAt: stamp });
-        } else data.opportunities.push({ id: jobId, ...input, createdAt: stamp, updatedAt: stamp });
-        if (input.stage === '已结束')
-          for (const task of data.tasks) {
-            if (task.opportunityId === jobId && !task.deletedAt && task.status === '待办')
-              task.status = '取消';
-          }
-        return validateData(data);
-      });
+      const warning = await change(
+        (data) => {
+          const current = data.opportunities.find((x) => x.id === jobId);
+          if (id && !equal(current, original))
+            throw new Error('这个岗位刚在其他页面发生了修改，请重新打开后编辑。');
+          if (current) {
+            if (current.stage !== input.stage)
+              data.activities.push({
+                id: uid(),
+                opportunityId: jobId,
+                date: today(),
+                type: '阶段变化',
+                text: `阶段从「${current.stage}」调整为「${input.stage}」`,
+                createdAt: stamp,
+              });
+            Object.assign(current, input, { updatedAt: stamp });
+          } else
+            data.opportunities.push({ id: jobId, ...input, createdAt: stamp, updatedAt: stamp });
+          if (input.stage === '已结束')
+            for (const task of data.tasks) {
+              if (task.opportunityId === jobId && !task.deletedAt && task.status === '待办')
+                task.status = '取消';
+            }
+          return validateData(data);
+        },
+        undefined,
+        { form: e.target, captured },
+      );
       selected = jobId;
       view = 'list';
       render();
       $('#editor-dialog').close();
-      notify(input.stage === '已结束' ? '岗位已结束，未完成行动已取消。' : '岗位已保存。');
+      notify(
+        (input.stage === '已结束' ? '岗位已结束，未完成行动已取消。' : '岗位已保存。') + warning,
+      );
     } catch (e) {
       $('#editor-error').textContent = e.message;
     }
@@ -370,7 +444,9 @@ function openEditor(id = '') {
 }
 const { showRestore, showSnapshots } = createBackupUI({
   isSyncing: () => syncing,
+  prepareDrafts: (rows) => drafts.store.prepareImport(rows),
   restored: async (next) => {
+    drafts.refreshCount();
     state = next;
     selected = live(state.data.opportunities)[0]?.id || '';
     channel?.postMessage('changed');
@@ -379,6 +455,89 @@ const { showRestore, showSnapshots } = createBackupUI({
   },
   report,
 });
+async function showDrafts() {
+  const rows = drafts.store.list();
+  $('#draft-content').innerHTML =
+    `<div class="dialog-header"><h2>本机草稿箱</h2><button class="close" data-close="draft-dialog" aria-label="关闭">×</button></div><div class="dialog-body"><p>草稿尚未提交，不会自动变成岗位或沟通记录。关闭表单会保留草稿。</p>${
+      rows.length
+        ? rows
+            .map((d) => {
+              const job = state.data.opportunities.find((o) => o.id === d.opportunityId);
+              return `<section class="section-gap"><h3>${esc(d.kind === 'editor' ? (d.opportunityId ? '编辑岗位' : '新增岗位') : d.kind === 'task' ? '下一步行动' : '沟通记录')} · ${esc(d.values.company || job?.company || '未填写公司')}</h3><small>${esc(new Date(d.updatedAt).toLocaleString('zh-CN'))}</small><details><summary>查看草稿内容</summary><pre class="long-copy">${esc(JSON.stringify(d.values, null, 2))}</pre></details><div class="button-row"><button class="primary" data-draft-restore="${d.id}">继续填写</button><button class="text-button danger" data-draft-discard="${d.id}">丢弃草稿</button></div></section>`;
+            })
+            .join('')
+        : '<p class="section-gap">没有未提交草稿。</p>'
+    }</div>`;
+  $('#draft-dialog').showModal();
+  $('#draft-content').onclick = async (e) => {
+    const button = e.target.closest('button');
+    if (!button) return;
+    const id = button.dataset.draftRestore || button.dataset.draftDiscard;
+    if (!id) return;
+    try {
+      const record = rows.find((d) => d.id === id);
+      if (button.dataset.draftDiscard) {
+        if (!confirm('丢弃这份未提交草稿？')) return;
+        drafts.discard(record);
+        render();
+        await showDrafts();
+        return;
+      }
+      if (
+        record.opportunityId &&
+        !live(state.data.opportunities).some((o) => o.id === record.opportunityId)
+      )
+        throw new Error('所属岗位已删除，请在“查看草稿内容”中复制需要的内容。');
+      $('#draft-dialog').close();
+      if (record.kind === 'editor') openEditor(record.opportunityId, record);
+      else {
+        selected = record.opportunityId;
+        view = 'list';
+        filter = '';
+        query = '';
+        draftSource = record;
+        render();
+        document
+          .querySelector(
+            record.kind === 'task'
+              ? '#task-form input[name="text"]'
+              : '#activity-form textarea[name="text"]',
+          )
+          ?.focus();
+      }
+    } catch (e) {
+      report(e);
+    }
+  };
+}
+async function showDiskBackups() {
+  const { files } = await diskBackup.list();
+  $('#import-content').innerHTML =
+    `<div class="dialog-header"><h2>独立磁盘备份</h2><button class="close" data-close="import-dialog" aria-label="关闭">×</button></div><div class="dialog-body"><p>保存在本机私有目录 .local/backups/。每个浏览器来源保留最近30个备份日期的首份，以及最新一份；清理浏览器后仍可在这里找回。</p>${files.length ? files.map((f, i) => `<section class="section-gap"><p>${esc(f.file === 'latest.json' ? '最近一次备份' : f.file.slice(0, 10) + ' 首份')} · ${esc(new Date(f.savedAt).toLocaleString('zh-CN'))}</p><small>来源 ${esc(f.sourceId.slice(0, 8))} · ${(f.size / 1000).toFixed(1)} KB</small><div class="button-row"><button class="secondary" data-disk-download="${i}">下载备份</button><button class="secondary" data-disk-restore="${i}">恢复预览</button></div></section>`).join('') : '<p class="section-gap">还没有独立备份。新增内容后会自动保存，也可以点击“立即备份”。</p>'}</div>`;
+  $('#import-dialog').showModal();
+  $('#import-content').onclick = async (e) => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    const index = b.dataset.diskDownload ?? b.dataset.diskRestore;
+    if (index === undefined) return;
+    try {
+      const file = files[Number(index)],
+        backup = await diskBackup.read(file.sourceId, file.file);
+      if (b.dataset.diskDownload !== undefined)
+        download(
+          `求职独立备份-${file.sourceId.slice(0, 8)}-${file.file}`,
+          JSON.stringify(backup, null, 2),
+          'application/json;charset=utf-8',
+        );
+      else {
+        $('#import-content').onclick = null;
+        await showRestore(backup);
+      }
+    } catch (e) {
+      report(e);
+    }
+  };
+}
 async function diagnose() {
   if (syncing) return;
   const button = document.querySelector('[data-action="diagnose"]');
@@ -596,7 +755,10 @@ document.addEventListener('click', async (e) => {
       return;
     }
     const action = b.dataset.action;
-    if (action === 'new' || b.id === 'new-button') openEditor();
+    if (b.id === 'draft-button') await showDrafts();
+    else if (action === 'backup-now') await diskBackup.run();
+    else if (action === 'disk-backups') await showDiskBackups();
+    else if (action === 'new' || b.id === 'new-button') openEditor();
     else if (action === 'edit') openEditor(b.dataset.id);
     else if (action === 'choose-file' || b.id === 'import-button') $('#file-input').click();
     else if (action === 'local-import') {
@@ -606,7 +768,7 @@ document.addEventListener('click', async (e) => {
     } else if (action === 'export-json')
       download(
         `求职备份-${today()}.json`,
-        JSON.stringify(createBackup(await readState()), null, 2),
+        JSON.stringify(createBackup(await readState(), drafts.store.list()), null, 2),
         'application/json;charset=utf-8',
       );
     else if (action === 'snapshots') await showSnapshots();
@@ -666,6 +828,8 @@ try {
   localSsh = await discoverLocalSsh();
   selected = live(state.data.opportunities)[0]?.id || '';
   render();
+  drafts.refreshCount();
+  diskBackup.start();
 } catch (e) {
   $('#app-content').innerHTML =
     `<section class="panel empty"><h2>本地记录暂时无法打开</h2><p>${esc(e.message)}</p><button class="secondary" data-action="raw-backup">导出原始本地状态</button><p>原始导出用于修复，不会改动现有记录。</p></section>`;
@@ -693,3 +857,7 @@ if (document.modelContext?.registerTool) {
   ).catch(() => {});
   window.addEventListener('pagehide', () => lifecycle.abort(), { once: true });
 }
+
+window.addEventListener('storage', (e) => {
+  if (e.key?.startsWith('job-tracker-draft')) drafts.refreshCount();
+});

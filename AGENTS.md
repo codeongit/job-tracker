@@ -18,3 +18,7 @@
 - Snapshot creation failure must abort the paired edit. Emergency raw export must remain available even when validation fails or data exceeds the sync limit.
 - Check final serialized UTF-8 bytes before all remote writes. Read SSH stdout as bytes, then decode strictly. Never log raw private Git output.
 - Use pnpm format and format:check; dist contains authored source, not generated build output. Keep view rendering, persistence, and pure data rules in their corresponding modules.
+
+- Drafts contain only explicitly allowed job/task/activity fields. Never auto-submit drafts or persist settings/PATs. Resume with a fresh ID; clear only the submitted immutable revision. A draft-cleanup failure must not turn a committed record into a failed save.
+- Prepare and preflight all imported drafts before restoring the workspace; roll back prepared copies on failure. Keep both data and conflict state in full backups.
+- Disk backups stay in ignored `.local/backups/`, independent of SSH and browser clearing. Keep daily first snapshots and atomic latest replacement; test only with temporary directories and synthetic data.
