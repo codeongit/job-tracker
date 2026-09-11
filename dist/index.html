@@ -1,41 +1,73 @@
 <!doctype html>
 <html lang="zh-CN">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="color-scheme" content="light dark">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' https://api.github.com; object-src 'none'; base-uri 'none'; form-action 'none'">
-  <meta name="description" content="个人求职工作台：岗位、沟通记录、下一步行动与私有 GitHub 同步。">
-  <title>求职工作台</title>
-  <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="./styles.css">
-  <script type="module" src="./app.js"></script>
-</head>
-<body>
-  <div class="shell">
-    <aside class="sidebar">
-      <a class="brand" href="./"><span class="brand-mark">求</span><span>求职工作台<small>个人空间</small></span></a>
-      <nav aria-label="主导航">
-        <button data-view="today" aria-current="page"><span>◷</span>今日行动</button>
-        <button data-view="list"><span>☰</span>岗位列表</button>
-        <button data-view="board"><span>▥</span>进度看板</button>
-        <button data-view="settings"><span>⚙</span>数据与同步</button>
-      </nav>
-      <div class="sidebar-bottom"><div id="local-status">正在读取本地记录</div><small id="last-sync">尚未连接云端</small></div>
-    </aside>
-    <main>
-      <header class="topbar"><span id="date-label"></span><div class="top-actions"><span id="sync-state" class="sync-state">本地存储</span><button id="sync-button" class="secondary">立即同步</button></div></header>
-      <div class="workspace">
-        <div class="page-heading"><div><p class="eyebrow" id="eyebrow">下一步</p><h1 id="page-title">今日行动</h1><p id="page-caption" class="muted">正在载入你的工作台。</p></div><div class="page-actions"><button id="import-button" class="secondary">导入记录</button><button id="new-button" class="primary">＋ 新增岗位</button></div></div>
-        <div id="app-content"></div>
-      </div>
-    </main>
-  </div>
-  <div id="notice" role="status" aria-live="polite" hidden></div>
-  <dialog id="editor-dialog" class="dialog"><div id="editor-content"></div></dialog>
-  <dialog id="import-dialog" class="dialog wide"><div id="import-content"></div></dialog>
-  <dialog id="conflict-dialog" class="dialog wide"><div id="conflict-content"></div></dialog>
-  <input id="file-input" type="file" accept=".md,.markdown,.json,text/markdown,application/json" hidden>
-  <noscript>求职工作台需要启用 JavaScript，才能在本地保存及同步记录。</noscript>
-</body>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' https://api.github.com; object-src 'none'; base-uri 'none'; form-action 'none'"
+    />
+    <meta
+      name="description"
+      content="个人求职工作台：岗位、沟通记录、下一步行动与私有 GitHub 同步。"
+    />
+    <title>求职工作台</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="./styles.css" />
+    <script type="module" src="./app.js"></script>
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="sidebar">
+        <a class="brand" href="./"
+          ><span class="brand-mark">求</span><span>求职工作台<small>个人空间</small></span></a
+        >
+        <nav aria-label="主导航">
+          <button data-view="today" aria-current="page"><span>◷</span>今日行动</button>
+          <button data-view="list"><span>☰</span>岗位列表</button>
+          <button data-view="board"><span>▥</span>进度看板</button>
+          <button data-view="settings"><span>⚙</span>数据与同步</button>
+        </nav>
+        <div class="sidebar-bottom">
+          <div id="local-status">正在读取本地记录</div>
+          <small id="app-version"></small><small id="last-sync">尚未连接云端</small>
+        </div>
+      </aside>
+      <main>
+        <header class="topbar">
+          <span id="date-label"></span>
+          <div class="top-actions">
+            <span id="sync-state" class="sync-state">本地存储</span
+            ><button id="sync-button" class="secondary">立即同步</button>
+          </div>
+        </header>
+        <div class="workspace">
+          <div class="page-heading">
+            <div>
+              <p class="eyebrow" id="eyebrow">下一步</p>
+              <h1 id="page-title">今日行动</h1>
+              <p id="page-caption" class="muted">正在载入你的工作台。</p>
+            </div>
+            <div class="page-actions">
+              <button id="import-button" class="secondary">导入记录</button
+              ><button id="new-button" class="primary">＋ 新增岗位</button>
+            </div>
+          </div>
+          <div id="app-content"></div>
+        </div>
+      </main>
+    </div>
+    <div id="notice" role="status" aria-live="polite" hidden></div>
+    <dialog id="editor-dialog" class="dialog"><div id="editor-content"></div></dialog>
+    <dialog id="import-dialog" class="dialog wide"><div id="import-content"></div></dialog>
+    <dialog id="conflict-dialog" class="dialog wide"><div id="conflict-content"></div></dialog>
+    <input
+      id="file-input"
+      type="file"
+      accept=".md,.markdown,.json,text/markdown,application/json"
+      hidden
+    />
+    <noscript>求职工作台需要启用 JavaScript，才能在本地保存及同步记录。</noscript>
+  </body>
 </html>

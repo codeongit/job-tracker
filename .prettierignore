@@ -1,9 +1,5 @@
-.DS_Store
 .local/
-.sites-runtime/
 node_modules/
-*.log
-.env*
-!.env.example
+pnpm-lock.yaml
 test-results/
 playwright-report/

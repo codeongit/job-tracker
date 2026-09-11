@@ -1,0 +1,8 @@
+{
+  "sourceMarkdown": "/absolute/path/to/records.md",
+  "sshSync": {
+    "owner": "your-account",
+    "repo": "your-private-data-repository",
+    "path": "job-tracker/data.json"
+  }
+}

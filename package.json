@@ -1,12 +1,24 @@
 {
   "name": "job-tracker",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "scripts": {
     "start": "node scripts/serve.mjs",
     "test": "node --test test/*.test.mjs",
-    "check": "node scripts/check.mjs"
+    "check": "node scripts/check.mjs",
+    "test:browser": "node --test test/browser-regression.mjs",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "verify": "pnpm test && pnpm check && pnpm format:check && pnpm test:browser",
+    "doctor": "node scripts/doctor.mjs"
   },
-  "engines": { "node": ">=22" }
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "devDependencies": {
+    "playwright": "1.62.1",
+    "prettier": "3.9.6"
+  },
+  "packageManager": "pnpm@11.19.0"
 }

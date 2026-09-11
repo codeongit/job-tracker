@@ -6,8 +6,9 @@ if [[ -z "$job_node" && -x "$HOME/.cache/codex-runtimes/codex-primary-runtime/de
   job_node="$HOME/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node"
 fi
 if [[ -z "$job_node" ]]; then
-  print '请先安装 Node.js 22 或更新版本，再运行此文件。'
+  print '请先安装 Node.js 24 LTS，再运行此文件。'
   read
   exit 1
 fi
+"$job_node" -e 'if(Number(process.versions.node.split(".")[0])!==24){console.error("请使用 Node.js 24 LTS。安装后重新启动。");process.exit(1)}'
 "$job_node" scripts/serve.mjs
