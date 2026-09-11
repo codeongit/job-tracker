@@ -466,13 +466,22 @@ test('每日记录按日期查询计划、结果、沟通和首次联系', { tim
       status: '待办',
     },
   );
-  data.activities.push({
-    id: 'daily-activity',
-    opportunityId: 'daily-main-job',
-    text: '今天收到回复',
-    date: dates.current,
-    type: '对方回复',
-  });
+  data.activities.push(
+    {
+      id: 'daily-activity',
+      opportunityId: 'daily-main-job',
+      text: '今天收到回复',
+      date: dates.current,
+      type: '对方回复',
+    },
+    {
+      id: 'daily-imported-first-contact',
+      opportunityId: 'daily-main-job',
+      text: '首次联系（原表投递日期）',
+      date: dates.current,
+      type: '首次联系',
+    },
+  );
   await seed(page, fixtureState(data));
   const initial = await savedState(page);
 
@@ -483,6 +492,13 @@ test('每日记录按日期查询计划、结果、沟通和首次联系', { tim
   assert.match(await page.locator('#daily-records').innerText(), /跨日完成行动/);
   assert.match(await page.locator('#daily-records').innerText(), /当天取消行动/);
   assert.match(await page.locator('#daily-records').innerText(), /今天收到回复/);
+  assert.equal(
+    await page
+      .locator('#daily-records')
+      .getByText('首次联系（原表投递日期）', { exact: true })
+      .count(),
+    0,
+  );
   assert.match(await page.locator('#daily-records').innerText(), /每日记录示例公司/);
   assert.equal(await page.locator('#daily-records .daily-job-card').count(), 1);
   assert.equal(await page.locator('#daily-records .company[data-job="daily-main-job"]').count(), 1);

@@ -71,7 +71,7 @@ test('行动分别出现在计划日和实际完成日，同日完成时不重�
   );
 });
 
-test('按沟通日和首次联系日筛选，保留已结束岗位并排除删除记录', () => {
+test('按沟通日和首次联系日筛选，去重导入里程碑并排除删除记录', () => {
   const data = emptyData();
   data.opportunities.push(
     opportunity('active', { appliedAt: DATE }),
@@ -86,6 +86,13 @@ test('按沟通日和首次联系日筛选，保留已结束岗位并排除删�
       text: '当天沟通',
       date: DATE,
       type: '沟通记录',
+    },
+    {
+      id: 'imported-first-contact',
+      opportunityId: 'active',
+      text: '首次联系（原表投递日期）',
+      date: DATE,
+      type: '首次联系',
     },
     {
       id: 'other-activity',

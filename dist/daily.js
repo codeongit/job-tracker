@@ -52,7 +52,11 @@ export function getDailyRecords(data, date) {
           compareTaskRows(a, b),
       ),
     activities = activityRows
-      .filter(({ activity }) => activity.date === date)
+      .filter(
+        ({ activity, opportunity }) =>
+          activity.date === date &&
+          !(activity.type === '首次联系' && opportunity.appliedAt === activity.date),
+      )
       .sort(
         (a, b) =>
           (b.activity.createdAt || '').localeCompare(a.activity.createdAt || '') ||
