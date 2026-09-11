@@ -1,7 +1,19 @@
 import { STAGES, live, today } from './model.js';
 import { DUE_DATE_PRESETS, addCalendarDays, getTaskDefaults } from './planning.js';
 import { getTodayItems } from './today.js';
+import { getDailyRecords } from './daily.js';
 import { esc, safeUrl, options } from './ui.js';
+
+function readableDate(value) {
+  const [year, month, day] = value.split('-').map(Number);
+  return new Date(year, month - 1, day).toLocaleDateString('zh-CN', {
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+    weekday: 'long',
+  });
+}
+
 export function createViews(context, pendingTasks) {
   function jobRow(o, board = false) {
     const { state, selected } = context();
@@ -87,6 +99,48 @@ export function createViews(context, pendingTasks) {
       : '';
     return `<div class="stats-strip"><span><strong>${active.length}</strong>进行中</span><span><strong>${due.length}</strong>到期行动</span><span><strong>${unplanned.length}</strong>未设下一步</span></div><p class="note-summary">这里只显示进行中的岗位；待办按计划日期分组。今天新增且未安排的岗位会单独列出，其他未安排岗位折叠在底部。</p><div class="split"><div class="form-stack">${group('今天及逾期', due)}${suggestionGroup}${addedTodayGroup}${group('接下来', upcoming)}${group('日期待定', undated)}${olderUnplannedGroup}${!tasks.length && !suggestions.length && !unplanned.length ? '<section class="panel empty"><h2>还没有待办行动</h2><p>从岗位列表选择一个机会，设置下次跟进日期。</p><button class="secondary" data-view="list">查看岗位</button></section>' : ''}</div>${detail()}</div>`;
   }
+  function dailyView() {
+    const { state, selected, dailyDate } = context(),
+      { plannedTasks, resolvedTasks, activities, firstContacts, opportunityRecords } =
+        getDailyRecords(state.data, dailyDate),
+      total = plannedTasks.length + resolvedTasks.length + activities.length + firstContacts.length;
+    const event = (kind, text, meta = '') =>
+        `<div class="daily-event"><span class="daily-event-kind">${esc(kind)}</span><div class="daily-event-content"><div class="daily-event-text">${esc(text)}</div>${meta ? `<div class="daily-event-meta">${esc(meta)}</div>` : ''}</div></div>`,
+      openJobButton = (opportunity) =>
+        `<button class="secondary daily-open-job" type="button" data-job="${esc(opportunity.id)}">查看岗位</button>`,
+      plannedTaskEvent = ({ task, resolutionDate }) => {
+        const status =
+            task.status === '完成' ? '已完成' : task.status === '取消' ? '已取消' : '待办',
+          sameDayResult = resolutionDate === dailyDate && task.status !== '待办',
+          kind = sameDayResult
+            ? `计划 · 当日${task.status === '取消' ? '取消' : '完成'}`
+            : `计划 · ${status}`,
+          meta =
+            resolutionDate && !sameDayResult
+              ? `${task.status === '取消' ? '取消于' : '完成于'} ${resolutionDate}`
+              : '';
+        return event(kind, task.text, meta);
+      },
+      resolvedTaskEvent = ({ task }) =>
+        event(
+          task.status === '取消' ? '取消' : '完成',
+          task.text,
+          `原计划：${task.dueAt || '未设日期'}`,
+        ),
+      cards = opportunityRecords
+        .map(({ opportunity, firstContact, plannedTasks, resolvedTasks, activities }) => {
+          const events =
+            (firstContact ? event('首次联系', '开始接触该岗位') : '') +
+            activities
+              .map((activity) => event(`沟通 · ${activity.type || '记录'}`, activity.text))
+              .join('') +
+            plannedTasks.map(plannedTaskEvent).join('') +
+            resolvedTasks.map(resolvedTaskEvent).join('');
+          return `<section class="panel daily-job-card" data-selected="${opportunity.id === selected}"><div class="panel-header daily-job-header"><div><button class="company" data-job="${esc(opportunity.id)}">${esc(opportunity.company)}</button><div class="job-role">${esc(opportunity.role)}</div></div><div class="daily-job-actions"><span class="badge">当前阶段：${esc(opportunity.stage)}</span>${openJobButton(opportunity)}</div></div><div class="daily-job-events">${events}</div></section>`;
+        })
+        .join('');
+    return `<section class="panel daily-toolbar"><div class="daily-date-title"><small>查看日期</small><strong>${esc(readableDate(dailyDate))}</strong></div><div class="daily-date-actions"><button class="secondary" type="button" data-daily-step="-1">← 上一天</button><label>选择日期<input id="daily-date" type="date" required value="${esc(dailyDate)}"></label><button class="text-button" type="button" data-daily-today>回到今天</button><button class="secondary" type="button" data-daily-step="1">下一天 →</button></div></section><div class="stats-strip daily-stats"><span><strong>${plannedTasks.length}</strong>计划</span><span><strong>${resolvedTasks.length}</strong>完成/取消</span><span><strong>${activities.length}</strong>沟通</span><span><strong>${firstContacts.length}</strong>首次联系</span></div><p class="note-summary">同一岗位的当天记录已合并；岗位阶段显示当前状态，不代表所选日期当天的历史状态。</p><div class="split"><div id="daily-records" class="form-stack">${total ? cards : `<section class="panel empty"><h2>这一天没有记录</h2><p>可以切换前后日期，或回到今天继续查看。</p></section>`}</div>${detail()}</div>`;
+  }
   function boardView() {
     const { state, selected } = context();
     return `<div class="board">${STAGES.map((stage) => {
@@ -95,5 +149,5 @@ export function createViews(context, pendingTasks) {
     }).join('')}</div>`;
   }
 
-  return { jobRow, detail, todayView, boardView };
+  return { jobRow, detail, todayView, dailyView, boardView };
 }

@@ -591,6 +591,97 @@ label textarea {
   margin-right: 6px;
   font-weight: 600;
 }
+.daily-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 16px 20px;
+  margin-bottom: 16px;
+}
+.daily-date-title {
+  display: grid;
+  gap: 3px;
+}
+.daily-date-title small,
+.daily-date-actions label {
+  color: var(--muted);
+  font-size: 0.8125rem;
+}
+.daily-date-title strong {
+  font-size: 1.0625rem;
+}
+.daily-date-actions {
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.daily-date-actions label {
+  width: 150px;
+}
+.daily-date-actions input {
+  margin-top: 4px;
+}
+.daily-stats {
+  margin-bottom: 12px;
+}
+.daily-open-job {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.daily-job-card[data-selected='true'] {
+  border-color: var(--accent);
+}
+.daily-job-header {
+  align-items: flex-start;
+}
+.daily-job-header > div:first-child {
+  min-width: 0;
+}
+.daily-job-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.daily-job-events {
+  padding: 2px 18px;
+}
+.daily-event {
+  display: grid;
+  grid-template-columns: minmax(92px, auto) minmax(0, 1fr);
+  align-items: start;
+  gap: 12px;
+  padding: 13px 0;
+  border-bottom: 1px solid var(--line);
+}
+.daily-event:last-child {
+  border-bottom: 0;
+}
+.daily-event-kind {
+  width: fit-content;
+  padding: 3px 7px;
+  border-radius: 4px;
+  background: var(--soft);
+  color: var(--muted);
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+.daily-event-content {
+  min-width: 0;
+}
+.daily-event-text {
+  overflow-wrap: anywhere;
+  font-size: 0.9375rem;
+}
+.daily-event-meta {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 0.8125rem;
+}
 .action-row {
   padding: 17px 18px;
   border-bottom: 1px solid var(--line);
@@ -955,6 +1046,33 @@ details > p {
   }
   .stats-strip strong {
     font-size: 1.125rem;
+  }
+  .daily-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .daily-date-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+  .daily-date-actions label {
+    width: auto;
+    grid-column: 1/-1;
+    grid-row: 1;
+  }
+  .daily-date-actions [data-daily-today] {
+    grid-column: 1/-1;
+  }
+  .daily-job-header {
+    flex-wrap: wrap;
+  }
+  .daily-job-actions {
+    width: 100%;
+    justify-content: space-between;
+  }
+  .daily-event {
+    grid-template-columns: 1fr;
+    gap: 6px;
   }
 }
 @media (pointer: coarse) {

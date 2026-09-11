@@ -388,6 +388,159 @@ test('今日行动列出未设下一步岗位，今日新增置顶且可原地�
   );
 });
 
+test('每日记录按日期查询计划、结果、沟通和首次联系', { timeout: 45000 }, async (t) => {
+  const context = await isolatedContext(t, undefined, {
+      viewport: { width: 390, height: 844 },
+      hasTouch: true,
+      timezoneId: 'Asia/Shanghai',
+    }),
+    page = await openPage(context);
+  const dates = await page.evaluate(async () => {
+    const { today } = await import('/model.js'),
+      { addCalendarDays } = await import('/planning.js'),
+      current = today();
+    return {
+      current,
+      previous: addCalendarDays(current, -1),
+      next: addCalendarDays(current, 1),
+      empty: addCalendarDays(current, 2),
+      completedAt: new Date(`${current}T13:00:00`).toISOString(),
+      cancelledAt: new Date(`${current}T14:00:00`).toISOString(),
+    };
+  });
+  const data = emptyData();
+  data.opportunities.push(
+    {
+      id: 'daily-main-job',
+      company: '每日记录示例公司',
+      role: '后端工程师',
+      stage: '沟通中',
+      appliedAt: dates.current,
+    },
+    {
+      id: 'daily-ended-job',
+      company: '历史结束示例公司',
+      role: '产品经理',
+      stage: '已结束',
+      endReason: '职位关闭',
+      appliedAt: dates.next,
+    },
+  );
+  data.tasks.push(
+    {
+      id: 'daily-pending',
+      opportunityId: 'daily-main-job',
+      text: '今天计划行动',
+      dueAt: dates.current,
+      status: '待办',
+    },
+    {
+      id: 'daily-same-day',
+      opportunityId: 'daily-main-job',
+      text: '当天计划并完成',
+      dueAt: dates.current,
+      status: '完成',
+      completedAt: dates.completedAt,
+    },
+    {
+      id: 'daily-cross-day',
+      opportunityId: 'daily-main-job',
+      text: '跨日完成行动',
+      dueAt: dates.previous,
+      status: '完成',
+      completedAt: dates.completedAt,
+    },
+    {
+      id: 'daily-cancelled',
+      opportunityId: 'daily-main-job',
+      text: '当天取消行动',
+      dueAt: dates.previous,
+      status: '取消',
+      completedAt: dates.cancelledAt,
+    },
+    {
+      id: 'daily-future',
+      opportunityId: 'daily-ended-job',
+      text: '明天计划行动',
+      dueAt: dates.next,
+      status: '待办',
+    },
+  );
+  data.activities.push({
+    id: 'daily-activity',
+    opportunityId: 'daily-main-job',
+    text: '今天收到回复',
+    date: dates.current,
+    type: '对方回复',
+  });
+  await seed(page, fixtureState(data));
+  const initial = await savedState(page);
+
+  await page.locator('[data-view="daily"]').click();
+  assert.equal(await page.locator('#page-title').innerText(), '每日记录');
+  assert.equal(await page.locator('#daily-date').inputValue(), dates.current);
+  assert.match(await page.locator('#daily-records').innerText(), /今天计划行动/);
+  assert.match(await page.locator('#daily-records').innerText(), /跨日完成行动/);
+  assert.match(await page.locator('#daily-records').innerText(), /当天取消行动/);
+  assert.match(await page.locator('#daily-records').innerText(), /今天收到回复/);
+  assert.match(await page.locator('#daily-records').innerText(), /每日记录示例公司/);
+  assert.equal(await page.locator('#daily-records .daily-job-card').count(), 1);
+  assert.equal(await page.locator('#daily-records .company[data-job="daily-main-job"]').count(), 1);
+  assert.equal(await page.locator('#daily-records [data-complete]').count(), 0);
+  assert.equal(await page.locator('#daily-records [data-cancel-task]').count(), 0);
+  assert.equal(
+    await page.locator('#daily-records').getByText('当天计划并完成', { exact: true }).count(),
+    1,
+  );
+
+  await page.getByRole('button', { name: '上一天' }).click();
+  assert.equal(await page.locator('#daily-date').inputValue(), dates.previous);
+  assert.match(await page.locator('#daily-records').innerText(), /跨日完成行动/);
+  await page.getByRole('button', { name: '回到今天' }).click();
+  assert.equal(await page.locator('#daily-date').inputValue(), dates.current);
+  await page.getByRole('button', { name: '下一天' }).click();
+  assert.equal(await page.locator('#daily-date').inputValue(), dates.next);
+  assert.match(await page.locator('#daily-records').innerText(), /明天计划行动/);
+  assert.match(await page.locator('#daily-records').innerText(), /当前阶段：已结束/);
+  assert.equal(await page.locator('#daily-records .daily-job-card').count(), 1);
+  assert.equal(
+    await page.locator('#daily-records .company[data-job="daily-ended-job"]').count(),
+    1,
+  );
+
+  await page.locator('#daily-records .daily-open-job[data-job="daily-ended-job"]').first().click();
+  assert.equal(await page.locator('#page-title').innerText(), '每日记录');
+  assert.match(await page.locator('.detail-panel').innerText(), /历史结束示例公司/);
+  assert.equal(
+    await page.locator('.detail-panel').evaluate((panel) => document.activeElement === panel),
+    true,
+  );
+
+  await page.locator('#daily-date').evaluate((input, value) => {
+    input.value = value;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  }, dates.empty);
+  assert.equal(await page.locator('#daily-date').inputValue(), dates.empty);
+  assert.match(await page.locator('#daily-records').innerText(), /这一天没有记录/);
+  assert.deepEqual(await savedState(page), initial);
+  assert.equal(
+    await page
+      .locator('.daily-date-actions button')
+      .evaluateAll((buttons) =>
+        buttons.every((button) => button.getBoundingClientRect().height >= 44),
+      ),
+    true,
+  );
+  assert.equal(
+    await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
+    true,
+  );
+
+  await page.reload();
+  await page.locator('[data-view="daily"]').click();
+  assert.equal(await page.locator('#daily-date').inputValue(), dates.current);
+});
+
 test('下一步预填两天后，快捷日期仅保存草稿且手动覆盖可精确提交', { timeout: 45000 }, async (t) => {
   const context = await isolatedContext(t, undefined, {
       viewport: { width: 390, height: 844 },

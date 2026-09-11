@@ -29,6 +29,7 @@ import { bindCommittedTextInput, trackComposition } from './text-input.js';
 import { $, esc, options, download } from './ui.js';
 let state,
   view = 'today',
+  dailyDate = today(),
   selected = '',
   query = '',
   filter = '',
@@ -56,8 +57,8 @@ const diskBackup = createDiskBackup({
     if (el) el.textContent = status.message;
   },
 });
-const { jobRow, detail, todayView, boardView } = createViews(
-  () => ({ state, selected }),
+const { jobRow, detail, todayView, dailyView, boardView } = createViews(
+  () => ({ state, selected, dailyDate }),
   pendingTasksForView,
 );
 function pendingTasksForView(id) {
@@ -131,6 +132,7 @@ function statusRender() {
 function header() {
   const labels = {
     today: ['下一步', '今日行动', '到期行动、待核实事项和未设下一步的岗位。'],
+    daily: ['回顾', '每日记录', '按日期查看计划、结果、沟通和首次联系。'],
     list: ['机会', '岗位列表', '每个岗位一条记录，保留完整沟通历史。'],
     board: ['进展', '进度看板', '招聘阶段与消息状态分开记录。'],
     settings: ['个人数据', '数据与同步', '数据先存本机，再同步到你的 GitHub 私有仓库。'],
@@ -211,9 +213,11 @@ function render(preserveDrafts = false) {
         ? emptyView()
         : view === 'today'
           ? todayView()
-          : view === 'list'
-            ? listView()
-            : boardView();
+          : view === 'daily'
+            ? dailyView()
+            : view === 'list'
+              ? listView()
+              : boardView();
   bindForms();
   for (const draft of preservedForms) {
     const form = document.getElementById(draft.id);
@@ -262,6 +266,14 @@ function bindForms() {
     filter = e.target.value;
     page = 0;
     updateListResults();
+  });
+  $('#daily-date')?.addEventListener('change', (e) => {
+    if (!e.target.value) {
+      e.target.value = dailyDate;
+      return;
+    }
+    dailyDate = e.target.value;
+    render();
   });
   $('#task-form')?.addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -759,6 +771,16 @@ document.addEventListener('click', async (e) => {
       render();
       return;
     }
+    if (b.dataset.dailyStep) {
+      dailyDate = addCalendarDays(dailyDate, Number(b.dataset.dailyStep));
+      render();
+      return;
+    }
+    if (b.hasAttribute('data-daily-today')) {
+      dailyDate = today();
+      render();
+      return;
+    }
     if (b.hasAttribute('data-due-offset')) {
       const form = b.closest('#task-form'),
         dueAt = form?.elements.namedItem('dueAt');
@@ -803,12 +825,19 @@ document.addEventListener('click', async (e) => {
       return;
     }
     if (b.dataset.job) {
+      const openedFromDaily = view === 'daily' && !!b.closest('#daily-records');
       selected = b.dataset.job;
       if (view === 'board' || view === 'today') view = 'list';
       filter = '';
       query = '';
       page = Math.floor(live(state.data.opportunities).findIndex((o) => o.id === selected) / 10);
       render();
+      if (openedFromDaily && matchMedia('(max-width: 760px)').matches) {
+        const panel = document.querySelector('.detail-panel');
+        panel?.setAttribute('tabindex', '-1');
+        panel?.focus({ preventScroll: true });
+        panel?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
       return;
     }
     if (b.dataset.page) {
