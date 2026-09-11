@@ -1,4 +1,5 @@
 import { STAGES, live, today } from './model.js';
+import { getTodayItems } from './today.js';
 import { esc, safeUrl, options } from './ui.js';
 export function createViews(context, pendingTasks) {
   function jobRow(o, board = false) {
@@ -41,16 +42,9 @@ export function createViews(context, pendingTasks) {
   }
   function todayView() {
     const { state, selected } = context();
-    const active = live(state.data.opportunities).filter((o) => o.stage !== '已结束');
-    const parentIds = new Set(active.map((o) => o.id));
-    const tasks = pendingTasks().filter((t) => parentIds.has(t.opportunityId));
-    const due = tasks.filter((t) => t.dueAt && t.dueAt <= today()),
-      upcoming = tasks.filter((t) => t.dueAt > today()),
-      undated = tasks.filter((t) => !t.dueAt);
-    const suggestion = active.filter(
-      (o) =>
-        !tasks.some((t) => t.opportunityId === o.id) &&
-        (o.resumeState === '被索要' || o.rawStatus?.includes('带人经验')),
+    const { active, tasks, due, upcoming, undated, suggestions, unplanned } = getTodayItems(
+      state.data,
+      today(),
     );
     const group = (title, rows) =>
       rows.length
@@ -61,7 +55,30 @@ export function createViews(context, pendingTasks) {
             })
             .join('')}</section>`
         : '';
-    return `<div class="stats-strip"><span><strong>${active.length}</strong>进行中</span><span><strong>${due.length}</strong>到期行动</span><span><strong>${active.filter((o) => !tasks.some((t) => t.opportunityId === o.id)).length}</strong>未设下一步</span></div><div class="split"><div class="form-stack">${group('今天及逾期', due)}${suggestion.length ? `<section class="panel"><div class="panel-header"><h2>建议核实</h2><span class="count">根据已有记录</span></div>${suggestion.map((o) => `<div class="action-row"><div class="action-main"><button class="company" data-job="${esc(o.id)}">${esc(o.company)}</button><div class="action-text">${o.resumeState === '被索要' ? '核实简历是否已发送' : '核实是否已答复带人经验'}</div><div class="action-meta">原记录：${esc(o.rawStatus || o.resumeState)}</div></div></div>`).join('')}</section>` : ''}${group('接下来', upcoming)}${group('日期待定', undated)}${!tasks.length && !suggestion.length ? '<section class="panel empty"><h2>还没有待办行动</h2><p>从岗位列表选择一个机会，设置下次跟进日期。</p><button class="secondary" data-view="list">查看岗位</button></section>' : ''}</div>${detail()}</div>`;
+    const unplannedRows = (rows) =>
+        rows
+          .map(
+            ({ opportunity: o, addedToday }) =>
+              `<div class="action-row"><div class="action-main"><button class="company" data-job="${esc(o.id)}">${esc(o.company)}</button><div class="action-text">${esc(o.role)}</div><div class="action-meta">${addedToday ? '今天新增 · ' : ''}首次联系：${esc(o.appliedAt || '日期未填')}</div></div><button class="secondary" data-plan-job="${esc(o.id)}">安排下一步</button></div>`,
+          )
+          .join(''),
+      addedToday = unplanned.filter((row) => row.addedToday),
+      olderUnplanned = unplanned.filter((row) => !row.addedToday),
+      addedTodayGroup = addedToday.length
+        ? `<section class="panel"><div class="panel-header"><h2>今天新增 · 未设下一步</h2><span class="count">${addedToday.length} 个岗位</span></div>${unplannedRows(addedToday)}</section>`
+        : '',
+      olderUnplannedGroup = olderUnplanned.length
+        ? `<details class="panel action-details"><summary><span>其他未设下一步</span><span class="count">${olderUnplanned.length} 个岗位</span></summary>${unplannedRows(olderUnplanned)}</details>`
+        : '';
+    const suggestionGroup = suggestions.length
+      ? `<section class="panel"><div class="panel-header"><h2>建议核实</h2><span class="count">${suggestions.length} 项 · 根据已有记录</span></div>${suggestions
+          .map(
+            ({ opportunity: o, kind, prompt, doneLabel }) =>
+              `<div class="action-row"><div class="action-main"><button class="company" data-job="${esc(o.id)}">${esc(o.company)}</button><div class="action-text">${esc(prompt)}</div><div class="action-meta">${esc(o.role)} · 原记录：${esc(o.rawStatus || o.resumeState)}</div></div><div class="action-choices"><button class="secondary" data-suggestion-kind="${esc(kind)}" data-suggestion-choice="done" data-opportunity-id="${esc(o.id)}">${esc(doneLabel)}</button><button class="text-button" data-suggestion-kind="${esc(kind)}" data-suggestion-choice="pending" data-opportunity-id="${esc(o.id)}">加入今日行动</button></div></div>`,
+          )
+          .join('')}</section>`
+      : '';
+    return `<div class="stats-strip"><span><strong>${active.length}</strong>进行中</span><span><strong>${due.length}</strong>到期行动</span><span><strong>${unplanned.length}</strong>未设下一步</span></div><p class="note-summary">这里只显示进行中的岗位；待办按计划日期分组。今天新增且未安排的岗位会单独列出，其他未安排岗位折叠在底部。</p><div class="split"><div class="form-stack">${group('今天及逾期', due)}${suggestionGroup}${addedTodayGroup}${group('接下来', upcoming)}${group('日期待定', undated)}${olderUnplannedGroup}${!tasks.length && !suggestions.length && !unplanned.length ? '<section class="panel empty"><h2>还没有待办行动</h2><p>从岗位列表选择一个机会，设置下次跟进日期。</p><button class="secondary" data-view="list">查看岗位</button></section>' : ''}</div>${detail()}</div>`;
   }
   function boardView() {
     const { state, selected } = context();

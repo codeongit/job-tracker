@@ -594,6 +594,34 @@ label textarea {
   font-size: 0.8125rem;
   color: var(--muted);
 }
+.action-choices {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.action-choices .text-button {
+  white-space: nowrap;
+}
+.action-details > summary {
+  padding: 16px 18px;
+  color: var(--text);
+  font-size: 1rem;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.action-details[open] > summary {
+  border-bottom: 1px solid var(--line);
+}
+.action-details > summary .count {
+  color: var(--muted);
+  font-size: 0.8125rem;
+  font-weight: 400;
+}
 .settings {
   max-width: 850px;
   display: grid;

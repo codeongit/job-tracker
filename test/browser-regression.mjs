@@ -293,6 +293,403 @@ async function assertCurrentFocusedInput(input) {
   );
 }
 
+test('今日行动列出未设下一步岗位，今日新增置顶且可原地安排', { timeout: 45000 }, async (t) => {
+  const context = await isolatedContext(t),
+    page = await openPage(context);
+  const dates = await page.evaluate(async () => {
+    const { today } = await import('/model.js');
+    const current = new Date(),
+      earlier = new Date(current);
+    earlier.setDate(earlier.getDate() - 2);
+    return {
+      today: today(),
+      createdToday: current.toISOString(),
+      createdEarlier: earlier.toISOString(),
+    };
+  });
+  const data = emptyData();
+  data.opportunities.push(
+    {
+      id: 'today-new-job',
+      company: '今日新增示例公司',
+      role: '新岗位',
+      stage: '已触达',
+      createdAt: dates.createdToday,
+    },
+    {
+      id: 'older-unplanned-job',
+      company: '旧岗位示例公司',
+      role: '旧岗位',
+      stage: '沟通中',
+      createdAt: dates.createdEarlier,
+    },
+    {
+      id: 'job-with-task',
+      company: '已有行动示例公司',
+      role: '已有行动岗位',
+      stage: '已触达',
+      createdAt: dates.createdToday,
+    },
+    {
+      id: 'job-with-suggestion',
+      company: '待核实示例公司',
+      role: '待核实岗位',
+      stage: '沟通中',
+      resumeState: '被索要',
+      createdAt: dates.createdToday,
+    },
+    {
+      id: 'ended-unplanned-job',
+      company: '已结束示例公司',
+      role: '已结束岗位',
+      stage: '已结束',
+      createdAt: dates.createdToday,
+    },
+  );
+  data.tasks.push({
+    id: 'existing-task',
+    opportunityId: 'job-with-task',
+    text: '已有待办行动',
+    dueAt: dates.today,
+    status: '待办',
+  });
+  await seed(page, fixtureState(data));
+
+  const planButtons = page.locator('[data-plan-job]');
+  assert.equal(await planButtons.count(), 2);
+  assert.deepEqual(
+    await planButtons.evaluateAll((buttons) => buttons.map((button) => button.dataset.planJob)),
+    ['today-new-job', 'older-unplanned-job'],
+    'Today-created jobs are listed before older unplanned jobs',
+  );
+  assert.match(
+    await page
+      .locator('[data-plan-job="today-new-job"]')
+      .evaluate((button) => button.closest('.action-row')?.innerText || ''),
+    /今天新增/,
+  );
+  assert.doesNotMatch(
+    await page
+      .locator('[data-plan-job="older-unplanned-job"]')
+      .evaluate((button) => button.closest('.action-row')?.innerText || ''),
+    /今天新增/,
+  );
+
+  await page.locator('[data-plan-job="today-new-job"]').click();
+  assert.equal(await page.locator('#page-title').innerText(), '今日行动');
+  assert.equal(await page.locator('nav [data-view="today"]').getAttribute('aria-current'), 'page');
+  assert.match(await page.locator('.detail-panel').innerText(), /今日新增示例公司/);
+  assert.equal(
+    await page
+      .locator('#task-form input[name="text"]')
+      .evaluate((input) => document.activeElement === input),
+    true,
+    'Planning from Today keeps the view open and focuses the new-task field',
+  );
+});
+
+test(
+  '核实建议分别显示且不被无关行动遮挡，完成或加入今日行动后持久保存',
+  { timeout: 45000 },
+  async (t) => {
+    const context = await isolatedContext(t),
+      page = await openPage(context);
+    const localToday = await page.evaluate(async () => (await import('/model.js')).today());
+    const data = emptyData();
+    data.opportunities.push(
+      {
+        id: 'double-suggestion-job',
+        company: '双核实示例公司',
+        role: '研发负责人',
+        stage: '沟通中',
+        resumeState: '被索要',
+        rawStatus: '要了简历，被问带人经验',
+      },
+      {
+        id: 'pending-suggestion-job',
+        company: '待安排核实示例公司',
+        role: '工程师',
+        stage: '已触达',
+        resumeState: '被索要',
+      },
+    );
+    data.tasks.push({
+      id: 'unrelated-existing-task',
+      opportunityId: 'double-suggestion-job',
+      text: '准备作品集',
+      dueAt: '',
+      status: '待办',
+    });
+    await seed(page, fixtureState(data));
+
+    const suggestionButton = (jobId, kind, choice) =>
+      page.locator(
+        `[data-opportunity-id="${jobId}"][data-suggestion-kind="${kind}"][data-suggestion-choice="${choice}"]`,
+      );
+    for (const kind of ['resume', 'leadership']) {
+      assert.equal(
+        await suggestionButton('double-suggestion-job', kind, 'done').count(),
+        1,
+        `The ${kind} suggestion remains visible beside an unrelated task`,
+      );
+      assert.equal(await suggestionButton('double-suggestion-job', kind, 'pending').count(), 1);
+    }
+
+    await suggestionButton('double-suggestion-job', 'resume', 'done').click();
+    await page.waitForFunction(
+      () =>
+        window.indexedDB &&
+        import('/storage.js').then(async ({ readState }) => {
+          const state = await readState();
+          const job = state.data.opportunities.find((row) => row.id === 'double-suggestion-job');
+          return (
+            job?.resumeState === '已发送' &&
+            state.data.activities.some(
+              (row) => row.opportunityId === job.id && row.type === '发送简历',
+            )
+          );
+        }),
+    );
+    await suggestionButton('double-suggestion-job', 'leadership', 'done').click();
+    await page.waitForFunction(() =>
+      import('/storage.js').then(async ({ readState }) => {
+        const state = await readState();
+        return state.data.activities.some(
+          (row) =>
+            row.opportunityId === 'double-suggestion-job' &&
+            row.type === '对方回复' &&
+            row.text.includes('带人经验'),
+        );
+      }),
+    );
+    await suggestionButton('pending-suggestion-job', 'resume', 'pending').click();
+    await page.waitForFunction(
+      ({ jobId, dueAt }) =>
+        import('/storage.js').then(async ({ readState }) => {
+          const state = await readState();
+          return state.data.tasks.some(
+            (row) =>
+              row.opportunityId === jobId &&
+              row.status === '待办' &&
+              row.dueAt === dueAt &&
+              row.text.includes('简历'),
+          );
+        }),
+      { jobId: 'pending-suggestion-job', dueAt: localToday },
+    );
+
+    const saved = await savedState(page);
+    assert.equal(
+      saved.data.tasks.find((row) => row.id === 'unrelated-existing-task')?.status,
+      '待办',
+    );
+    assert.equal(
+      saved.data.opportunities.find((row) => row.id === 'double-suggestion-job')?.resumeState,
+      '已发送',
+    );
+    assert.ok(
+      saved.data.activities.some(
+        (row) => row.opportunityId === 'double-suggestion-job' && row.type === '发送简历',
+      ),
+    );
+    assert.ok(
+      saved.data.activities.some(
+        (row) =>
+          row.opportunityId === 'double-suggestion-job' &&
+          row.type === '对方回复' &&
+          row.text.includes('带人经验'),
+      ),
+    );
+    assert.ok(
+      saved.data.tasks.some(
+        (row) =>
+          row.opportunityId === 'pending-suggestion-job' &&
+          row.status === '待办' &&
+          row.dueAt === localToday &&
+          row.text.includes('简历'),
+      ),
+    );
+
+    await page.reload();
+    await page.waitForFunction(() =>
+      document.querySelector('#local-status')?.textContent.includes('本地已保存'),
+    );
+    assert.equal(await suggestionButton('double-suggestion-job', 'resume', 'done').count(), 0);
+    assert.equal(await suggestionButton('double-suggestion-job', 'leadership', 'done').count(), 0);
+    assert.equal(await suggestionButton('pending-suggestion-job', 'resume', 'done').count(), 0);
+    const persisted = await savedState(page);
+    assert.deepEqual(persisted.data, saved.data);
+  },
+);
+
+test(
+  '核实建议加入今日行动后，完成待办会保存确认结果且刷新不再建议',
+  { timeout: 45000 },
+  async (t) => {
+    const context = await isolatedContext(t),
+      page = await openPage(context);
+    const data = emptyData();
+    data.opportunities.push(
+      {
+        id: 'complete-resume-suggestion',
+        company: '完成简历核实示例公司',
+        role: '后端工程师',
+        stage: '沟通中',
+        resumeState: '被索要',
+      },
+      {
+        id: 'complete-leadership-suggestion',
+        company: '完成带人核实示例公司',
+        role: '研发负责人',
+        stage: '沟通中',
+        rawStatus: '已读，被问带人经验',
+      },
+    );
+    await seed(page, fixtureState(data));
+
+    const suggestionButton = (jobId, kind, choice) =>
+      page.locator(
+        `[data-opportunity-id="${jobId}"][data-suggestion-kind="${kind}"][data-suggestion-choice="${choice}"]`,
+      );
+    await suggestionButton('complete-resume-suggestion', 'resume', 'pending').click();
+    await suggestionButton('complete-leadership-suggestion', 'leadership', 'pending').click();
+    const planned = await savedState(page),
+      resumeTask = planned.data.tasks.find(
+        (row) => row.opportunityId === 'complete-resume-suggestion' && row.status === '待办',
+      ),
+      leadershipTask = planned.data.tasks.find(
+        (row) => row.opportunityId === 'complete-leadership-suggestion' && row.status === '待办',
+      );
+    assert.ok(resumeTask);
+    assert.ok(leadershipTask);
+    assert.equal(await suggestionButton('complete-resume-suggestion', 'resume', 'done').count(), 0);
+    assert.equal(
+      await suggestionButton('complete-leadership-suggestion', 'leadership', 'done').count(),
+      0,
+    );
+
+    await page.locator(`.action-row > [data-complete="${resumeTask.id}"]`).click();
+    await page.waitForFunction(
+      ({ taskId, jobId }) =>
+        import('/storage.js').then(async ({ readState }) => {
+          const state = await readState(),
+            task = state.data.tasks.find((row) => row.id === taskId),
+            job = state.data.opportunities.find((row) => row.id === jobId);
+          return (
+            task?.status === '完成' &&
+            job?.resumeState === '已发送' &&
+            state.data.activities.some(
+              (row) => row.opportunityId === jobId && row.type === '发送简历',
+            )
+          );
+        }),
+      { taskId: resumeTask.id, jobId: 'complete-resume-suggestion' },
+    );
+    await page.locator(`.action-row > [data-complete="${leadershipTask.id}"]`).click();
+    await page.waitForFunction(
+      ({ taskId, jobId }) =>
+        import('/storage.js').then(async ({ readState }) => {
+          const state = await readState(),
+            task = state.data.tasks.find((row) => row.id === taskId);
+          return (
+            task?.status === '完成' &&
+            state.data.activities.some(
+              (row) =>
+                row.opportunityId === jobId &&
+                row.type === '对方回复' &&
+                row.text.includes('带人经验'),
+            )
+          );
+        }),
+      { taskId: leadershipTask.id, jobId: 'complete-leadership-suggestion' },
+    );
+
+    assert.equal(await page.locator('#page-title').innerText(), '今日行动');
+    assert.equal(await suggestionButton('complete-resume-suggestion', 'resume', 'done').count(), 0);
+    assert.equal(
+      await suggestionButton('complete-leadership-suggestion', 'leadership', 'done').count(),
+      0,
+    );
+    const saved = await savedState(page);
+    await page.reload();
+    await page.waitForFunction(() =>
+      document.querySelector('#local-status')?.textContent.includes('本地已保存'),
+    );
+    assert.equal(await suggestionButton('complete-resume-suggestion', 'resume', 'done').count(), 0);
+    assert.equal(
+      await suggestionButton('complete-leadership-suggestion', 'leadership', 'done').count(),
+      0,
+    );
+    assert.deepEqual((await savedState(page)).data, saved.data);
+  },
+);
+
+test('另一标签已完成核实后，旧标签的相反选择不能覆盖结果', { timeout: 45000 }, async (t) => {
+  const context = await isolatedContext(t),
+    first = await openPage(context);
+  const data = emptyData();
+  data.opportunities.push({
+    id: 'stale-suggestion-job',
+    company: '跨标签核实示例公司',
+    role: '测试工程师',
+    stage: '沟通中',
+    resumeState: '被索要',
+  });
+  await seed(first, fixtureState(data));
+  const second = await openPage(context),
+    stalePending = first.locator(
+      '[data-opportunity-id="stale-suggestion-job"][data-suggestion-kind="resume"][data-suggestion-choice="pending"]',
+    ),
+    currentDone = second.locator(
+      '[data-opportunity-id="stale-suggestion-job"][data-suggestion-kind="resume"][data-suggestion-choice="done"]',
+    );
+  assert.equal(await stalePending.count(), 1);
+  await first.evaluate(() => {
+    const input = document.createElement('input');
+    input.id = 'stale-suggestion-focus';
+    input.setAttribute('aria-label', '保留旧页面');
+    document.body.append(input);
+    input.focus();
+    window.__staleSuggestionBroadcast = new BroadcastChannel('job-tracker-updates');
+    window.__staleSuggestionBroadcastCount = 0;
+    window.__staleSuggestionBroadcast.onmessage = () => window.__staleSuggestionBroadcastCount++;
+  });
+
+  await currentDone.click();
+  await second.waitForFunction(() =>
+    import('/storage.js').then(async ({ readState }) => {
+      const state = await readState(),
+        job = state.data.opportunities.find((row) => row.id === 'stale-suggestion-job');
+      return (
+        job?.resumeState === '已发送' &&
+        state.data.activities.some((row) => row.opportunityId === job.id && row.type === '发送简历')
+      );
+    }),
+  );
+  await first.waitForFunction(() => window.__staleSuggestionBroadcastCount > 0);
+  await settleBrowserEvents(first);
+  assert.equal(
+    await stalePending.count(),
+    1,
+    'Focused input keeps the old suggestion DOM in place',
+  );
+  const beforeStaleChoice = await savedState(first);
+
+  await stalePending.click();
+  await first.locator('#notice:not([hidden])').waitFor();
+  await settleBrowserEvents(first);
+  assert.deepEqual(
+    await savedState(first),
+    beforeStaleChoice,
+    'A stale opposite choice must not add a task or change the confirmed result',
+  );
+  await first.reload();
+  await first.waitForFunction(() =>
+    document.querySelector('#local-status')?.textContent.includes('本地已保存'),
+  );
+  assert.equal(await stalePending.count(), 0);
+});
+
 test('中文组合输入保留搜索节点、焦点、选区和未保存草稿', { timeout: 45000 }, async (t) => {
   const context = await isolatedContext(t),
     page = await openPage(context);

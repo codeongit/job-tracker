@@ -6,6 +6,7 @@ import { createBackup } from './workspace.js';
 import { APP_VERSION } from './version.js';
 import { MAX_BACKUP_BYTES, utf8Bytes } from './limits.js';
 import { createViews } from './views.js';
+import { applyTaskChoice, applyVerificationChoice } from './today.js';
 import {
   STAGES,
   emptyData,
@@ -115,7 +116,7 @@ function statusRender() {
 }
 function header() {
   const labels = {
-    today: ['下一步', '今日行动', '把需要处理的事安排好。'],
+    today: ['下一步', '今日行动', '到期行动、待核实事项和未设下一步的岗位。'],
     list: ['机会', '岗位列表', '每个岗位一条记录，保留完整沟通历史。'],
     board: ['进展', '进度看板', '招聘阶段与消息状态分开记录。'],
     settings: ['个人数据', '数据与同步', '数据先存本机，再同步到你的 GitHub 私有仓库。'],
@@ -715,6 +716,40 @@ document.addEventListener('click', async (e) => {
       render();
       return;
     }
+    if (b.dataset.planJob) {
+      selected = b.dataset.planJob;
+      view = 'today';
+      render();
+      document.querySelector('#task-form input[name="text"]')?.focus();
+      return;
+    }
+    if (b.dataset.suggestionKind) {
+      const choice = b.dataset.suggestionChoice,
+        opportunityId = b.dataset.opportunityId,
+        stamp = new Date().toISOString();
+      let applied = false;
+      selected = opportunityId;
+      await change((data) => {
+        const next = applyVerificationChoice(data, {
+          opportunityId,
+          kind: b.dataset.suggestionKind,
+          choice,
+          id: uid(),
+          date: today(),
+          stamp,
+        });
+        applied = !equal(next, data);
+        return next;
+      });
+      notify(
+        applied
+          ? choice === 'done'
+            ? '核实结果已保存。'
+            : '已加入今天的行动。'
+          : '这项建议已在其他页面处理，已刷新最新状态。',
+      );
+      return;
+    }
     if (b.dataset.job) {
       selected = b.dataset.job;
       if (view === 'board' || view === 'today') view = 'list';
@@ -730,15 +765,17 @@ document.addEventListener('click', async (e) => {
       return;
     }
     if (b.dataset.complete || b.dataset.cancelTask) {
-      const id = b.dataset.complete || b.dataset.cancelTask;
-      await change((data) => {
-        const task = data.tasks.find((t) => t.id === id);
-        if (task) {
-          task.status = b.dataset.complete ? '完成' : '取消';
-          task.completedAt = new Date().toISOString();
-        }
-        return data;
-      });
+      const taskId = b.dataset.complete || b.dataset.cancelTask,
+        stamp = new Date().toISOString();
+      await change((data) =>
+        applyTaskChoice(data, {
+          taskId,
+          choice: b.dataset.complete ? 'complete' : 'cancel',
+          id: uid(),
+          date: today(),
+          stamp,
+        }),
+      );
       notify(b.dataset.complete ? '行动已完成。' : '行动已取消。');
       return;
     }

@@ -106,8 +106,11 @@ export const readState = () => updateState((s) => s);
 export const editData = (transform, options) =>
   updateState((s) => {
     if (s.pending) throw new Error('请先到“数据与同步”解决冲突，再继续编辑。');
-    s.data = transform(s.data);
-    s.generation++;
+    const next = transform(clone(s.data));
+    if (!equal(next, s.data)) {
+      s.data = next;
+      s.generation++;
+    }
     return s;
   }, options);
 export const saveSnapshot = (reason) => updateState((s) => s, { reason });
