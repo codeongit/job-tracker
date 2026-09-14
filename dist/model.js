@@ -1,6 +1,30 @@
 import { DATA_VERSION } from './version.js';
 export const GROUPS = ['opportunities', 'activities', 'tasks', 'imports'];
-export const STAGES = ['待联系', '已触达', '沟通中', '面试中', 'Offer', '已结束'];
+export const STAGES = ['已触达', '沟通中', '面试中', 'Offer', '已结束'];
+export const READ_STATES = ['未读', '已读'];
+// Map retired UI values without rewriting sync baselines, backups, or draft originals.
+export function getOpportunityStatus({ stage, readState } = {}) {
+  return {
+    stage: !stage || stage === '待联系' ? '已触达' : stage,
+    readState: readState === '已读' ? '已读' : '未读',
+  };
+}
+// Apply the user's BOSS workflow only during explicit edits/confirmations, not data loading.
+export function getResumeLinkedStatus(opportunity) {
+  if (
+    !/^boss(?:直聘)?$/i.test((opportunity.platform || '').replace(/\s/g, '')) ||
+    !['已发送', '对方已接收'].includes(opportunity.resumeState)
+  )
+    return {};
+  return {
+    readState: '已读',
+    stage: getOpportunityStatus(opportunity).stage === '已触达' ? '沟通中' : opportunity.stage,
+  };
+}
+export function getSentResumeStatus(opportunity) {
+  const resumeState = opportunity.resumeState === '对方已接收' ? '对方已接收' : '已发送';
+  return { resumeState, ...getResumeLinkedStatus({ ...opportunity, resumeState }) };
+}
 export const emptyData = () => ({
   schemaVersion: DATA_VERSION,
   opportunities: [],
@@ -114,7 +138,7 @@ export function validateData(input, { allowOrphans = false } = {}) {
           imports: ['filename', 'rawText'],
         }[group];
         if (required.some((f) => !clean[f]?.trim())) throw new Error(`${group} 缺少必要字段。`);
-        if (group === 'opportunities' && !STAGES.includes(clean.stage))
+        if (group === 'opportunities' && ![...STAGES, '待联系'].includes(clean.stage))
           throw new Error('存在不支持的招聘阶段。');
         if (group === 'tasks' && !['待办', '完成', '取消'].includes(clean.status))
           throw new Error('存在不支持的任务状态。');
@@ -252,7 +276,7 @@ export async function parseMarkdown(
       stage,
       source: '',
       contact: '',
-      readState: status.startsWith('未读') ? '未读' : status.startsWith('已读') ? '已读' : '未知',
+      readState: status.startsWith('已读') ? '已读' : '未读',
       resumeState: status.includes('接受简历')
         ? '对方已接收'
         : status.includes('要了简历')
@@ -325,14 +349,15 @@ export function markdownExport(data) {
   let out =
     '# 求职记录\n\n| 公司 | 岗位 | 阶段 | 消息 | 简历 | 首次联系 | 下一步 |\n| --- | --- | --- | --- | --- | --- | --- |\n';
   for (const o of live(data.opportunities)) {
+    const status = getOpportunityStatus(o);
     const tasks = live(data.tasks).filter((t) => t.opportunityId === o.id && t.status === '待办');
     out +=
       '| ' +
       [
         o.company,
         o.role,
-        o.stage,
-        o.readState,
+        status.stage,
+        status.readState,
         o.resumeState,
         o.appliedAt,
         tasks.map((t) => `${t.dueAt || '未定日期'} ${t.text}`).join('；'),

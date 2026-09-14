@@ -243,6 +243,34 @@ async function list(page) {
   await page.locator('#search').waitFor();
 }
 
+async function openJob(page, id, sections = []) {
+  if (page.viewportSize()?.width <= 760 && (await page.locator('.detail-panel').count()))
+    await closeDetail(page);
+  await page.locator(`[data-job="${id}"]`).first().click();
+  await page.locator('.detail-panel').waitFor();
+  for (const section of sections) await openDetailSection(page, section);
+}
+
+async function openDetailSection(page, section) {
+  const panel = page.locator(`[data-detail-section-panel="${section}"]`);
+  if (!(await panel.evaluate((element) => element.open)))
+    await page.locator(`[data-detail-section="${section}"]`).click();
+}
+
+async function closeDetail(page) {
+  await page.locator('[data-close-detail]').click();
+  await page.locator('.detail-panel').waitFor({ state: 'hidden' });
+}
+
+async function organize(page) {
+  await page.locator('[data-action-tab="organize"]').click();
+}
+
+async function setJobDate(page, date) {
+  await page.locator('#job-date').fill(date);
+  await page.locator('#job-date').dispatchEvent('change');
+}
+
 async function configureToken(page) {
   await page.locator('[data-view="settings"]').click();
   await page.locator('#settings-form input[name="token"]').fill(fakeToken);
@@ -355,6 +383,9 @@ test('今日行动列出未设下一步岗位，今日新增置顶且可原地�
   });
   await seed(page, fixtureState(data));
 
+  assert.equal(await page.locator('.detail-panel').count(), 0);
+  assert.match(await page.locator('[data-organize-new]').innerText(), /1/);
+  await page.locator('[data-organize-new]').click();
   const planButtons = page.locator('[data-plan-job]');
   assert.equal(await planButtons.count(), 2);
   assert.deepEqual(
@@ -376,7 +407,7 @@ test('今日行动列出未设下一步岗位，今日新增置顶且可原地�
   );
 
   await page.locator('[data-plan-job="today-new-job"]').click();
-  assert.equal(await page.locator('#page-title').innerText(), '今日行动');
+  assert.equal(await page.locator('#page-title').innerText(), '行动');
   assert.equal(await page.locator('nav [data-view="today"]').getAttribute('aria-current'), 'page');
   assert.match(await page.locator('.detail-panel').innerText(), /今日新增示例公司/);
   assert.equal(
@@ -388,7 +419,7 @@ test('今日行动列出未设下一步岗位，今日新增置顶且可原地�
   );
 });
 
-test('每日记录按日期查询计划、结果、沟通和首次联系', { timeout: 45000 }, async (t) => {
+test('岗位按日期查询并合并当天记录，手机详情返回后保留日期', { timeout: 45000 }, async (t) => {
   const context = await isolatedContext(t, undefined, {
       viewport: { width: 390, height: 844 },
       hasTouch: true,
@@ -485,63 +516,75 @@ test('每日记录按日期查询计划、结果、沟通和首次联系', { tim
   await seed(page, fixtureState(data));
   const initial = await savedState(page);
 
-  await page.locator('[data-view="daily"]').click();
-  assert.equal(await page.locator('#page-title').innerText(), '每日记录');
-  assert.equal(await page.locator('#daily-date').inputValue(), dates.current);
-  assert.match(await page.locator('#daily-records').innerText(), /今天计划行动/);
-  assert.match(await page.locator('#daily-records').innerText(), /跨日完成行动/);
-  assert.match(await page.locator('#daily-records').innerText(), /当天取消行动/);
-  assert.match(await page.locator('#daily-records').innerText(), /今天收到回复/);
+  assert.deepEqual(
+    await page
+      .locator('nav [data-view]')
+      .evaluateAll((buttons) => buttons.map((b) => b.dataset.view)),
+    ['today', 'list', 'settings'],
+  );
+  assert.equal(await page.locator('.detail-panel').count(), 0);
+  await list(page);
+  assert.equal(await page.locator('#page-title').innerText(), '岗位');
+  assert.equal(await page.locator('#job-date').inputValue(), '');
+  await page.locator('[data-job-date-today]').click();
+  const results = page.locator('#job-results');
+  assert.equal(await page.locator('#job-date').inputValue(), dates.current);
+  for (const text of ['今天计划行动', '跨日完成行动', '当天取消行动', '今天收到回复'])
+    assert.match(await results.innerText(), new RegExp(text));
+  assert.equal(await results.getByText('首次联系（原表投递日期）', { exact: true }).count(), 0);
+  assert.equal(await results.locator('[data-job="daily-main-job"]').count(), 1);
+  assert.equal(await results.locator('[data-complete], [data-cancel-task]').count(), 0);
+  assert.equal(await results.getByText('当天计划并完成', { exact: true }).count(), 1);
+
+  await page.locator('[data-job-date-step="-1"]').click();
+  assert.equal(await page.locator('#job-date').inputValue(), dates.previous);
+  assert.match(await results.innerText(), /跨日完成行动/);
+  await page.locator('[data-job-date-today]').click();
+  assert.equal(await page.locator('#job-date').inputValue(), dates.current);
+  await page.locator('[data-job-date-step="1"]').click();
+  assert.equal(await page.locator('#job-date').inputValue(), dates.next);
+  assert.match(await results.innerText(), /明天计划行动/);
+  assert.match(await results.innerText(), /已结束/);
+  assert.equal(await results.locator('[data-job="daily-ended-job"]').count(), 1);
+
+  await openJob(page, 'daily-ended-job');
+  assert.match(await page.locator('.detail-panel').innerText(), /历史结束示例公司/);
+  assert.match(await page.locator('.detail-panel').innerText(), /查看日期/);
+  assert.match(await page.locator('.detail-panel').innerText(), /明天计划行动/);
+  assert.equal(await page.locator('#page-surface').isVisible(), false);
+  assert.equal(
+    await page.locator('#detail-title').evaluate((heading) => document.activeElement === heading),
+    true,
+  );
+  await closeDetail(page);
+  assert.equal(await page.locator('#page-surface').isVisible(), true);
+  assert.equal(await page.locator('#job-date').inputValue(), dates.next);
   assert.equal(
     await page
-      .locator('#daily-records')
-      .getByText('首次联系（原表投递日期）', { exact: true })
-      .count(),
-    0,
-  );
-  assert.match(await page.locator('#daily-records').innerText(), /每日记录示例公司/);
-  assert.equal(await page.locator('#daily-records .daily-job-card').count(), 1);
-  assert.equal(await page.locator('#daily-records .company[data-job="daily-main-job"]').count(), 1);
-  assert.equal(await page.locator('#daily-records [data-complete]').count(), 0);
-  assert.equal(await page.locator('#daily-records [data-cancel-task]').count(), 0);
-  assert.equal(
-    await page.locator('#daily-records').getByText('当天计划并完成', { exact: true }).count(),
-    1,
-  );
-
-  await page.getByRole('button', { name: '上一天' }).click();
-  assert.equal(await page.locator('#daily-date').inputValue(), dates.previous);
-  assert.match(await page.locator('#daily-records').innerText(), /跨日完成行动/);
-  await page.getByRole('button', { name: '回到今天' }).click();
-  assert.equal(await page.locator('#daily-date').inputValue(), dates.current);
-  await page.getByRole('button', { name: '下一天' }).click();
-  assert.equal(await page.locator('#daily-date').inputValue(), dates.next);
-  assert.match(await page.locator('#daily-records').innerText(), /明天计划行动/);
-  assert.match(await page.locator('#daily-records').innerText(), /当前阶段：已结束/);
-  assert.equal(await page.locator('#daily-records .daily-job-card').count(), 1);
-  assert.equal(
-    await page.locator('#daily-records .company[data-job="daily-ended-job"]').count(),
-    1,
-  );
-
-  await page.locator('#daily-records .daily-open-job[data-job="daily-ended-job"]').first().click();
-  assert.equal(await page.locator('#page-title').innerText(), '每日记录');
-  assert.match(await page.locator('.detail-panel').innerText(), /历史结束示例公司/);
-  assert.equal(
-    await page.locator('.detail-panel').evaluate((panel) => document.activeElement === panel),
+      .locator('[data-job="daily-ended-job"]')
+      .evaluate((button) => button === document.activeElement),
     true,
   );
 
-  await page.locator('#daily-date').evaluate((input, value) => {
-    input.value = value;
-    input.dispatchEvent(new Event('change', { bubbles: true }));
-  }, dates.empty);
-  assert.equal(await page.locator('#daily-date').inputValue(), dates.empty);
-  assert.match(await page.locator('#daily-records').innerText(), /这一天没有记录/);
-  assert.deepEqual(await savedState(page), initial);
+  await setJobDate(page, dates.empty);
+  assert.match(await results.innerText(), /没有/);
+  assert.equal(await results.locator('[data-job]').count(), 0);
+  for (const [value, step, expected] of [
+    ['2026-12-31', '1', '2027-01-01'],
+    ['2024-02-28', '1', '2024-02-29'],
+    ['2024-03-01', '-1', '2024-02-29'],
+  ]) {
+    await setJobDate(page, value);
+    await page.locator(`[data-job-date-step="${step}"]`).click();
+    assert.equal(await page.locator('#job-date').inputValue(), expected);
+  }
+  await page.locator('[data-job-date-clear]').click();
+  assert.equal(await page.locator('#job-date').inputValue(), '');
+  assert.equal(await results.locator('[data-job]').count(), 2);
+  assert.deepEqual(await savedState(page), initial, 'Date browsing never changes shared records');
   assert.equal(
     await page
-      .locator('.daily-date-actions button')
+      .locator('[data-job-date-step], [data-job-date-today], [data-job-date-clear]')
       .evaluateAll((buttons) =>
         buttons.every((button) => button.getBoundingClientRect().height >= 44),
       ),
@@ -551,10 +594,300 @@ test('每日记录按日期查询计划、结果、沟通和首次联系', { tim
     await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
     true,
   );
-
   await page.reload();
-  await page.locator('[data-view="daily"]').click();
-  assert.equal(await page.locator('#daily-date').inputValue(), dates.current);
+  assert.equal(await page.locator('nav [data-view="today"]').getAttribute('aria-current'), 'page');
+  assert.equal(await page.locator('.detail-panel').count(), 0);
+  await list(page);
+  assert.equal(await page.locator('#job-date').inputValue(), '');
+});
+
+test(
+  '组合筛选、分页和详情草稿跨页面保留，编辑不匹配及删除后正确收拢结果',
+  { timeout: 60000 },
+  async (t) => {
+    const context = await isolatedContext(t),
+      page = await openPage(context);
+    const data = emptyData();
+    for (let index = 1; index <= 12; index++)
+      data.opportunities.push({
+        id: `filter-job-${index}`,
+        company: `筛选示例公司 ${String(index).padStart(2, '0')}`,
+        role: '工程师',
+        stage: '沟通中',
+        appliedAt: '2026-09-12',
+        notes: '筛选原备注',
+      });
+    data.opportunities.push(
+      {
+        id: 'wrong-stage',
+        company: '筛选示例不同阶段',
+        role: '工程师',
+        stage: '已触达',
+        appliedAt: '2026-09-12',
+      },
+      {
+        id: 'wrong-date',
+        company: '筛选示例不同日期',
+        role: '工程师',
+        stage: '沟通中',
+        appliedAt: '2026-09-11',
+      },
+      {
+        id: 'wrong-query',
+        company: '其他公司',
+        role: '工程师',
+        stage: '沟通中',
+        appliedAt: '2026-09-12',
+      },
+    );
+    await seed(page, fixtureState(data));
+    await list(page);
+    await page.locator('#search').fill('筛选示例');
+    await page.locator('#stage-filter').selectOption('沟通中');
+    await setJobDate(page, '2026-09-12');
+    const filters = async () => [
+      await page.locator('#search').inputValue(),
+      await page.locator('#stage-filter').inputValue(),
+      await page.locator('#job-date').inputValue(),
+    ];
+    const expected = ['筛选示例', '沟通中', '2026-09-12'];
+    assert.equal(await page.locator('#job-results [data-job]').count(), 10);
+    await page.locator('[data-page="1"]').click();
+    assert.equal(await page.locator('#job-results [data-job]').count(), 2);
+    const ids = await page
+      .locator('#job-results [data-job]')
+      .evaluateAll((buttons) => buttons.map((b) => b.dataset.job));
+    const searchNode = await page.locator('#search').elementHandle();
+    await openJob(page, ids[0]);
+    assert.deepEqual(await filters(), expected);
+    for (const section of ['task', 'activity'])
+      assert.equal(
+        await page.locator(`[data-detail-section-panel="${section}"]`).evaluate((el) => el.open),
+        false,
+      );
+    await openDetailSection(page, 'task');
+    await page.locator('#task-form input[name="text"]').fill('筛选中尚未提交的行动');
+    await closeDetail(page);
+    assert.equal(
+      await searchNode.evaluate((el) => el.isConnected && el === document.querySelector('#search')),
+      true,
+    );
+    assert.deepEqual(await filters(), expected);
+    assert.equal(await page.locator('#job-results [data-job]').count(), 2);
+    assert.equal(
+      await page.locator(`[data-job="${ids[0]}"]`).evaluate((el) => el === document.activeElement),
+      true,
+    );
+    await resumeDraft(page, (draft) => draft.kind === 'task' && draft.opportunityId === ids[0]);
+    assert.deepEqual(await filters(), expected);
+    assert.equal(
+      await page.locator('#task-form input[name="text"]').inputValue(),
+      '筛选中尚未提交的行动',
+    );
+    await closeDetail(page);
+
+    assert.equal(await page.locator('[data-job-layout]').count(), 0);
+    assert.equal(await page.locator('.board').count(), 0);
+    await openJob(page, ids[0]);
+    assert.match(await page.locator('.detail-panel').innerText(), /首次联系/);
+    assert.deepEqual(await filters(), expected);
+    assert.equal(await page.locator('#job-results [data-job]').count(), 2);
+    assert.equal(
+      await page.locator('#task-form input[name="text"]').inputValue(),
+      '筛选中尚未提交的行动',
+    );
+    await closeDetail(page);
+    await page.locator('nav [data-view="today"]').click();
+    await page.locator('[data-action-tab="upcoming"]').click();
+    await list(page);
+    assert.deepEqual(await filters(), expected);
+    assert.equal(await page.locator('#job-results [data-job]').count(), 2);
+    await page.locator('nav [data-view="today"]').click();
+    assert.equal(
+      await page.locator('[data-action-tab="upcoming"]').getAttribute('aria-pressed'),
+      'true',
+    );
+    await list(page);
+
+    await openJob(page, ids[0]);
+    await page.locator(`[data-action="edit"][data-id="${ids[0]}"]`).first().click();
+    await page.locator('#editor-form textarea[name="notes"]').fill('保存仍匹配筛选的备注');
+    await page.locator('#editor-form button[type="submit"]').click();
+    await page.locator('#editor-dialog').waitFor({ state: 'hidden' });
+    assert.deepEqual(await filters(), expected);
+    assert.equal(await page.locator('#job-results [data-job]').count(), 2);
+    await page.locator(`[data-action="edit"][data-id="${ids[0]}"]`).first().click();
+    await page.locator('#editor-form select[name="stage"]').selectOption('已触达');
+    await page.locator('#editor-form button[type="submit"]').click();
+    await page.locator('#editor-dialog').waitFor({ state: 'hidden' });
+    assert.deepEqual(await filters(), expected);
+    assert.match(await page.locator('.detail-panel').innerText(), /不再|不符合|不匹配/);
+    assert.equal(
+      await page.locator('#task-form input[name="text"]').inputValue(),
+      '筛选中尚未提交的行动',
+    );
+    assert.equal(await page.locator(`#job-results [data-job="${ids[0]}"]`).count(), 0);
+    await closeDetail(page);
+    assert.equal(await page.locator('#job-results [data-job]').count(), 1);
+    await openJob(page, ids[1]);
+    await page.locator(`[data-action="edit"][data-id="${ids[1]}"]`).first().click();
+    page.once('dialog', (dialog) => dialog.accept());
+    await page.locator(`[data-delete="${ids[1]}"]`).click();
+    await page.waitForFunction(() =>
+      document.querySelector('#notice')?.textContent.includes('岗位已删除'),
+    );
+    assert.equal(await page.locator('.detail-panel').count(), 0);
+    assert.deepEqual(await filters(), expected);
+    assert.equal(await page.locator('#job-results [data-job]').count(), 10);
+    assert.equal(await page.locator('[data-page="-1"]').isDisabled(), true);
+    // Date reset preserves the other two conditions; clearing all is explicit.
+    await page.locator('[data-job-date-clear]').click();
+    assert.deepEqual(await filters(), ['筛选示例', '沟通中', '']);
+    await page.locator('[data-clear-filters]').click();
+    assert.deepEqual(await filters(), ['', '', '']);
+    await page.reload();
+    assert.equal(await page.locator('.detail-panel').count(), 0);
+    assert.equal(
+      await page.locator('nav [data-view="today"]').getAttribute('aria-current'),
+      'page',
+    );
+    await list(page);
+    assert.deepEqual(await filters(), ['', '', '']);
+  },
+);
+
+test('手机岗位详情返回恢复列表位置和焦点，筛选及草稿仍保留', { timeout: 45000 }, async (t) => {
+  const context = await isolatedContext(t, undefined, {
+    viewport: { width: 390, height: 844 },
+    hasTouch: true,
+  });
+  const page = await openPage(context),
+    data = emptyData();
+  for (let index = 1; index <= 12; index++)
+    data.opportunities.push({
+      id: `mobile-job-${index}`,
+      company: `手机回归公司 ${index}`,
+      role: '工程师',
+      stage: '沟通中',
+      appliedAt: '2026-09-12',
+    });
+  await seed(page, fixtureState(data));
+  await list(page);
+  await page.locator('#search').fill('手机回归');
+  await setJobDate(page, '2026-09-12');
+  const source = page.locator('#job-results [data-job]').nth(7);
+  await source.scrollIntoViewIfNeeded();
+  await settleBrowserEvents(page);
+  const sourceId = await source.getAttribute('data-job'),
+    beforeScroll = await page.evaluate(() => window.scrollY);
+  assert.ok(beforeScroll > 0, 'The fixture exercises a real scrolled list');
+  await source.click();
+  assert.equal(await page.locator('#page-surface').isVisible(), false);
+  await openDetailSection(page, 'activity');
+  await page.locator('#activity-form textarea[name="text"]').fill('手机返回前保留的沟通草稿');
+  await closeDetail(page);
+  await settleBrowserEvents(page);
+  assert.equal(await page.locator('#search').inputValue(), '手机回归');
+  assert.equal(await page.locator('#job-date').inputValue(), '2026-09-12');
+  assert.ok(
+    Math.abs((await page.evaluate(() => window.scrollY)) - beforeScroll) < 4,
+    'Closing detail restores the original scroll position',
+  );
+  assert.equal(
+    await page.locator(`[data-job="${sourceId}"]`).evaluate((el) => el === document.activeElement),
+    true,
+  );
+  await openJob(page, sourceId);
+  assert.equal(
+    await page.locator('#activity-form textarea[name="text"]').inputValue(),
+    '手机返回前保留的沟通草稿',
+  );
+  assert.equal(
+    await page.locator('[data-detail-section-panel="activity"]').evaluate((el) => el.open),
+    true,
+  );
+  assert.equal(
+    await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
+    true,
+  );
+  assert.equal((await savedState(page)).data.activities.length, 0);
+});
+
+test('历史日期查询下沟通和行动使用实际操作日期', { timeout: 45000 }, async (t) => {
+  const context = await isolatedContext(t, undefined, { timezoneId: 'Asia/Shanghai' });
+  const page = await openPage(context);
+  const dates = await page.evaluate(async () => {
+    const { today } = await import('/model.js'),
+      { addCalendarDays } = await import('/planning.js');
+    return {
+      today: today(),
+      previous: addCalendarDays(today(), -1),
+      next: addCalendarDays(today(), 2),
+    };
+  });
+  const data = emptyData();
+  data.opportunities.push({
+    id: 'historical-job',
+    company: '历史日期操作示例',
+    role: '工程师',
+    stage: '沟通中',
+    resumeState: '已发送',
+    appliedAt: dates.previous,
+  });
+  data.tasks.push(
+    {
+      id: 'history-complete',
+      opportunityId: 'historical-job',
+      text: '历史计划今天完成',
+      dueAt: dates.previous,
+      status: '待办',
+    },
+    {
+      id: 'history-cancel',
+      opportunityId: 'historical-job',
+      text: '历史计划今天取消',
+      dueAt: dates.previous,
+      status: '待办',
+    },
+  );
+  await seed(page, fixtureState(data));
+  await list(page);
+  await setJobDate(page, dates.previous);
+  await openJob(page, 'historical-job', ['activity']);
+  assert.equal(await page.locator('#activity-form input[name="date"]').inputValue(), dates.today);
+  await page.locator('#activity-form textarea[name="text"]').fill('今天实际收到回复');
+  await page.locator('#activity-form button[type="submit"]').click();
+  await page.waitForFunction(() =>
+    document.querySelector('#notice')?.textContent.includes('沟通记录已保存'),
+  );
+  await page.locator('.detail-panel [data-complete="history-complete"]').click();
+  await page.waitForFunction(() =>
+    import('/storage.js').then(
+      async ({ readState }) =>
+        (await readState()).data.tasks.find((t) => t.id === 'history-complete').status === '完成',
+    ),
+  );
+  await page.locator('.detail-panel [data-cancel-task="history-cancel"]').click();
+  await page.waitForFunction(() =>
+    import('/storage.js').then(
+      async ({ readState }) =>
+        (await readState()).data.tasks.find((t) => t.id === 'history-cancel').status === '取消',
+    ),
+  );
+  await openDetailSection(page, 'task');
+  assert.equal(await page.locator('#task-form input[name="dueAt"]').inputValue(), dates.next);
+  const state = await savedState(page);
+  assert.equal(state.data.activities.find((a) => a.text === '今天实际收到回复')?.date, dates.today);
+  for (const task of state.data.tasks)
+    assert.equal(
+      await page.evaluate((timestamp) => {
+        const date = new Date(timestamp);
+        return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+      }, task.completedAt),
+      dates.today,
+    );
+  assert.equal(await page.locator('#job-date').inputValue(), dates.previous);
+  assert.doesNotMatch(await page.locator('#job-results').innerText(), /今天实际收到回复/);
 });
 
 test('下一步预填两天后，快捷日期仅保存草稿且手动覆盖可精确提交', { timeout: 45000 }, async (t) => {
@@ -597,6 +930,7 @@ test('下一步预填两天后，快捷日期仅保存草稿且手动覆盖可�
   await seed(page, fixtureState(data));
   const initial = await savedState(page);
 
+  await organize(page);
   await page.locator('[data-plan-job="sent-resume-unplanned-job"]').click();
   const form = page.locator('#task-form'),
     text = form.locator('input[name="text"]'),
@@ -635,8 +969,10 @@ test('下一步预填两天后，快捷日期仅保存草稿且手动覆盖可�
 
   await text.fill('手动确认下一轮面试时间');
   await dueAt.fill(dates.manual);
+  await closeDetail(page);
   await page.locator('[data-plan-job="draft-switch-target"]').click();
   assert.match(await page.locator('.detail-panel').innerText(), /切换岗位示例公司/);
+  await closeDetail(page);
   await page.locator('[data-plan-job="sent-resume-unplanned-job"]').click();
   assert.equal(await text.inputValue(), '手动确认下一轮面试时间');
   assert.equal(await dueAt.inputValue(), dates.manual);
@@ -684,6 +1020,8 @@ test(
     await seed(page, fixtureState(local, local));
     await configureToken(page);
     await page.locator('[data-view="today"]').click();
+    await organize(page);
+    await openJob(page, 'synced-default-job', ['task']);
 
     const text = page.locator('#task-form input[name="text"]'),
       dueAt = page.locator('#task-form input[name="dueAt"]');
@@ -727,6 +1065,8 @@ test('弹窗阻止重绘时，另一页新增待办后旧默认不能重复提�
   const second = await openPage(context);
   await list(first);
   await list(second);
+  await openJob(first, 'stale-default-job', ['task']);
+  await openJob(second, 'stale-default-job', ['task']);
 
   const staleText = first.locator('#task-form input[name="text"]'),
     staleDueAt = first.locator('#task-form input[name="dueAt"]');
@@ -738,7 +1078,7 @@ test('弹窗阻止重绘时，另一页新增待办后旧默认不能重复提�
     window.__staleDefaultBroadcastCount = 0;
     window.__staleDefaultBroadcast.onmessage = () => window.__staleDefaultBroadcastCount++;
   });
-  await first.locator('[data-action="edit"][data-id="stale-default-job"]').click();
+  await first.locator('[data-action="edit"][data-id="stale-default-job"]').first().click();
   await first.locator('#editor-dialog').waitFor({ state: 'visible' });
 
   assert.equal(await second.locator('#task-form input[name="text"]').inputValue(), '询问面试安排');
@@ -803,6 +1143,7 @@ test(
       status: '待办',
     });
     await seed(page, fixtureState(data));
+    await organize(page);
 
     const suggestionButton = (jobId, kind, choice) =>
       page.locator(
@@ -896,6 +1237,7 @@ test(
     await page.waitForFunction(() =>
       document.querySelector('#local-status')?.textContent.includes('本地已保存'),
     );
+    await organize(page);
     assert.equal(await suggestionButton('double-suggestion-job', 'resume', 'done').count(), 0);
     assert.equal(await suggestionButton('double-suggestion-job', 'leadership', 'done').count(), 0);
     assert.equal(await suggestionButton('pending-suggestion-job', 'resume', 'done').count(), 0);
@@ -928,6 +1270,7 @@ test(
       },
     );
     await seed(page, fixtureState(data));
+    await organize(page);
 
     const suggestionButton = (jobId, kind, choice) =>
       page.locator(
@@ -950,6 +1293,7 @@ test(
       0,
     );
 
+    await page.locator('[data-action-tab="today"]').click();
     await page.locator(`.action-row > [data-complete="${resumeTask.id}"]`).click();
     await page.waitForFunction(
       ({ taskId, jobId }) =>
@@ -986,7 +1330,7 @@ test(
       { taskId: leadershipTask.id, jobId: 'complete-leadership-suggestion' },
     );
 
-    assert.equal(await page.locator('#page-title').innerText(), '今日行动');
+    assert.equal(await page.locator('#page-title').innerText(), '行动');
     assert.equal(await suggestionButton('complete-resume-suggestion', 'resume', 'done').count(), 0);
     assert.equal(
       await suggestionButton('complete-leadership-suggestion', 'leadership', 'done').count(),
@@ -997,6 +1341,12 @@ test(
     await page.waitForFunction(() =>
       document.querySelector('#local-status')?.textContent.includes('本地已保存'),
     );
+    assert.equal(await suggestionButton('complete-resume-suggestion', 'resume', 'done').count(), 0);
+    assert.equal(
+      await suggestionButton('complete-leadership-suggestion', 'leadership', 'done').count(),
+      0,
+    );
+    await organize(page);
     assert.equal(await suggestionButton('complete-resume-suggestion', 'resume', 'done').count(), 0);
     assert.equal(
       await suggestionButton('complete-leadership-suggestion', 'leadership', 'done').count(),
@@ -1025,6 +1375,8 @@ test('另一标签已完成核实后，旧标签的相反选择不能覆盖结�
     currentDone = second.locator(
       '[data-opportunity-id="stale-suggestion-job"][data-suggestion-kind="resume"][data-suggestion-choice="done"]',
     );
+  await organize(first);
+  await organize(second);
   assert.equal(await stalePending.count(), 1);
   await first.evaluate(() => {
     const input = document.createElement('input');
@@ -1069,6 +1421,7 @@ test('另一标签已完成核实后，旧标签的相反选择不能覆盖结�
   await first.waitForFunction(() =>
     document.querySelector('#local-status')?.textContent.includes('本地已保存'),
   );
+  await organize(first);
   assert.equal(await stalePending.count(), 0);
 });
 
@@ -1077,6 +1430,7 @@ test('中文组合输入保留搜索节点、焦点、选区和未保存草稿',
     page = await openPage(context);
   await seed(page);
   await list(page);
+  await openJob(page, 'e2e-shanghai', ['task', 'activity']);
   const task = page.locator('#task-form input[name="text"]');
   const activity = page.locator('#activity-form textarea[name="text"]');
   await task.fill('询问下次面试时间');
@@ -1086,16 +1440,16 @@ test('中文组合输入保留搜索节点、焦点、选区和未保存草稿',
   const { input, cdp } = await beginChineseInput(context, page);
   await assertCurrentFocusedInput(input);
   assert.equal(
-    await page.locator('#job-list-panel [data-job]').count(),
+    await page.locator('#job-results [data-job]').count(),
     2,
     'Do not filter temporary pinyin',
   );
   await cdp.send('Input.imeSetComposition', { text: '上海', selectionStart: 2, selectionEnd: 2 });
   await assertCurrentFocusedInput(input);
-  assert.equal(await page.locator('#job-list-panel [data-job]').count(), 2);
+  assert.equal(await page.locator('#job-results [data-job]').count(), 2);
   await commitChineseInput(cdp);
   await page.waitForFunction(
-    () => document.querySelectorAll('#job-list-panel [data-job]').length === 1,
+    () => document.querySelectorAll('#job-results [data-job]').length === 1,
   );
   await settleBrowserEvents(page);
   await assertCurrentFocusedInput(input);
@@ -1107,7 +1461,7 @@ test('中文组合输入保留搜索节点、焦点、选区和未保存草稿',
     ]),
     ['上海', 2, 2],
   );
-  assert.match(await page.locator('#job-list-panel').innerText(), /上海示例科技/);
+  assert.match(await page.locator('#job-results').innerText(), /上海示例科技/);
   assert.equal(
     await taskNode.evaluate(
       (element) => element.isConnected && element.value === '询问下次面试时间',
@@ -1121,7 +1475,98 @@ test('中文组合输入保留搜索节点、焦点、选区和未保存草稿',
     true,
   );
   await page.locator('#search').fill('');
-  assert.equal(await page.locator('#job-list-panel [data-job]').count(), 2);
+  assert.equal(await page.locator('#job-results [data-job]').count(), 2);
+});
+
+test('新增岗位提示同公司和同岗位，恢复草稿后仍提示且不阻止保存', { timeout: 45000 }, async (t) => {
+  const context = await isolatedContext(t),
+    page = await openPage(context),
+    data = emptyData();
+  data.opportunities.push(
+    {
+      id: 'company-same-role',
+      company: 'ＡＣＭＥ　科技',
+      role: '平台工程师',
+      stage: '沟通中',
+    },
+    {
+      id: 'company-other-1',
+      company: 'ACME 科技',
+      role: '产品<script>',
+      stage: '已触达',
+    },
+    { id: 'company-other-2', company: 'acme   科技', role: '测试工程师', stage: '已结束' },
+    { id: 'company-other-3', company: 'ACME 科技', role: '安全工程师', stage: '面试中' },
+    {
+      id: 'company-deleted',
+      company: 'ACME 科技',
+      role: '已删除岗位',
+      stage: '已触达',
+      deletedAt: '2026-09-14T01:00:00.000Z',
+    },
+    {
+      id: 'company-similar',
+      company: 'ACME 科技有限公司',
+      role: '相似公司岗位',
+      stage: '已触达',
+    },
+  );
+  await seed(page, fixtureState(data));
+  await page.locator('#new-button').click();
+  const company = page.locator('#editor-form input[name="company"]'),
+    role = page.locator('#editor-form input[name="role"]'),
+    hint = page.locator('[data-company-match-hint]');
+  await company.fill('  acme 科技  ');
+  await role.fill('平台工程师');
+  await hint.waitFor();
+  assert.match(await hint.innerText(), /可能是重复岗位/);
+  assert.match(await hint.innerText(), /找到 4 个未删除岗位/);
+  assert.match(await hint.innerText(), /另有 1 个/);
+  assert.equal(await hint.locator('.company-match-list > span').count(), 3);
+  assert.match(
+    await hint.locator('.company-match-list > span').first().innerText(),
+    /岗位名称相同/,
+  );
+  assert.equal(await hint.locator('script').count(), 0);
+  assert.doesNotMatch(await hint.innerText(), /已删除岗位|相似公司岗位/);
+
+  await role.fill('新的岗位');
+  assert.match(await hint.innerText(), /该公司已有其他岗位/);
+  assert.doesNotMatch(await hint.innerText(), /可能是重复岗位/);
+  await company.fill('');
+  assert.equal(await hint.isHidden(), true);
+  await company.fill('acme 科技');
+  await page.locator('#editor-form [data-close="editor-dialog"]').first().click();
+  await resumeDraft(page, (draft) => draft.kind === 'editor' && !draft.opportunityId);
+  assert.match(await page.locator('[data-company-match-hint]').innerText(), /该公司已有其他岗位/);
+
+  await page.locator('#editor-form button[type="submit"]').click();
+  await page.locator('#editor-dialog').waitFor({ state: 'hidden' });
+  const saved = await savedState(page),
+    created = saved.data.opportunities.find((row) => row.role === '新的岗位');
+  assert.ok(created);
+  await page.locator(`[data-action="edit"][data-id="${created.id}"]`).first().click();
+  assert.equal(await page.locator('[data-company-match-hint]').count(), 0);
+});
+
+test('打开新增表单时，另一标签新增同公司会刷新提示', { timeout: 45000 }, async (t) => {
+  const context = await isolatedContext(t),
+    first = await openPage(context),
+    second = await openPage(context);
+  await seed(first, fixtureState(emptyData()));
+  await second.reload();
+  await second.waitForFunction(() =>
+    document.querySelector('#local-status')?.textContent.includes('本地已保存'),
+  );
+  await first.locator('#new-button').click();
+  await first.locator('#editor-form input[name="company"]').fill('跨标签公司');
+  assert.equal(await first.locator('[data-company-match-hint]').isHidden(), true);
+  await second.locator('#new-button').click();
+  await second.locator('#editor-form input[name="company"]').fill('跨标签公司');
+  await second.locator('#editor-form input[name="role"]').fill('另一岗位');
+  await second.locator('#editor-form button[type="submit"]').click();
+  await first.locator('[data-company-match-hint]').waitFor();
+  assert.match(await first.locator('[data-company-match-hint]').innerText(), /另一岗位/);
 });
 
 test('新增中文岗位实际保存到 IndexedDB，刷新后内容完整', { timeout: 45000 }, async (t) => {
@@ -1139,7 +1584,7 @@ test('新增中文岗位实际保存到 IndexedDB，刷新后内容完整', { ti
   assert.equal(beforeReload.generation, 1);
   await page.reload();
   await list(page);
-  assert.match(await page.locator('#job-list-panel').innerText(), /回归测试有限公司/);
+  assert.match(await page.locator('#job-results').innerText(), /回归测试有限公司/);
   const afterReload = await savedState(page);
   assert.deepEqual(afterReload, beforeReload);
   assert.equal(afterReload.data.opportunities[0].role, '中文输入工程师');
@@ -1152,11 +1597,12 @@ test('两个标签页共享保存并通知刷新，另一标签页编辑草稿�
   await seed(first);
   const second = await openPage(context);
   await list(first);
+  await openJob(first, 'e2e-shanghai');
   await list(second);
-  await first.locator('[data-action="edit"][data-id="e2e-shanghai"]').click();
+  await first.locator('[data-action="edit"][data-id="e2e-shanghai"]').first().click();
   await first.locator('#editor-form textarea[name="notes"]').fill('标签页 A 保存的备注');
   await second.locator('[data-job="e2e-beijing"]').click();
-  await second.locator('[data-action="edit"][data-id="e2e-beijing"]').click();
+  await second.locator('[data-action="edit"][data-id="e2e-beijing"]').first().click();
   await second.locator('#editor-form textarea[name="notes"]').fill('标签页 B 的中文草稿');
   const draft = await second.locator('#editor-form textarea[name="notes"]').elementHandle();
   // A read-only observer makes message delivery deterministic without adding a
@@ -1196,7 +1642,7 @@ test('两个标签页共享保存并通知刷新，另一标签页编辑草稿�
   await second.locator('#editor-form button[type="submit"]').click();
   await second.locator('#editor-dialog').waitFor({ state: 'hidden' });
   await first.waitForFunction(() =>
-    document.querySelector('#job-list-panel')?.textContent.includes('跨标签页新增示例'),
+    document.querySelector('#job-results')?.textContent.includes('跨标签页新增示例'),
   );
   assert.deepEqual((await savedState(first)).data, (await savedState(second)).data);
 });
@@ -1213,6 +1659,7 @@ test('同步在组合输入期间完成时保留输入，选字后恢复结果�
   await seed(page);
   await configureToken(page);
   await list(page);
+  await openJob(page, 'e2e-shanghai', ['task']);
   await page.locator('#task-form input[name="text"]').fill('同步期间保留的草稿');
   await page.locator('#sync-button').click();
   await readStarted.promise;
@@ -1237,7 +1684,7 @@ test('同步在组合输入期间完成时保留输入，选字后恢复结果�
       ]),
     [true, 2, 2],
   );
-  assert.equal(await page.locator('#job-list-panel [data-job]').count(), 1);
+  assert.equal(await page.locator('#job-results [data-job]').count(), 1);
   assert.equal(
     await page.locator('#task-form input[name="text"]').inputValue(),
     '同步期间保留的草稿',
@@ -1359,8 +1806,9 @@ test('删除后通过快照恢复并再次同步，自动备份和远端状态�
     page = await openPage(context);
   await seed(page);
   await list(page);
+  await openJob(page, 'e2e-shanghai');
   page.on('dialog', (dialog) => dialog.accept());
-  await page.locator('[data-action="edit"]').click();
+  await page.locator('[data-action="edit"]').first().click();
   await page.locator('[data-delete]').click();
   await page.waitForFunction(() =>
     document.querySelector('#notice')?.textContent.includes('岗位已删除'),
@@ -1525,12 +1973,12 @@ test('岗位间行动和沟通草稿隔离，保存只清除已提交的那一�
   await seed(page, fixtureState(data));
   const initial = await savedState(page);
   await list(page);
-  await page.locator('[data-job="e2e-shanghai"]').click();
+  await openJob(page, 'e2e-shanghai', ['task', 'activity']);
   await page.locator('#task-form input[name="text"]').fill('上海：询问下一轮时间');
   await page.locator('#task-form input[name="dueAt"]').fill('2026-10-02');
   await page.locator('#activity-form textarea[name="text"]').fill('上海：已沟通的中文草稿');
   await page.locator('#activity-form select[name="type"]').selectOption('对方回复');
-  await page.locator('[data-job="e2e-beijing"]').click();
+  await openJob(page, 'e2e-beijing', ['task', 'activity']);
   assert.equal(await page.locator('#task-form input[name="text"]').inputValue(), '');
   assert.equal(await page.locator('#task-form input[name="dueAt"]').inputValue(), '');
   assert.equal(await page.locator('#activity-form textarea[name="text"]').inputValue(), '');
@@ -1539,7 +1987,7 @@ test('岗位间行动和沟通草稿隔离，保存只清除已提交的那一�
   assert.equal((await savedDrafts(page)).length, 4);
   assert.deepEqual(await savedState(page), initial);
 
-  await page.locator('[data-job="e2e-shanghai"]').click();
+  await openJob(page, 'e2e-shanghai', ['task', 'activity']);
   assert.equal(
     await page.locator('#task-form input[name="text"]').inputValue(),
     '上海：询问下一轮时间',
@@ -1637,6 +2085,7 @@ test(
       page = await openPage(context);
     await seed(page);
     await list(page);
+    await openJob(page, 'e2e-shanghai', ['task']);
     await page.locator('#task-form input[name="text"]').fill('用于核实备份含草稿的合成行动');
     // Finish the input's native change event before comparing with settings;
     // advancing the draft revision on blur is expected behavior.
@@ -1672,7 +2121,8 @@ test(
     await seed(first);
     const second = await openPage(context);
     await list(first);
-    await first.locator('[data-action="edit"][data-id="e2e-shanghai"]').click();
+    await openJob(first, 'e2e-shanghai');
+    await first.locator('[data-action="edit"][data-id="e2e-shanghai"]').first().click();
     await first.locator('#editor-form .dialog-footer [data-close="editor-dialog"]').click();
     assert.deepEqual(
       await savedDrafts(first),
@@ -1681,14 +2131,15 @@ test(
     );
     await first.locator('#page-title').click();
     await list(second);
-    await second.locator('[data-action="edit"][data-id="e2e-shanghai"]').click();
+    await openJob(second, 'e2e-shanghai');
+    await second.locator('[data-action="edit"][data-id="e2e-shanghai"]').first().click();
     await second.locator('#editor-form textarea[name="notes"]').fill('另一个页面先保存的新备注');
     await second.locator('#editor-form button[type="submit"]').click();
     await second.locator('#editor-dialog').waitFor({ state: 'hidden' });
     await first.waitForFunction(() =>
       document.querySelector('#app-content')?.textContent.includes('另一个页面先保存的新备注'),
     );
-    await first.locator('[data-action="edit"][data-id="e2e-shanghai"]').click();
+    await first.locator('[data-action="edit"][data-id="e2e-shanghai"]').first().click();
     assert.equal(
       await first.locator('#editor-form textarea[name="notes"]').inputValue(),
       '另一个页面先保存的新备注',
@@ -1711,14 +2162,16 @@ test(
       first = await openPage(context);
     await seed(first);
     await list(first);
-    await first.locator('[data-action="edit"][data-id="e2e-shanghai"]').click();
+    await openJob(first, 'e2e-shanghai');
+    await first.locator('[data-action="edit"][data-id="e2e-shanghai"]').first().click();
     await first.locator('#editor-form textarea[name="notes"]').fill('尚未提交的旧版本修改');
     const originalDraft = (await savedDrafts(first))[0];
     assert.equal(originalDraft.original.notes, '原始备注');
     await first.close();
     const second = await openPage(context);
     await list(second);
-    await second.locator('[data-action="edit"][data-id="e2e-shanghai"]').click();
+    await openJob(second, 'e2e-shanghai');
+    await second.locator('[data-action="edit"][data-id="e2e-shanghai"]').first().click();
     await second.locator('#editor-form textarea[name="notes"]').fill('另一页面已经正式保存');
     await second.locator('#editor-form button[type="submit"]').click();
     await second.locator('#editor-dialog').waitFor({ state: 'hidden' });

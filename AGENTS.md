@@ -8,7 +8,8 @@
 - Never replace unknown/invalid remote data with empty data. Preserve pending local edits, deletion markers, and upload-time conflicts.
 - Keep tokens in page memory only. Do not persist them, include them in exports, log them, or inject them at build time.
 - Local SSH sync must use a fixed server-side target, a separate ignored bare cache, loopback binding, Host/Origin checks, and random session authorization. Never read or expose private key material, operate on the user's Obsidian checkout, or force-push. Verify the commit changes only the configured JSON path.
-- Run `pnpm verify` before release. Browser regression uses temporary profiles, a dist-only static server, and mocked external APIs; never point it at the user's running workspace or private GitHub data.
+- Real-browser testing is owned by the user/manual tester (D017), including Playwright/headless browsers and browser-control tools. Unless the user explicitly delegates it later, agents must not launch or control browsers, install browser dependencies, or request browser-testing permissions. Agents run relevant non-browser tests, `pnpm check`, and `pnpm format:check`; before release, run the full `pnpm test` suite. Hand off a concise manual checklist and report browser acceptance as pending until the user confirms it.
+- Do not run `pnpm verify` locally as an agent: it includes `pnpm test:browser`. Existing browser scripts and CI remain available and unchanged; CI results do not replace manual acceptance. Browser regression uses temporary profiles, a dist-only static server, and mocked external APIs; never point it at the user's running workspace or private GitHub data.
 - Deploy only `dist/`. Publishing a source repository and publishing personal records are separate actions.
 
 - Start with docs/ARCHITECTURE.md, docs/DATA_AND_RECOVERY.md, and docs/MAINTENANCE.md for module boundaries, migrations, recovery semantics, and release steps.

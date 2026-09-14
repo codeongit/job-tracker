@@ -79,14 +79,14 @@ test('阶段优先于简历状态，面试记录区分准备和结果跟进', ()
   );
 });
 
-test('简历被索要、待联系及普通跟进使用明确结构化状态', () => {
+test('简历被索要建议发送，旧待联系与已触达统一使用普通跟进', () => {
   assert.equal(
     suggestedTaskText(opportunity({ resumeState: '被索要' }), [], [], '2026-09-11'),
     '发送简历',
   );
   assert.equal(
     suggestedTaskText(opportunity({ stage: '待联系' }), [], [], '2026-09-11'),
-    '联系招聘方',
+    '跟进岗位进展',
   );
   assert.equal(suggestedTaskText(opportunity(), [], [], '2026-09-11'), '跟进岗位进展');
 });

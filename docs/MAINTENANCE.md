@@ -6,29 +6,40 @@
 
 ```sh
 pnpm install --frozen-lockfile
-pnpm exec playwright install chromium
 pnpm start
 ```
 
 需要本机源文件或 SSH 时，将 `config.example.json` 复制到 `.local/config.json`，按实际情况填写；不需要的字段可以删除。配置无效时服务会明确停止启动。使用系统 SSH agent，不要把私钥复制到项目。
 
-macOS 已装 Chrome 时可直接运行 `PLAYWRIGHT_CHANNEL=chrome pnpm test:browser`。首次安装浏览器仅用于测试，不要求日常使用者安装 Playwright。
+真实浏览器相关测试由用户人工负责，详见下方分工；日常开发和启动不要求安装测试浏览器。
 
 ## 每次改动
 
 ```sh
 pnpm format
-pnpm verify
+pnpm test
+pnpm check
+pnpm format:check
 ```
 
-verify 包含模型/同步/真实临时 Git 测试、语法与公开资源检查、格式检查、隔离浏览器回归。浏览器脚本只启动 dist 静态服务器、使用临时 profile，拦截所有外部请求，不读取 `.local`。中文输入通过 Chromium CDP 触发组合事件；涉及输入体验修改时还应人工检查系统输入法候选窗口。
+小改动可按影响范围运行定向非浏览器测试；发布前运行完整 `pnpm test`。`pnpm check` 检查语法与公开资源，`pnpm format:check` 检查格式。纯文档改动只需检查格式、链接与差异。
 
 新增功能按模块职责修改，说明数据影响，补能复现具体故障的测试。不要重写测试只匹配实现；也不要将真实数据作为测试输入。
+
+## 真实浏览器测试分工
+
+按用户明确要求，真实浏览器相关测试由用户人工负责，包括页面交互、移动端布局、系统中文输入法，以及 Playwright/headless 等真实浏览器回归。代理负责实现、相关非浏览器测试、静态与格式检查，交付时提供简短的人工验收项；用户未反馈前，浏览器验收状态记为“待人工验收”。
+
+除非用户后续明确委托，代理不启动、连接或控制浏览器，不安装测试浏览器，也不申请浏览器测试权限或尝试其他浏览器途径。`pnpm verify` 包含 `pnpm test:browser`，因此代理本地使用上面的非浏览器子命令。
+
+现有浏览器脚本和 CI 保持不变，CI 结果单独报告，不能替代人工验收。人工需要运行隔离回归脚本时，可安装 `pnpm exec playwright install chromium` 后执行 `pnpm test:browser`；macOS 已装 Chrome 时也可使用 `PLAYWRIGHT_CHANNEL=chrome pnpm test:browser`。`pnpm verify` 仍可供人工或 CI 执行完整检查。
+
+浏览器脚本只启动 dist 静态服务器、使用临时 profile，拦截所有外部请求，不读取 `.local`，测试使用合成数据。中文输入的自动回归通过 Chromium CDP 触发组合事件，系统输入法候选窗口与实际输入体验由人工检查。
 
 ## 发布
 
 1. 下载完整私有备份；确认数据格式是否变化并阅读 DATA_AND_RECOVERY.md。
-2. 更新版本号与 CHANGELOG，运行 `pnpm verify`。
+2. 更新版本号与 CHANGELOG，完成非浏览器检查，并记录人工浏览器验收结果；尚未验收时明确标为待人工验收。
 3. 检查 Git 差异和暂存文件，确保没有 `.local`、真实记录、备份或凭证。
 4. 提交代码，正常 push main，等待此提交的 GitHub Actions CI 成功。
 5. 用对应版本的 Git tag 标记验证过的提交。当前仓库只运行 CI，不自动发布网页。

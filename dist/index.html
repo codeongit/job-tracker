@@ -24,10 +24,8 @@
           ><span class="brand-mark">求</span><span>求职工作台<small>个人空间</small></span></a
         >
         <nav aria-label="主导航">
-          <button data-view="today" aria-current="page"><span>◷</span>今日行动</button>
-          <button data-view="daily"><span>▣</span>每日记录</button>
-          <button data-view="list"><span>☰</span>岗位列表</button>
-          <button data-view="board"><span>▥</span>进度看板</button>
+          <button data-view="today" aria-current="page"><span>◷</span>行动</button>
+          <button data-view="list"><span>☰</span>岗位</button>
           <button data-view="settings"><span>⚙</span>数据与同步</button>
         </nav>
         <div class="sidebar-bottom">
@@ -47,7 +45,7 @@
           <div class="page-heading">
             <div>
               <p class="eyebrow" id="eyebrow">下一步</p>
-              <h1 id="page-title">今日行动</h1>
+              <h1 id="page-title">行动</h1>
               <p id="page-caption" class="muted">正在载入你的工作台。</p>
             </div>
             <div class="page-actions">
@@ -61,16 +59,24 @@
       </main>
     </div>
     <div id="notice" role="status" aria-live="polite" hidden></div>
-    <dialog id="editor-dialog" class="dialog"><div id="editor-content"></div></dialog>
-    <dialog id="import-dialog" class="dialog wide"><div id="import-content"></div></dialog>
-    <dialog id="conflict-dialog" class="dialog wide"><div id="conflict-content"></div></dialog>
+    <dialog id="editor-dialog" class="dialog">
+      <div id="editor-content"></div>
+    </dialog>
+    <dialog id="import-dialog" class="dialog wide">
+      <div id="import-content"></div>
+    </dialog>
+    <dialog id="conflict-dialog" class="dialog wide">
+      <div id="conflict-content"></div>
+    </dialog>
     <input
       id="file-input"
       type="file"
       accept=".md,.markdown,.json,text/markdown,application/json"
       hidden
     />
-    <dialog id="draft-dialog" class="dialog wide"><div id="draft-content"></div></dialog>
+    <dialog id="draft-dialog" class="dialog wide">
+      <div id="draft-content"></div>
+    </dialog>
     <noscript>求职工作台需要启用 JavaScript，才能在本地保存及同步记录。</noscript>
   </body>
 </html>

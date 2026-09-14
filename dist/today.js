@@ -1,4 +1,4 @@
-import { clone, live, validateData } from './model.js';
+import { clone, live, validateData, getSentResumeStatus } from './model.js';
 
 export const SUGGESTION_DEFINITIONS = {
   resume: {
@@ -45,10 +45,8 @@ function suggestionMatches(data, opportunity, kind) {
 
 function recordVerification(result, opportunity, kind, { id, date, stamp }) {
   const definition = SUGGESTION_DEFINITIONS[kind];
-  if (kind === 'resume' && opportunity.resumeState !== '已发送') {
-    opportunity.resumeState = '已发送';
-    opportunity.updatedAt = stamp;
-  }
+  if (kind === 'resume')
+    Object.assign(opportunity, getSentResumeStatus(opportunity), { updatedAt: stamp });
   const confirmed = live(result.activities).some(
     (activity) =>
       activity.opportunityId === opportunity.id &&

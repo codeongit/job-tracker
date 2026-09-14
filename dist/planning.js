@@ -39,7 +39,6 @@ export function suggestedTaskText(opportunity, activities = [], pendingTasks = [
   }
   if (['已发送', '对方已接收'].includes(opportunity.resumeState)) return '询问面试安排';
   if (opportunity.resumeState === '被索要') return '发送简历';
-  if (opportunity.stage === '待联系') return '联系招聘方';
   return '跟进岗位进展';
 }
 

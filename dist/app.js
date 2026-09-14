@@ -6,10 +6,15 @@ import { createBackup } from './workspace.js';
 import { APP_VERSION } from './version.js';
 import { MAX_BACKUP_BYTES, utf8Bytes } from './limits.js';
 import { createViews } from './views.js';
+import { findCompanyMatches, getFilteredOpportunities } from './jobs.js';
 import { addCalendarDays, getTaskDefaults } from './planning.js';
 import { applyTaskChoice, applyVerificationChoice } from './today.js';
 import {
   STAGES,
+  READ_STATES,
+  getOpportunityStatus,
+  getResumeLinkedStatus,
+  getSentResumeStatus,
   emptyData,
   uid,
   today,
@@ -29,7 +34,9 @@ import { bindCommittedTextInput, trackComposition } from './text-input.js';
 import { $, esc, options, download } from './ui.js';
 let state,
   view = 'today',
-  dailyDate = today(),
+  actionTab = 'today',
+  jobDate = '',
+  detailDate = '',
   selected = '',
   query = '',
   filter = '',
@@ -42,6 +49,15 @@ let state,
   localSsh = null,
   diagnostic = '',
   draftSource = null;
+let filteredRows = [],
+  detailOrigin = null,
+  renderedView = '';
+const scrollPositions = new Map(),
+  expandedDetails = new Map(),
+  boundEvents = new WeakMap(),
+  boundDraftForms = new WeakSet(),
+  completedDraftForms = new WeakSet(),
+  boundSearches = new WeakSet();
 const drafts = createDraftManager({
   report,
   onCount: (count) => {
@@ -57,8 +73,19 @@ const diskBackup = createDiskBackup({
     if (el) el.textContent = status.message;
   },
 });
-const { jobRow, detail, todayView, dailyView, boardView } = createViews(
-  () => ({ state, selected, dailyDate }),
+const { detail, todayView, jobsView, jobResults, detailDateRecords } = createViews(
+  () => ({
+    state,
+    selected,
+    actionTab,
+    jobDate,
+    query,
+    filter,
+    page,
+    filteredRows,
+    detailDate,
+    detailSections: expandedDetails.get(selected) || {},
+  }),
   pendingTasksForView,
 );
 function pendingTasksForView(id) {
@@ -78,11 +105,16 @@ function syncDatePresets(form) {
     );
 }
 const useSsh = () => !!localSsh && equal(state?.config, localSsh.target);
-let deferredRender = false;
+let deferredRender = false,
+  deferredCompanyHint = false;
 const composition = trackComposition(document, () => {
   if (deferredRender) {
     deferredRender = false;
     render(true);
+  }
+  if (deferredCompanyHint) {
+    deferredCompanyHint = false;
+    refreshCompanyMatchHint($('#editor-form'));
   }
 });
 const channel =
@@ -107,6 +139,8 @@ async function reload(preserveDrafts = false) {
 async function change(transform, reason, savedDraft) {
   state = await editData(transform, { reason });
   const warning = savedDraft ? drafts.complete(savedDraft.form, savedDraft.captured) : '';
+  if (savedDraft && drafts.capture(savedDraft.form)?.revision === savedDraft.captured.revision)
+    completedDraftForms.add(savedDraft.form);
   channel?.postMessage('changed');
   render();
   return warning || '';
@@ -131,10 +165,8 @@ function statusRender() {
 }
 function header() {
   const labels = {
-    today: ['下一步', '今日行动', '到期行动、待核实事项和未设下一步的岗位。'],
-    daily: ['回顾', '每日记录', '按日期查看计划、结果、沟通和首次联系。'],
-    list: ['机会', '岗位列表', '每个岗位一条记录，保留完整沟通历史。'],
-    board: ['进展', '进度看板', '招聘阶段与消息状态分开记录。'],
+    today: ['下一步', '行动', '处理今天的待办，规划接下来的跟进。'],
+    list: ['机会', '岗位', '搜索岗位，按招聘阶段或日期筛选，查看记录并继续跟进。'],
     settings: ['个人数据', '数据与同步', '数据先存本机，再同步到你的 GitHub 私有仓库。'],
   };
   const [a, b, c] = labels[view];
@@ -148,26 +180,142 @@ function header() {
 function emptyView() {
   return `<section class="panel empty"><div class="empty-symbol">＋</div><h2>从已有记录开始</h2><p>导入个人记录，核对日期和字段，接着就能安排下一步。</p><div class="empty-actions">${['127.0.0.1', 'localhost'].includes(location.hostname) ? '<button class="primary" data-action="local-import">导入现有个人记录</button>' : ''}<button class="secondary" data-action="choose-file">选择 Markdown / JSON</button><button class="secondary" data-action="new">手动新增岗位</button></div></section>`;
 }
-function listPanelContent() {
-  const all = live(state.data.opportunities).filter(
-    (o) =>
-      (!filter || o.stage === filter) &&
-      `${o.company} ${o.role} ${o.contact || ''}`.toLowerCase().includes(query.toLowerCase()),
-  );
-  page = Math.max(0, Math.min(page, Math.ceil(all.length / 10) - 1));
-  return `<div class="panel-header"><h2>岗位机会</h2><span class="count">${all.length} 个</span></div>${
-    all
-      .slice(page * 10, page * 10 + 10)
-      .map((o) => jobRow(o))
-      .join('') || '<div class="empty"><p>没有匹配的岗位。</p></div>'
-  }<div class="pager"><button class="text-button" data-page="-1" ${page === 0 ? 'disabled' : ''}>上一页</button><span>${all.length ? `${page + 1} / ${Math.ceil(all.length / 10)}` : '0'}</span><button class="text-button" data-page="1" ${(page + 1) * 10 >= all.length ? 'disabled' : ''}>下一页</button></div>`;
+function refreshFilteredRows() {
+  filteredRows = getFilteredOpportunities(state.data, { query, stage: filter, date: jobDate });
+  page = Math.max(0, Math.min(page, Math.ceil(filteredRows.length / 10) - 1));
+}
+function updateDetailNotice() {
+  const notice = $('#detail-filter-notice');
+  if (!notice) return;
+  const outside =
+    view === 'list' && !filteredRows.some(({ opportunity }) => opportunity.id === selected);
+  notice.hidden = !outside;
+  notice.textContent = outside ? '此岗位不符合当前筛选条件。关闭详情后可继续查看筛选结果。' : '';
 }
 function updateListResults() {
-  const panel = $('#job-list-panel');
-  if (panel) panel.innerHTML = listPanelContent();
+  refreshFilteredRows();
+  const panel = $('#job-results');
+  if (panel) panel.innerHTML = jobResults();
+  document.querySelectorAll('[data-job-date-step]').forEach((button) => {
+    button.disabled = !jobDate;
+  });
+  updateDetailNotice();
 }
-function listView() {
-  return `<div class="filters"><input id="search" aria-label="搜索公司、岗位或联系人" placeholder="搜索公司、岗位、联系人" value="${esc(query)}"><select id="stage-filter" aria-label="筛选招聘阶段"><option value="">全部阶段</option>${options(STAGES, filter)}</select></div><div class="split"><section class="panel" id="job-list-panel">${listPanelContent()}</section>${detail()}</div>`;
+function viewKey() {
+  return view === 'today' ? `today:${actionTab}` : view;
+}
+function rememberScroll() {
+  scrollPositions.set(viewKey(), detailOrigin?.scrollY ?? window.scrollY);
+}
+function captureDetailSections() {
+  if (!selected) return;
+  const sections = { ...expandedDetails.get(selected) };
+  document.querySelectorAll('#detail-host [data-detail-section-panel]').forEach((section) => {
+    sections[section.dataset.detailSectionPanel] = section.open;
+  });
+  expandedDetails.set(selected, sections);
+}
+function bindOnce(element, event, callback) {
+  if (!element) return;
+  let events = boundEvents.get(element);
+  if (!events) boundEvents.set(element, (events = new Set()));
+  if (events.has(event)) return;
+  events.add(event);
+  element.addEventListener(event, callback);
+}
+function syncDetailLayout() {
+  document.body.classList.toggle('detail-open', !!selected);
+  document.querySelector('.detail-layout')?.classList.toggle('has-detail', !!selected);
+  document.querySelectorAll('#page-surface [data-job]').forEach((button) => {
+    button.setAttribute('aria-pressed', String(button.dataset.job === selected));
+    button
+      .closest('.daily-job-card')
+      ?.setAttribute('data-selected', String(button.dataset.job === selected));
+  });
+  updateDetailNotice();
+}
+function focusDetailSection(kind) {
+  const section = document.querySelector(`#detail-host [data-detail-section-panel="${kind}"]`);
+  if (section) section.open = true;
+  captureDetailSections();
+  document
+    .querySelector(
+      kind === 'task' ? '#task-form input[name="text"]' : '#activity-form textarea[name="text"]',
+    )
+    ?.focus();
+}
+function openDetail(id, { trigger = document.activeElement, section, source } = {}) {
+  if (!live(state.data.opportunities).some((opportunity) => opportunity.id === id))
+    throw new Error('这个岗位已删除或不存在。');
+  captureDetailSections();
+  const detailScroll = selected === id ? $('#detail-host').scrollTop : 0;
+  if (!selected || (id !== selected && !trigger?.closest?.('#detail-host'))) {
+    const attributes = ['data-job', 'data-plan-job', 'data-opportunity-id'];
+    const attribute = attributes.find((name) => trigger?.hasAttribute?.(name));
+    detailOrigin = {
+      scrollY:
+        selected && matchMedia('(max-width: 760px)').matches
+          ? (detailOrigin?.scrollY ?? window.scrollY)
+          : window.scrollY,
+      trigger,
+      selector: attribute
+        ? `#page-surface [${attribute}="${CSS.escape(trigger.getAttribute(attribute))}"]`
+        : '',
+    };
+  }
+  selected = id;
+  detailDate = view === 'list' ? jobDate : '';
+  draftSource = source || null;
+  if (section) expandedDetails.set(id, { ...expandedDetails.get(id), [section]: true });
+  $('#detail-host').innerHTML = detail();
+  bindForms();
+  syncDetailLayout();
+  $('#detail-host').scrollTop = detailScroll;
+  if (matchMedia('(max-width: 760px)').matches) window.scrollTo(0, 0);
+  if (section) focusDetailSection(section);
+  else $('#detail-title')?.focus({ preventScroll: true });
+}
+function closeDetail(restore = true) {
+  captureDetailSections();
+  const origin = detailOrigin;
+  selected = '';
+  detailDate = '';
+  detailOrigin = null;
+  const host = $('#detail-host');
+  if (host) host.innerHTML = '';
+  syncDetailLayout();
+  if (restore) restoreDetailOrigin(origin);
+}
+function restoreDetailOrigin(origin) {
+  if (origin) {
+    const target = origin.trigger?.isConnected
+      ? origin.trigger
+      : (origin.selector && document.querySelector(origin.selector)) ||
+        $('#results-title') ||
+        $('#page-title');
+    if (target && !target.matches('button,input,select,textarea,a'))
+      target.setAttribute('tabindex', '-1');
+    target?.focus({ preventScroll: true });
+    window.scrollTo(0, origin.scrollY);
+  }
+}
+function navigate(nextView) {
+  rememberScroll();
+  closeDetail(false);
+  view = nextView;
+  render();
+  window.scrollTo(0, scrollPositions.get(viewKey()) || 0);
+}
+function applyJobFilters() {
+  page = 0;
+  if ($('#search')) $('#search').value = query;
+  if ($('#stage-filter')) $('#stage-filter').value = filter;
+  if ($('#job-date')) $('#job-date').value = jobDate;
+  updateListResults();
+  if (selected && view === 'list') {
+    detailDate = jobDate;
+    if ($('#detail-date-records')) $('#detail-date-records').innerHTML = detailDateRecords();
+  }
 }
 function render(preserveDrafts = false) {
   if (!state) return;
@@ -176,56 +324,71 @@ function render(preserveDrafts = false) {
     return;
   }
   deferredRender = false;
+  captureDetailSections();
+  const deletedSelection =
+    selected && !live(state.data.opportunities).some((row) => row.id === selected);
+  const deletedOrigin = deletedSelection ? detailOrigin : null;
+  if (deletedSelection) closeDetail(false);
+  refreshFilteredRows();
+  const detailScroll = $('#detail-host')?.scrollTop || 0;
   const active = document.activeElement;
-  const focus =
-    preserveDrafts && active?.matches('input,textarea,select')
-      ? {
-          id: active.id,
-          form: active.form?.id,
-          name: active.name,
-          start: active.selectionStart,
-          end: active.selectionEnd,
-          direction: active.selectionDirection,
-        }
-      : null;
-  const preservedForms = preserveDrafts
-    ? ['activity-form', 'task-form', 'settings-form'].flatMap((id) => {
-        const form = document.getElementById(id);
-        if (!form) return [];
-        const currentDraft = id === 'settings-form' ? null : drafts.capture(form);
-        if (id !== 'settings-form' && !Object.keys(currentDraft?.values ?? {}).length) return [];
-        return [{ id, values: Object.fromEntries(new FormData(form)) }];
-      })
-    : [];
+  const focus = active?.matches('input,textarea,select')
+    ? {
+        id: active.id,
+        form: active.form?.id,
+        name: active.name,
+        start: active.selectionStart,
+        end: active.selectionEnd,
+        direction: active.selectionDirection,
+      }
+    : null;
+  const preservedForms = ['activity-form', 'task-form', 'settings-form'].flatMap((id) => {
+    const form = document.getElementById(id);
+    if (!form) return [];
+    if (completedDraftForms.has(form)) return [];
+    if (id === 'settings-form') return preserveDrafts && view === 'settings' ? [form] : [];
+    if (form.dataset.opportunityId !== selected) return [];
+    const currentDraft = id === 'settings-form' ? null : drafts.capture(form);
+    if (id !== 'settings-form' && !Object.keys(currentDraft?.values ?? {}).length) return [];
+    return [form];
+  });
   header();
   statusRender();
-  $('#app-content').innerHTML =
-    view === 'settings'
-      ? settingsView({
-          state,
-          ssh: useSsh(),
-          token,
-          syncing,
-          diagnostic,
-          backupStatus: diskBackup.status(),
-        })
-      : !live(state.data.opportunities).length
-        ? emptyView()
-        : view === 'today'
-          ? todayView()
-          : view === 'daily'
-            ? dailyView()
-            : view === 'list'
-              ? listView()
-              : boardView();
+  if (!$('#page-surface')) {
+    $('#app-content').innerHTML =
+      '<div class="detail-layout"><div id="page-surface"></div><div id="detail-host"></div></div>';
+    renderedView = '';
+  }
+  if (view === 'list' && renderedView === 'list' && $('#job-results')) {
+    updateListResults();
+  } else
+    $('#page-surface').innerHTML =
+      view === 'settings'
+        ? settingsView({
+            state,
+            ssh: useSsh(),
+            token,
+            syncing,
+            diagnostic,
+            backupStatus: diskBackup.status(),
+          })
+        : !live(state.data.opportunities).length && view !== 'list'
+          ? emptyView()
+          : view === 'today'
+            ? todayView()
+            : jobsView();
+  renderedView = view;
+  $('#detail-host').innerHTML = selected ? detail() : '';
+  for (const form of preservedForms) {
+    const replacement = document.getElementById(form.id);
+    if (replacement && replacement !== form) replacement.replaceWith(form);
+  }
   bindForms();
-  for (const draft of preservedForms) {
-    const form = document.getElementById(draft.id);
-    if (form)
-      for (const [name, value] of Object.entries(draft.values)) {
-        const field = form.elements.namedItem(name);
-        if (field) field.value = value;
-      }
+  syncDetailLayout();
+  $('#detail-host').scrollTop = detailScroll;
+  if (deletedSelection) {
+    notify('这个岗位已删除，已返回原页面。');
+    requestAnimationFrame(() => restoreDetailOrigin(deletedOrigin));
   }
   if (focus) {
     const field = focus.id
@@ -235,47 +398,60 @@ function render(preserveDrafts = false) {
     if (Number.isInteger(focus.start) && typeof field?.setSelectionRange === 'function')
       field.setSelectionRange(focus.start, focus.end, focus.direction || 'none');
   }
+  refreshCompanyMatchHint($('#editor-form'));
 }
 function bindForms() {
   const formOpportunityId = selected;
   for (const [id, kind] of [
     ['task-form', 'task'],
     ['activity-form', 'activity'],
-  ])
-    drafts.bind(document.getElementById(id), {
-      kind,
-      opportunityId: selected,
-      source: draftSource?.kind === kind ? draftSource : undefined,
-    });
+  ]) {
+    const form = document.getElementById(id);
+    if (!form) continue;
+    if (!boundDraftForms.has(form)) {
+      form.dataset.opportunityId = selected;
+      drafts.bind(form, {
+        kind,
+        opportunityId: selected,
+        source: draftSource?.kind === kind ? draftSource : undefined,
+      });
+      boundDraftForms.add(form);
+    }
+    if (Object.keys(drafts.capture(form)?.values ?? {}).length) {
+      const section = form.closest('[data-detail-section-panel]');
+      if (section) section.open = true;
+    }
+  }
+  document
+    .querySelectorAll('#detail-host [data-detail-section-panel]')
+    .forEach((section) => bindOnce(section, 'toggle', captureDetailSections));
   const taskForm = $('#task-form');
   if (taskForm) {
     const dueAt = taskForm.elements.namedItem('dueAt');
-    dueAt.addEventListener('input', () => syncDatePresets(taskForm));
-    dueAt.addEventListener('change', () => syncDatePresets(taskForm));
+    bindOnce(dueAt, 'input', () => syncDatePresets(taskForm));
+    bindOnce(dueAt, 'change', () => syncDatePresets(taskForm));
     syncDatePresets(taskForm);
   }
   draftSource = null;
   const search = $('#search');
-  if (search)
+  if (search && !boundSearches.has(search)) {
+    boundSearches.add(search);
     bindCommittedTextInput(search, (value) => {
       query = value;
       page = 0;
       updateListResults();
     });
-  $('#stage-filter')?.addEventListener('change', (e) => {
+  }
+  bindOnce($('#stage-filter'), 'change', (e) => {
     filter = e.target.value;
     page = 0;
     updateListResults();
   });
-  $('#daily-date')?.addEventListener('change', (e) => {
-    if (!e.target.value) {
-      e.target.value = dailyDate;
-      return;
-    }
-    dailyDate = e.target.value;
-    render();
+  bindOnce($('#job-date'), 'change', (e) => {
+    jobDate = e.target.value;
+    applyJobFilters();
   });
-  $('#task-form')?.addEventListener('submit', async (e) => {
+  bindOnce($('#task-form'), 'submit', async (e) => {
     e.preventDefault();
     const captured = drafts.capture(e.target);
     const f = new FormData(e.target),
@@ -320,7 +496,7 @@ function bindForms() {
       report(e);
     }
   });
-  $('#activity-form')?.addEventListener('submit', async (e) => {
+  bindOnce($('#activity-form'), 'submit', async (e) => {
     e.preventDefault();
     const captured = drafts.capture(e.target);
     const f = new FormData(e.target),
@@ -338,8 +514,7 @@ function bindForms() {
           });
           if (f.get('type') === '发送简历') {
             const o = data.opportunities.find((o) => o.id === id);
-            o.resumeState = '已发送';
-            o.updatedAt = new Date().toISOString();
+            Object.assign(o, getSentResumeStatus(o), { updatedAt: new Date().toISOString() });
           }
           return validateData(data);
         },
@@ -351,7 +526,7 @@ function bindForms() {
       report(e);
     }
   });
-  $('#settings-form')?.addEventListener('submit', async (e) => {
+  bindOnce($('#settings-form'), 'submit', async (e) => {
     e.preventDefault();
     const f = new FormData(e.target);
     try {
@@ -379,6 +554,41 @@ function bindForms() {
     }
   });
 }
+function syncEditorResumeStatus(form) {
+  const linked = getResumeLinkedStatus(Object.fromEntries(new FormData(form)));
+  for (const [name, value] of Object.entries(linked)) form.elements.namedItem(name).value = value;
+  const note = form.querySelector('[data-resume-linked-note]');
+  note.hidden = !Object.keys(linked).length;
+}
+function refreshCompanyMatchHint(form) {
+  const hint = form?.querySelector('[data-company-match-hint]');
+  if (!hint || !state) return;
+  if (composition.active) {
+    deferredCompanyHint = true;
+    return;
+  }
+  const matches = findCompanyMatches(state.data, {
+    company: form.elements.namedItem('company').value,
+    role: form.elements.namedItem('role').value,
+    excludeId: form.dataset.companyMatchExcludeId || '',
+  });
+  if (!matches.length) {
+    hint.hidden = true;
+    hint.innerHTML = '';
+    return;
+  }
+  const sameRole = matches.some((match) => match.sameRole),
+    shown = matches.slice(0, 3);
+  hint.innerHTML = `<strong>${sameRole ? '可能是重复岗位' : '该公司已有其他岗位'}</strong><span>找到 ${matches.length} 个未删除岗位，仍可继续保存。</span><span class="company-match-list">${shown
+    .map(
+      ({ opportunity, sameRole: roleMatches }) =>
+        `<span><span>${esc(opportunity.role)}</span><span class="badge ${getOpportunityStatus(opportunity).stage === '沟通中' ? 'blue' : ''}">${esc(getOpportunityStatus(opportunity).stage)}</span>${roleMatches ? '<span class="company-match-same-role">岗位名称相同</span>' : ''}</span>`,
+    )
+    .join(
+      '',
+    )}</span>${matches.length > shown.length ? `<span>另有 ${matches.length - shown.length} 个，可在岗位页搜索公司查看。</span>` : ''}`;
+  hint.hidden = false;
+}
 function openEditor(id = '', source) {
   if (id && !live(state.data.opportunities).some((o) => o.id === id))
     throw new Error('这个草稿对应的岗位已删除，内容仍可在草稿箱查看和复制。');
@@ -392,7 +602,7 @@ function openEditor(id = '', source) {
     url: '',
     appliedAt: today(),
     stage: '已触达',
-    readState: '未知',
+    readState: '未读',
     resumeState: '未知',
     endReason: '',
     priority: '普通',
@@ -401,6 +611,7 @@ function openEditor(id = '', source) {
     notes: '',
     description: '',
     ...original,
+    ...getOpportunityStatus(original),
   };
   $('#editor-content').innerHTML =
     `<form id="editor-form"><div class="dialog-header"><div><h2>${id ? '编辑岗位' : '新增岗位'}</h2><p>公司和岗位必填，其余可以稍后补充。</p></div><button type="button" class="close" data-close="editor-dialog" aria-label="关闭">×</button></div><div class="dialog-body"><div id="editor-error" class="error form-error" role="alert"></div><div class="form-grid">${[
@@ -409,11 +620,11 @@ function openEditor(id = '', source) {
     ]
       .map(
         ([k, label]) =>
-          `<label>${label}<input name="${k}" value="${esc(o[k])}" required maxlength="300"></label>`,
+          `<label>${label}<input name="${k}" value="${esc(o[k])}" required maxlength="300">${!id && k === 'company' ? '<span class="company-match-hint" data-company-match-hint role="status" aria-live="polite" aria-atomic="true" hidden></span>' : ''}</label>`,
       )
       .join(
         '',
-      )}<label>招聘阶段<select name="stage">${options(STAGES, o.stage)}</select></label><label>关注程度<select name="priority">${options(['普通', '重点', '暂缓'], o.priority)}</select></label><label>消息状态<select name="readState">${options(['未知', '未读', '已读'], o.readState)}</select></label><label>简历状态<select name="resumeState">${options(['未知', '被索要', '已发送', '对方已接收'], o.resumeState)}</select></label><label>首次联系<input type="date" name="appliedAt" value="${esc(o.appliedAt)}"></label><label>结束原因<select name="endReason"><option value="">未结束 / 未填写</option>${options(['不匹配/拒绝', '职位关闭', '主动放弃', '已入职', '其他'], o.endReason)}</select></label>${[
+      )}<label>招聘阶段<select name="stage">${options(STAGES, o.stage)}</select></label><label>关注程度<select name="priority">${options(['普通', '重点', '暂缓'], o.priority)}</select></label><label>消息状态<select name="readState">${options(READ_STATES, o.readState)}</select></label><label>简历状态<select name="resumeState">${options(['未知', '被索要', '已发送', '对方已接收'], o.resumeState)}</select></label><p class="span-2 note-summary" data-resume-linked-note hidden>BOSS 简历已发送或已接收时，消息联动为已读，已触达推进为沟通中；面试及后续阶段保留，保存后生效。</p><label>首次联系<input type="date" name="appliedAt" value="${esc(o.appliedAt)}"></label><label>结束原因<select name="endReason"><option value="">未结束 / 未填写</option>${options(['不匹配/拒绝', '职位关闭', '主动放弃', '已入职', '其他'], o.endReason)}</select></label>${[
       ['platform', '平台'],
       ['source', '来源类型（如猎头、内推）'],
       ['contact', '联系人'],
@@ -428,12 +639,38 @@ function openEditor(id = '', source) {
       .join(
         '',
       )}<label class="span-2">备注<textarea name="notes">${esc(o.notes)}</textarea></label><label class="span-2">岗位描述<textarea name="description">${esc(o.description)}</textarea></label></div></div><div class="dialog-footer">${id ? `<button class="text-button danger" type="button" data-delete="${esc(id)}">删除岗位</button>` : ''}<button class="secondary" type="button" data-close="editor-dialog">取消</button><button class="primary" type="submit">保存岗位</button></div></form>`;
-  const editing = drafts.bind($('#editor-form'), {
+  const editorForm = $('#editor-form');
+  syncEditorResumeStatus(editorForm);
+  // Run before draft listeners so one input captures all linked fields together.
+  for (const event of ['input', 'change'])
+    editorForm.addEventListener(
+      event,
+      (e) => {
+        if (e.isComposing || (e.target.name === 'platform' && event !== 'change')) return;
+        if (['resumeState', 'stage', 'readState', 'platform'].includes(e.target.name))
+          syncEditorResumeStatus(editorForm);
+      },
+      true,
+    );
+  const editing = drafts.bind(editorForm, {
     kind: 'editor',
     opportunityId: id,
     original,
     source,
   });
+  // A legacy draft may contain values no longer present in the select options.
+  // Preserve its original record for conflict detection; only map the form controls.
+  const status = getOpportunityStatus({ ...o, ...editing?.values });
+  for (const [name, value] of Object.entries(status))
+    $('#editor-form').elements.namedItem(name).value = value;
+  syncEditorResumeStatus(editorForm);
+  if (!id) {
+    for (const name of ['company', 'role'])
+      bindCommittedTextInput(editorForm.elements.namedItem(name), () =>
+        refreshCompanyMatchHint(editorForm),
+      );
+    refreshCompanyMatchHint(editorForm);
+  }
   if (editing?.original) original = editing.original;
   if (
     id &&
@@ -450,6 +687,7 @@ function openEditor(id = '', source) {
     const captured = drafts.capture(e.target);
     const input = Object.fromEntries(new FormData(e.target));
     for (const k in input) input[k] = input[k].trim();
+    Object.assign(input, getResumeLinkedStatus(input));
     if (input.stage === '已结束' && !input.endReason) {
       $('#editor-error').textContent = '请选择结束原因。';
       return;
@@ -457,6 +695,7 @@ function openEditor(id = '', source) {
     if (input.stage !== '已结束') input.endReason = '';
     const stamp = new Date().toISOString(),
       jobId = id || uid();
+    e.target.dataset.companyMatchExcludeId = jobId;
     try {
       const warning = await change(
         (data) => {
@@ -464,13 +703,13 @@ function openEditor(id = '', source) {
           if (id && !equal(current, original))
             throw new Error('这个岗位刚在其他页面发生了修改，请重新打开后编辑。');
           if (current) {
-            if (current.stage !== input.stage)
+            if (getOpportunityStatus(current).stage !== input.stage)
               data.activities.push({
                 id: uid(),
                 opportunityId: jobId,
                 date: today(),
                 type: '阶段变化',
-                text: `阶段从「${current.stage}」调整为「${input.stage}」`,
+                text: `阶段从「${getOpportunityStatus(current).stage}」调整为「${input.stage}」`,
                 createdAt: stamp,
               });
             Object.assign(current, input, { updatedAt: stamp });
@@ -486,10 +725,8 @@ function openEditor(id = '', source) {
         undefined,
         { form: e.target, captured },
       );
-      selected = jobId;
-      view = 'list';
-      render();
       $('#editor-dialog').close();
+      openDetail(jobId);
       notify(
         (input.stage === '已结束' ? '岗位已结束，未完成行动已取消。' : '岗位已保存。') + warning,
       );
@@ -504,7 +741,7 @@ const { showRestore, showSnapshots } = createBackupUI({
   restored: async (next) => {
     drafts.refreshCount();
     state = next;
-    selected = live(state.data.opportunities)[0]?.id || '';
+    closeDetail(false);
     channel?.postMessage('changed');
     render();
     notify('备份已恢复到本机，操作前快照已保留；请核对后手动同步。');
@@ -547,19 +784,7 @@ async function showDrafts() {
       $('#draft-dialog').close();
       if (record.kind === 'editor') openEditor(record.opportunityId, record);
       else {
-        selected = record.opportunityId;
-        view = 'list';
-        filter = '';
-        query = '';
-        draftSource = record;
-        render();
-        document
-          .querySelector(
-            record.kind === 'task'
-              ? '#task-form input[name="text"]'
-              : '#activity-form textarea[name="text"]',
-          )
-          ?.focus();
+        openDetail(record.opportunityId, { section: record.kind, source: record });
       }
     } catch (e) {
       report(e);
@@ -651,9 +876,7 @@ async function renderImport(year) {
         result = applyImport(data, parsedImport, chosen, swaps);
         return result.data;
       }, '导入 Markdown 前');
-      selected = live(state.data.opportunities)[0]?.id || '';
-      view = 'list';
-      render();
+      navigate('list');
       $('#import-dialog').close();
       notify(`已新增 ${result.added} 个岗位，跳过 ${result.skipped} 个重复岗位。`);
     } catch (e) {
@@ -667,7 +890,7 @@ async function showConflicts(pending) {
       ? row.deletedAt
         ? '此记录已删除'
         : row.company
-          ? `${row.company} · ${row.role}\n阶段：${row.stage}\n简历：${row.resumeState || '未知'}\n备注：${row.notes || '无'}\n\n${JSON.stringify(row, null, 2)}`
+          ? `${row.company} · ${row.role}\n阶段：${getOpportunityStatus(row).stage}\n简历：${row.resumeState || '未知'}\n备注：${row.notes || '无'}\n\n${JSON.stringify(row, null, 2)}`
           : JSON.stringify(row, null, 2)
       : '此版本没有这条记录';
   $('#conflict-content').innerHTML =
@@ -705,8 +928,7 @@ async function synchronize(allowCreate = false) {
     state = await updateState((s) => ({ ...s, pending: null }));
   }
   if (!useSsh() && !token) {
-    view = 'settings';
-    render();
+    navigate('settings');
     notify('请在此页面配置本次会话的 GitHub 令牌。');
     return;
   }
@@ -767,18 +989,45 @@ document.addEventListener('click', async (e) => {
       return;
     }
     if (b.dataset.view) {
-      view = b.dataset.view;
-      render();
+      navigate(b.dataset.view);
       return;
     }
-    if (b.dataset.dailyStep) {
-      dailyDate = addCalendarDays(dailyDate, Number(b.dataset.dailyStep));
-      render();
+    if (b.hasAttribute('data-close-detail')) {
+      closeDetail();
       return;
     }
-    if (b.hasAttribute('data-daily-today')) {
-      dailyDate = today();
+    if (b.dataset.detailSection) {
+      focusDetailSection(b.dataset.detailSection);
+      return;
+    }
+    if (b.dataset.actionTab || b.hasAttribute('data-organize-new')) {
+      rememberScroll();
+      closeDetail(false);
+      actionTab = b.dataset.actionTab || 'organize';
       render();
+      if (b.hasAttribute('data-organize-new')) {
+        const target = $('#new-unplanned');
+        target?.scrollIntoView({ block: 'start' });
+        target?.querySelector('button')?.focus({ preventScroll: true });
+      } else window.scrollTo(0, scrollPositions.get(viewKey()) || 0);
+      return;
+    }
+    if (b.dataset.jobDateStep) {
+      if (jobDate) jobDate = addCalendarDays(jobDate, Number(b.dataset.jobDateStep));
+      applyJobFilters();
+      return;
+    }
+    if (
+      b.hasAttribute('data-job-date-today') ||
+      b.hasAttribute('data-job-date-clear') ||
+      b.hasAttribute('data-clear-filters')
+    ) {
+      jobDate = b.hasAttribute('data-job-date-today') ? today() : '';
+      if (b.hasAttribute('data-clear-filters')) {
+        query = '';
+        filter = '';
+      }
+      applyJobFilters();
       return;
     }
     if (b.hasAttribute('data-due-offset')) {
@@ -791,10 +1040,7 @@ document.addEventListener('click', async (e) => {
       return;
     }
     if (b.dataset.planJob) {
-      selected = b.dataset.planJob;
-      view = 'today';
-      render();
-      document.querySelector('#task-form input[name="text"]')?.focus();
+      openDetail(b.dataset.planJob, { trigger: b, section: 'task' });
       return;
     }
     if (b.dataset.suggestionKind) {
@@ -802,7 +1048,7 @@ document.addEventListener('click', async (e) => {
         opportunityId = b.dataset.opportunityId,
         stamp = new Date().toISOString();
       let applied = false;
-      selected = opportunityId;
+      openDetail(opportunityId, { trigger: b });
       await change((data) => {
         const next = applyVerificationChoice(data, {
           opportunityId,
@@ -825,24 +1071,12 @@ document.addEventListener('click', async (e) => {
       return;
     }
     if (b.dataset.job) {
-      const openedFromDaily = view === 'daily' && !!b.closest('#daily-records');
-      selected = b.dataset.job;
-      if (view === 'board' || view === 'today') view = 'list';
-      filter = '';
-      query = '';
-      page = Math.floor(live(state.data.opportunities).findIndex((o) => o.id === selected) / 10);
-      render();
-      if (openedFromDaily && matchMedia('(max-width: 760px)').matches) {
-        const panel = document.querySelector('.detail-panel');
-        panel?.setAttribute('tabindex', '-1');
-        panel?.focus({ preventScroll: true });
-        panel?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      }
+      openDetail(b.dataset.job, { trigger: b });
       return;
     }
     if (b.dataset.page) {
       page += Number(b.dataset.page);
-      render();
+      updateListResults();
       return;
     }
     if (b.dataset.complete || b.dataset.cancelTask) {
@@ -867,8 +1101,7 @@ document.addEventListener('click', async (e) => {
         return data;
       }, '删除岗位前');
       $('#editor-dialog').close();
-      selected = '';
-      render();
+      closeDetail();
       notify('岗位已删除。');
       return;
     }
@@ -877,8 +1110,10 @@ document.addEventListener('click', async (e) => {
     else if (action === 'backup-now') await diskBackup.run();
     else if (action === 'disk-backups') await showDiskBackups();
     else if (action === 'new' || b.id === 'new-button') openEditor();
-    else if (action === 'edit') openEditor(b.dataset.id);
-    else if (action === 'choose-file' || b.id === 'import-button') $('#file-input').click();
+    else if (action === 'edit') {
+      openEditor(b.dataset.id);
+      if (b.dataset.editorFocus === 'stage') $('#editor-form select[name="stage"]')?.focus();
+    } else if (action === 'choose-file' || b.id === 'import-button') $('#file-input').click();
     else if (action === 'local-import') {
       const res = await fetch('./__local/source');
       if (!res.ok) throw new Error('未连接本地源文档，请使用“选择 Markdown”导入。');
@@ -913,6 +1148,18 @@ document.addEventListener('click', async (e) => {
     report(e);
   }
 });
+document.addEventListener('keydown', (e) => {
+  if (
+    e.key === 'Escape' &&
+    !e.isComposing &&
+    !composition.active &&
+    selected &&
+    !document.querySelector('dialog[open]')
+  ) {
+    e.preventDefault();
+    closeDetail();
+  }
+});
 $('#file-input').addEventListener('change', async (e) => {
   const file = e.target.files[0];
   if (file) {
@@ -927,14 +1174,20 @@ $('#file-input').addEventListener('change', async (e) => {
 channel?.addEventListener('message', async () => {
   state = await readState();
   statusRender();
+  refreshCompanyMatchHint($('#editor-form'));
   const active = document.activeElement,
+    selectedDeleted =
+      selected && !live(state.data.opportunities).some((row) => row.id === selected),
     inputFocused = ['INPUT', 'TEXTAREA', 'SELECT'].includes(active?.tagName),
     pristineSuggestedTask =
       active?.form?.id === 'task-form' &&
       active.form.dataset.suggestedDefault === 'true' &&
       !Object.keys(drafts.capture(active.form)?.values ?? {}).length;
-  if (!document.querySelector('dialog[open]') && (!inputFocused || pristineSuggestedTask))
-    render(pristineSuggestedTask);
+  if (
+    selectedDeleted ||
+    (!document.querySelector('dialog[open]') && (!inputFocused || pristineSuggestedTask))
+  )
+    render(pristineSuggestedTask || selectedDeleted);
 });
 window.addEventListener('offline', () => notify('当前离线，记录继续保存在本机。'));
 window.addEventListener('online', () => notify('网络已恢复，可以点击“立即同步”。'));
@@ -947,7 +1200,7 @@ $('#date-label').textContent = new Date().toLocaleDateString('zh-CN', {
 try {
   state = await readState();
   localSsh = await discoverLocalSsh();
-  selected = live(state.data.opportunities)[0]?.id || '';
+  selected = '';
   render();
   drafts.refreshCount();
   diskBackup.start();
