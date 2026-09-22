@@ -1,6 +1,7 @@
 import { RemoteError } from './github.js';
 import { serializeForSync } from './limits.js';
 import { validateData } from './model.js';
+import { migrateData } from './workspace.js';
 export async function discoverLocalSsh(fetcher = fetch) {
   if (!['127.0.0.1', 'localhost'].includes(location.hostname)) return null;
   try {
@@ -18,7 +19,11 @@ export function localSshClient(session, fetcher = fetch) {
     try {
       res = await fetcher('./__local/git', {
         method,
-        headers: { 'Content-Type': 'application/json', 'X-Job-Tracker-Session': session },
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Job-Tracker-Session': session,
+          'X-Job-Tracker-Protocol': '1',
+        },
         body: body ? JSON.stringify(body) : undefined,
         signal: AbortSignal.timeout(180000),
       });
@@ -39,11 +44,11 @@ export function localSshClient(session, fetcher = fetch) {
   return {
     read: async () => {
       const r = await request('GET');
-      return { ...r, data: validateData(r.data) };
+      return { ...r, data: migrateData(r.data) };
     },
-    write: (data, sha) => {
+    write: (data, sha, syncTransactionId) => {
       serializeForSync(data);
-      return request('PUT', { data: validateData(data), sha });
+      return request('PUT', { data: validateData(data), sha, syncTransactionId });
     },
   };
 }

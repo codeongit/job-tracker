@@ -15,7 +15,6 @@ import {
   getOpportunityStatus,
   getResumeLinkedStatus,
   getSentResumeStatus,
-  emptyData,
   uid,
   today,
   live,
@@ -25,12 +24,26 @@ import {
   applyImport,
   markdownExport,
   removeOpportunity,
-  resolveConflicts,
+  markManualFields,
 } from './model.js';
-import { readState, updateState, editData, saveSnapshot, readRawState } from './storage.js';
+import {
+  readState,
+  editData,
+  saveSnapshot,
+  readRawState,
+  prepareLocalWorkspaceMigration,
+  initializeLocalWorkspace,
+  storageStatus,
+  setSyncConfig,
+  stageSyncConflict,
+  resolveSyncConflict,
+  acknowledgeSync,
+  bindBossSource,
+} from './storage.js';
 import { githubClient, syncWorkspace, validateConfig } from './github.js';
 import { discoverLocalSsh, localSshClient } from './local-ssh.js';
 import { bindCommittedTextInput, trackComposition } from './text-input.js';
+import { createBossQueueConsumer } from './boss-integration.js';
 import { $, esc, options, download } from './ui.js';
 let state,
   view = 'today',
@@ -48,7 +61,9 @@ let state,
   noticeTimer,
   localSsh = null,
   diagnostic = '',
-  draftSource = null;
+  draftSource = null,
+  bossQueue = null,
+  bossStatus = { available: false, accounts: [], pending: 0 };
 let filteredRows = [],
   detailOrigin = null,
   renderedView = '';
@@ -66,7 +81,7 @@ const drafts = createDraftManager({
   },
 });
 const diskBackup = createDiskBackup({
-  readWorkspace: readRawState,
+  readWorkspace: readState,
   readDrafts: () => drafts.store.list(),
   onStatus: (status) => {
     const el = $('#disk-backup-status');
@@ -147,18 +162,22 @@ async function change(transform, reason, savedDraft) {
 }
 function statusRender() {
   const dirty = !equal(state.data, state.base);
-  $('#sync-state').textContent = syncing
-    ? '正在同步…'
-    : state.pending
-      ? '有冲突待处理'
-      : dirty
-        ? '本机已保存 · 待同步'
-        : state.lastSync
-          ? '已同步'
-          : '仅本机保存';
-  $('#sync-button').disabled = syncing;
+  const persistence = storageStatus();
+  $('#sync-state').textContent = persistence.offline
+    ? '本机服务离线 · 只读缓存'
+    : syncing
+      ? '正在同步…'
+      : state.pending
+        ? '有冲突待处理'
+        : dirty
+          ? '本机已保存 · 待同步'
+          : state.lastSync
+            ? '已同步'
+            : '仅本机保存';
+  $('#sync-button').disabled = syncing || persistence.offline;
   $('#sync-button').textContent = syncing ? '同步中…' : useSsh() ? 'SSH 同步' : '立即同步';
-  $('#local-status').textContent = `${live(state.data.opportunities).length} 个岗位 · 本地已保存`;
+  $('#local-status').textContent =
+    `${live(state.data.opportunities).length} 个岗位 · ${persistence.offline ? '仅显示只读缓存' : persistence.local ? '本机服务已保存' : '浏览器已保存'}`;
   $('#last-sync').textContent = state.lastSync
     ? `上次同步 ${new Date(state.lastSync).toLocaleString('zh-CN')}`
     : '尚未同步到 GitHub';
@@ -371,6 +390,7 @@ function render(preserveDrafts = false) {
             syncing,
             diagnostic,
             backupStatus: diskBackup.status(),
+            bossStatus,
           })
         : !live(state.data.opportunities).length && view !== 'list'
           ? emptyView()
@@ -540,13 +560,7 @@ function bindForms() {
       if (different && !confirm('切换同步目标后，本机记录会保留，并与新仓库的数据合并。继续切换？'))
         return;
       token = String(f.get('token')).trim();
-      state = await updateState((s) => ({
-        ...s,
-        config,
-        base: different ? emptyData() : s.base,
-        lastSync: different ? '' : s.lastSync,
-        pending: different ? null : s.pending,
-      }));
+      state = await setSyncConfig(config);
       render();
       notify('连接设置已保存。令牌仅在当前页面使用。');
     } catch (e) {
@@ -593,6 +607,11 @@ function openEditor(id = '', source) {
   if (id && !live(state.data.opportunities).some((o) => o.id === id))
     throw new Error('这个草稿对应的岗位已删除，内容仍可在草稿箱查看和复制。');
   let original = state.data.opportunities.find((o) => o.id === id) || {};
+  const hasBossSourceBinding =
+    !!id &&
+    live(state.data.sourceBindings).some(
+      (binding) => binding.kind === 'opportunity' && binding.opportunityId === id,
+    );
   const o = {
     company: '',
     role: '',
@@ -613,6 +632,10 @@ function openEditor(id = '', source) {
     ...original,
     ...getOpportunityStatus(original),
   };
+  if (hasBossSourceBinding && !original.readState) o.readState = '';
+  const bossReadStateOption = hasBossSourceBinding
+    ? `<option value="" ${o.readState === '' ? 'selected' : ''}>未设（仅看平台观察）</option>`
+    : '';
   $('#editor-content').innerHTML =
     `<form id="editor-form"><div class="dialog-header"><div><h2>${id ? '编辑岗位' : '新增岗位'}</h2><p>公司和岗位必填，其余可以稍后补充。</p></div><button type="button" class="close" data-close="editor-dialog" aria-label="关闭">×</button></div><div class="dialog-body"><div id="editor-error" class="error form-error" role="alert"></div><div class="form-grid">${[
       ['company', '公司'],
@@ -624,7 +647,7 @@ function openEditor(id = '', source) {
       )
       .join(
         '',
-      )}<label>招聘阶段<select name="stage">${options(STAGES, o.stage)}</select></label><label>关注程度<select name="priority">${options(['普通', '重点', '暂缓'], o.priority)}</select></label><label>消息状态<select name="readState">${options(READ_STATES, o.readState)}</select></label><label>简历状态<select name="resumeState">${options(['未知', '被索要', '已发送', '对方已接收'], o.resumeState)}</select></label><p class="span-2 note-summary" data-resume-linked-note hidden>BOSS 简历已发送或已接收时，消息联动为已读，已触达推进为沟通中；面试及后续阶段保留，保存后生效。</p><label>首次联系<input type="date" name="appliedAt" value="${esc(o.appliedAt)}"></label><label>结束原因<select name="endReason"><option value="">未结束 / 未填写</option>${options(['不匹配/拒绝', '职位关闭', '主动放弃', '已入职', '其他'], o.endReason)}</select></label>${[
+      )}<label>招聘阶段<select name="stage">${options(STAGES, o.stage)}</select></label><label>关注程度<select name="priority">${options(['普通', '重点', '暂缓'], o.priority)}</select></label><label>消息状态<select name="readState">${bossReadStateOption}${options(READ_STATES, o.readState)}</select></label><label>简历状态<select name="resumeState">${options(['未知', '被索要', '已发送', '对方已接收'], o.resumeState)}</select></label><p class="span-2 note-summary" data-resume-linked-note hidden>BOSS 简历已发送或已接收时，消息联动为已读，已触达推进为沟通中；面试及后续阶段保留，保存后生效。</p><label>首次联系<input type="date" name="appliedAt" value="${esc(o.appliedAt)}"></label><label>结束原因<select name="endReason"><option value="">未结束 / 未填写</option>${options(['不匹配/拒绝', '职位关闭', '主动放弃', '已入职', '其他'], o.endReason)}</select></label>${[
       ['platform', '平台'],
       ['source', '来源类型（如猎头、内推）'],
       ['contact', '联系人'],
@@ -660,7 +683,9 @@ function openEditor(id = '', source) {
   });
   // A legacy draft may contain values no longer present in the select options.
   // Preserve its original record for conflict detection; only map the form controls.
-  const status = getOpportunityStatus({ ...o, ...editing?.values });
+  const restoredValues = { ...o, ...editing?.values };
+  const status = getOpportunityStatus(restoredValues);
+  if (hasBossSourceBinding && !restoredValues.readState) status.readState = '';
   for (const [name, value] of Object.entries(status))
     $('#editor-form').elements.namedItem(name).value = value;
   syncEditorResumeStatus(editorForm);
@@ -682,6 +707,12 @@ function openEditor(id = '', source) {
     $('#editor-error').textContent =
       '原岗位已有新修改。草稿保留供核对；请复制需要的内容，丢弃旧草稿后重新编辑。';
   $('#editor-dialog').showModal();
+  const manuallyTouched = new Set();
+  const rememberEdit = (event) => {
+    if (event.target.name) manuallyTouched.add(event.target.name);
+  };
+  $('#editor-form').addEventListener('input', rememberEdit);
+  $('#editor-form').addEventListener('change', rememberEdit);
   $('#editor-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     const captured = drafts.capture(e.target);
@@ -720,7 +751,7 @@ function openEditor(id = '', source) {
               if (task.opportunityId === jobId && !task.deletedAt && task.status === '待办')
                 task.status = '取消';
             }
-          return validateData(data);
+          return validateData(markManualFields(data, jobId, manuallyTouched));
         },
         undefined,
         { form: e.target, captured },
@@ -824,6 +855,8 @@ async function diagnose() {
   const button = document.querySelector('[data-action="diagnose"]');
   if (button) button.disabled = true;
   try {
+    if (storageStatus().local && !useSsh())
+      throw new Error('本机正式工作区只使用服务中已配置且与当前目标一致的 SSH 同步。');
     const client = useSsh() ? localSshClient(localSsh.session) : githubClient(state.config, token);
     const result = await client.read();
     diagnostic = result.missing
@@ -900,15 +933,7 @@ async function showConflicts(pending) {
     e.preventDefault();
     try {
       const choices = Object.fromEntries(new FormData(e.target));
-      state = await updateState((s) => {
-        if (s.generation !== pending.generation)
-          throw new Error('本机记录已变化，请关闭后再次同步，重新核对冲突。');
-        s.data = resolveConflicts(pending.data, pending.conflicts, choices);
-        if (pending.remote) s.base = pending.remote;
-        s.pending = null;
-        s.generation++;
-        return s;
-      });
+      state = await resolveSyncConflict(pending, choices);
       channel?.postMessage('changed');
       $('#conflict-dialog').close();
       render();
@@ -921,11 +946,13 @@ async function showConflicts(pending) {
 async function synchronize(allowCreate = false) {
   if (syncing) return;
   if (state.pending) {
-    if (state.pending.generation === state.generation) {
-      await showConflicts(state.pending);
-      return;
-    }
-    state = await updateState((s) => ({ ...s, pending: null }));
+    await showConflicts(state.pending);
+    return;
+  }
+  if (storageStatus().local && !useSsh()) {
+    navigate('settings');
+    notify('本机正式工作区需要在服务中配置与当前目标一致的 SSH 同步。');
+    return;
   }
   if (!useSsh() && !token) {
     navigate('settings');
@@ -940,7 +967,7 @@ async function synchronize(allowCreate = false) {
       syncWorkspace({
         client: useSsh() ? localSshClient(localSsh.session) : githubClient(state.config, token),
         readState,
-        updateState,
+        acknowledgeState: acknowledgeSync,
         allowCreate,
       });
     const result = navigator.locks
@@ -961,11 +988,7 @@ async function synchronize(allowCreate = false) {
       return;
     }
     if (result.conflicts) {
-      state = await updateState((s) => {
-        if (s.generation !== result.generation) throw new Error('本机记录刚发生修改，请重新同步。');
-        s.pending = result;
-        return s;
-      });
+      state = await stageSyncConflict(result);
       await showConflicts(result);
     } else {
       state = result.state;
@@ -986,6 +1009,37 @@ document.addEventListener('click', async (e) => {
   try {
     if (b.dataset.close) {
       document.getElementById(b.dataset.close).close();
+      return;
+    }
+    if (b.dataset.bossBind) {
+      if (!bossQueue) throw new Error('BOSS 本机接入尚未启用。');
+      await bossQueue.bind(b.dataset.bossBind);
+      state = await readState();
+      render();
+      notify('BOSS 采集来源已绑定；队列处理结果请以状态卡为准。');
+      return;
+    }
+    if (b.dataset.bossRestore) {
+      if (!bossQueue) throw new Error('BOSS 本机接入尚未启用。');
+      if (
+        !confirm(
+          '确认将此 BOSS 来源绑定恢复到当前工作区？旧工作区归属将更新；恢复后仍需核对缺失的已回执批次。',
+        )
+      )
+        return;
+      await bossQueue.bind(b.dataset.bossRestore, { restore: true });
+      state = await readState();
+      render();
+      notify('来源绑定已恢复；请核对需要重放的批次。');
+      return;
+    }
+    if (b.dataset.bossReplay) {
+      if (!bossQueue) throw new Error('BOSS 本机接入尚未启用。');
+      if (!confirm('核对并重放这个批次？已有事件会跳过，缺少的来源证据会按当前规则补录。')) return;
+      await bossQueue.replay(b.dataset.bossReplay);
+      state = await readState();
+      render();
+      notify('批次已重新核对；补录结果请以状态卡为准。');
       return;
     }
     if (b.dataset.view) {
@@ -1191,22 +1245,108 @@ channel?.addEventListener('message', async () => {
 });
 window.addEventListener('offline', () => notify('当前离线，记录继续保存在本机。'));
 window.addEventListener('online', () => notify('网络已恢复，可以点击“立即同步”。'));
+window.addEventListener('workspace-cache-failed', () =>
+  notify('正式记录已保存到本机服务，浏览器缓存更新失败；请检查网站存储空间。'),
+);
+window.addEventListener('workspace-offline', () => {
+  if (state) statusRender();
+  notify('本机服务暂时不可用，当前显示浏览器只读缓存。草稿可保留，正式修改须等待服务恢复。');
+});
 $('#app-version').textContent = `v${APP_VERSION}`;
 $('#date-label').textContent = new Date().toLocaleDateString('zh-CN', {
   month: 'long',
   day: 'numeric',
   weekday: 'long',
 });
-try {
+async function startWorkspace() {
   state = await readState();
   localSsh = await discoverLocalSsh();
   selected = '';
   render();
   drafts.refreshCount();
   diskBackup.start();
+  bossQueue = createBossQueueConsumer({
+    readWorkspace: readState,
+    editWorkspace: editData,
+    bindWorkspace: bindBossSource,
+    onCommitted: async () => {
+      state = await readState();
+      channel?.postMessage('changed');
+      render(true);
+    },
+    onStatus: (next) => {
+      bossStatus = next;
+      if (view === 'settings' && state) render(true);
+    },
+  });
+  void bossQueue.run();
+  setInterval(() => void bossQueue?.run(), 30000);
+  // Service-side ingestion continues without an open page. Refresh the local view
+  // from its authority without submitting or replaying source applications.
+  let refreshingWorkspace = false;
+  setInterval(async () => {
+    if (refreshingWorkspace || !bossStatus.serverManaged || document.visibilityState !== 'visible')
+      return;
+    refreshingWorkspace = true;
+    try {
+      const next = await readState();
+      statusRender();
+      if (!equal(next, state)) {
+        state = next;
+        render(true);
+      }
+    } catch (error) {
+      report(error);
+    } finally {
+      refreshingWorkspace = false;
+    }
+  }, 15000);
+}
+try {
+  await startWorkspace();
 } catch (e) {
+  let preparedMigration = null;
+  const migrationRequired = [
+      'LOCAL_WORKSPACE_IMPORT_REQUIRED',
+      'LOCAL_WORKSPACE_BROWSER_DATA_UNMIGRATED',
+      'LOCAL_WORKSPACE_AUTHORITY_MISMATCH',
+    ].includes(e.code),
+    firstImport = e.code === 'LOCAL_WORKSPACE_IMPORT_REQUIRED';
   $('#app-content').innerHTML =
-    `<section class="panel empty"><h2>本地记录暂时无法打开</h2><p>${esc(e.message)}</p><button class="secondary" data-action="raw-backup">导出原始本地状态</button><p>原始导出用于修复，不会改动现有记录。</p></section>`;
+    `<section class="panel empty"><h2>${migrationRequired ? '启用本机工作区' : '本地记录暂时无法打开'}</h2><p>${esc(e.message)}</p>${migrationRequired ? `<div class="button-row"><button id="prepare-local-workspace">1. 导出完整迁移备份</button><button id="initialize-local-workspace" disabled>2. 核对后${firstImport ? '迁移' : '切换'}并启用</button></div><p id="local-migration-summary" class="muted">${firstImport ? '必须先从保存正式记录的浏览器导出包含工作区和草稿的完整备份；空浏览器不能初始化正式工作区。' : '本机服务已有正式工作区。必须先完整备份此浏览器的 IndexedDB 和草稿；继续后仅切换到服务正式数据，不会把旧缓存静默覆盖或自动合并。'}</p>` : ''}<button class="secondary" data-action="raw-backup">导出原始工作区（应急）</button><p>原始 IndexedDB、快照和草稿不会被删除；迁移后由本机服务保存正式数据。</p></section>`;
+  $('#prepare-local-workspace')?.addEventListener('click', async (event) => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    try {
+      preparedMigration = await prepareLocalWorkspaceMigration(drafts.store.list());
+      download(
+        `求职完整迁移备份-${today()}.json`,
+        preparedMigration.text,
+        'application/json;charset=utf-8',
+      );
+      const { summary } = preparedMigration;
+      $('#local-migration-summary').textContent =
+        `已准备完整备份：岗位 ${summary.opportunities}，正式记录 ${summary.formalRecords}，` +
+        `同步基线 ${summary.baselineRecords}，冲突 ${summary.conflicts}，草稿 ${summary.drafts}；` +
+        `SHA-256 ${preparedMigration.sha256}。请保存文件并核对后继续。`;
+      $('#initialize-local-workspace').disabled = false;
+    } catch (error) {
+      preparedMigration = null;
+      button.disabled = false;
+      report(error);
+    }
+  });
+  $('#initialize-local-workspace')?.addEventListener('click', async (event) => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    try {
+      await initializeLocalWorkspace(preparedMigration, drafts.store.list());
+      await startWorkspace();
+    } catch (error) {
+      button.disabled = false;
+      report(error);
+    }
+  });
 }
 // Optional browser agent interface: opens the same visible form, without saving or syncing data.
 if (document.modelContext?.registerTool) {
@@ -1234,4 +1374,9 @@ if (document.modelContext?.registerTool) {
 
 window.addEventListener('storage', (e) => {
   if (e.key?.startsWith('job-tracker-draft')) drafts.refreshCount();
+});
+
+window.addEventListener('focus', () => void bossQueue?.run());
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') void bossQueue?.run();
 });

@@ -133,12 +133,14 @@ const secret = 'a'.repeat(64),
     'sec-fetch-site': 'same-origin',
     'content-type': 'application/json',
     'x-job-tracker-session': secret,
+    'x-job-tracker-protocol': '1',
   };
 async function request({
   url = '/__local/git',
   method = 'PUT',
   headers = baseHeaders,
   body = { data: emptyData(), sha: null },
+  workspaceStore,
 } = {}) {
   const req = Readable.from([Buffer.from(JSON.stringify(body))]);
   Object.assign(req, { url, method, headers });
@@ -160,6 +162,7 @@ async function request({
         return { sha: 'b'.repeat(40) };
       },
     },
+    workspaceStore,
   });
   return { status, body: JSON.parse(text), calls };
 }
@@ -198,4 +201,49 @@ test('本机会话可获取，但不允许跨源读取；PUT不接受自选路�
   const ok = await request();
   assert.equal(ok.status, 200);
   assert.equal(ok.calls, 1);
+});
+
+test('本机SSH读写签发并完成服务端同步事务，PUT不能省略事务证明', async () => {
+  const syncTransactionId = 'sync-00000000-0000-4000-8000-000000000001',
+    actions = [];
+  const workspaceStore = {
+    prepareSyncTransaction: async (remote, target) => {
+      actions.push(['prepare', remote.missing, target.path]);
+      return {
+        syncTransactionId,
+        workspaceRevision: 3,
+        uploadDigest: 'c'.repeat(64),
+        uploadRequired: true,
+        conflictCount: 0,
+      };
+    },
+    reserveSyncUpload: async (id, value, sha) => {
+      actions.push(['reserve', id, value.schemaVersion, sha]);
+      return value;
+    },
+    completeSyncUpload: async (id) => {
+      actions.push(['complete', id]);
+      return { syncTransactionId: id, uploadDigest: 'c'.repeat(64) };
+    },
+    failSyncUpload: async (id) => actions.push(['failed', id]),
+  };
+  const read = await request({ method: 'GET', workspaceStore });
+  assert.equal(read.status, 200);
+  assert.equal(read.body.syncTransactionId, syncTransactionId);
+  assert.deepEqual(actions[0], ['prepare', true, 'data.json']);
+
+  const missing = await request({ workspaceStore });
+  assert.equal(missing.status, 400);
+  assert.equal(missing.calls, 0);
+  const written = await request({
+    workspaceStore,
+    body: { data: emptyData(), sha: null, syncTransactionId },
+  });
+  assert.equal(written.status, 200);
+  assert.equal(written.body.syncTransactionId, syncTransactionId);
+  assert.equal(written.calls, 1);
+  assert.deepEqual(actions.slice(1), [
+    ['reserve', syncTransactionId, 3, null],
+    ['complete', syncTransactionId],
+  ]);
 });

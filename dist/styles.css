@@ -1072,6 +1072,39 @@ details > p {
 .organize-new-entry strong {
   font-size: 0.875rem;
 }
+.integration-stats {
+  display: flex;
+  gap: 18px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+.integration-stats strong {
+  color: var(--text);
+  font-size: 1rem;
+}
+.source-bindings {
+  display: grid;
+  gap: 10px;
+}
+.source-binding {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+}
+.source-binding small {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+}
+.platform-observations li {
+  overflow-wrap: anywhere;
+}
 .jobs-toolbar {
   margin-bottom: 20px;
 }

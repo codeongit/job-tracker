@@ -308,7 +308,7 @@ test('v2完整备份保留草稿、基线和关联冲突双方；v1仍可读取�
   await store.save(SOURCE_B, legacy);
   const upgraded = await store.read(SOURCE_B, 'latest.json');
   assert.equal(upgraded.backupVersion, 2);
-  assert.equal(upgraded.workspace.workspaceVersion, 2);
+  assert.equal(upgraded.workspace.workspaceVersion, 3);
   assert.deepEqual(upgraded.workspace.data, oldWorkspace.data);
   assert.deepEqual(upgraded.drafts, []);
 });

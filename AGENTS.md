@@ -2,8 +2,10 @@
 
 - Read [docs/DECISIONS.md](docs/DECISIONS.md) first for accepted decisions, their rationale, and review triggers. When changing a key decision, append a new numbered entry with its source and supersession links; retain the old rationale. New user instructions take precedence over older decisions.
 
+- Recruitment automation must follow [docs/AUTOMATION_POLICY.md](docs/AUTOMATION_POLICY.md): serial operation, recruitment-platform reads only, no replies/applications or unplanned actions, deterministic scripts, and minimal private incident evidence. [BOSS integration](docs/BOSS_AUTOMATION_DESIGN.md) runs only after explicit tracking start; starting/restarting the local service does not authorize BOSS access or resume a previous tracking session. Never install login autostart or enable automatic GitHub sync as a side effect.
+
 - This repository contains publicly shareable interface code. Never add real job records, resume files, private repository content, or credentials to tracked files or `dist/`.
-- Personal data lives in IndexedDB and a user-selected private GitHub repository. Local source configuration belongs in ignored `.local/config.json`.
+- Local-mode authoritative data lives in ignored `.local/workspace/` immutable commits with an atomic HEAD and one service writer. IndexedDB is its read cache; service failure must not silently fall back to independent browser writes. Public/mobile static mode retains its independent IndexedDB and manual private GitHub sync. Local source configuration belongs in ignored `.local/config.json`.
 - Keep GitHub writes limited to the configured JSON path. Verify the repository is private and the branch exists before first-time initialization.
 - Never replace unknown/invalid remote data with empty data. Preserve pending local edits, deletion markers, and upload-time conflicts.
 - Keep tokens in page memory only. Do not persist them, include them in exports, log them, or inject them at build time.
@@ -15,6 +17,8 @@
 - Start with docs/ARCHITECTURE.md, docs/DATA_AND_RECOVERY.md, and docs/MAINTENANCE.md for module boundaries, migrations, recovery semantics, and release steps.
 - Update package.json and dist/version.js together and record behavior changes in CHANGELOG.md. Use Node24 and the pinned pnpm/lockfile.
 - Unknown data fields or future versions must stop writes, never silently disappear. Migrate data/base/pending together and preserve the old workspace in the same transaction.
+- Local mutations use the versioned service command API, expected revision and durable idempotency key. A response retry reuses the exact command; revision conflicts require fresh user review, not blind replay. Keep source facts separate from application decisions; preserve legacy event IDs, account isolation, deletion markers and manual field ownership.
+- Scope background-import conflicts to affected opportunities and their dependencies. Rebase independent changes into the pending candidate while preserving both conflict sides; newly introduced merge conflicts abort that batch. A disk queue receipt is not proof that restored workspace data still contains its facts.
 - Restore is a new local edit: keep the current baseline and tombstone omitted records. Pending backups must preserve both sides; do not treat missing backup content as empty data.
 - Snapshot creation failure must abort the paired edit. Emergency raw export must remain available even when validation fails or data exceeds the sync limit.
 - Check final serialized UTF-8 bytes before all remote writes. Read SSH stdout as bytes, then decode strictly. Never log raw private Git output.

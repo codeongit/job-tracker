@@ -1,10 +1,12 @@
 {
   "name": "job-tracker",
-  "version": "0.6.0",
+  "version": "0.8.1",
   "private": true,
   "type": "module",
   "scripts": {
     "start": "node scripts/serve.mjs",
+    "service": "node scripts/service-control.mjs",
+    "boss": "node scripts/boss-control.mjs",
     "test": "node --test test/*.test.mjs",
     "check": "node scripts/check.mjs",
     "test:browser": "node --test test/browser-regression.mjs",

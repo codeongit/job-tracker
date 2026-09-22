@@ -4,6 +4,7 @@ import { mkdir, open, readFile, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { emptyData, validateData } from '../dist/model.js';
+import { migrateData } from '../dist/workspace.js';
 export class BridgeError extends Error {
   constructor(message, status = 503, code = 'SSH_FAILED') {
     super(message);
@@ -166,7 +167,7 @@ export class GitStore {
     if (size > MAX_SYNC_BYTES) throw new BridgeError('云端数据文件超过 5 MB，已停止同步。', 413);
     let data;
     try {
-      data = validateData(JSON.parse(await this.git(['cat-file', 'blob', sha])));
+      data = migrateData(JSON.parse(await this.git(['cat-file', 'blob', sha])));
     } catch (e) {
       if (e instanceof BridgeError) throw e;
       throw new BridgeError('云端 JSON 校验失败，已保留本地数据并停止同步。', 400);

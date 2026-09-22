@@ -33,17 +33,31 @@ test('上传期间新增编辑仍待同步，基线只确认上传快照', async
   const store = storage(initial);
   let sent;
   const client = {
-    read: async () => ({ data: initial.base, sha: 's', missing: false }),
-    write: async (d) => {
+    read: async () => ({
+      data: initial.base,
+      sha: 's',
+      missing: false,
+      syncTransactionId: 'sync-issued-before-upload',
+    }),
+    write: async (d, _sha, syncTransactionId) => {
+      assert.equal(syncTransactionId, 'sync-issued-before-upload');
       sent = clone(d);
       await store.updateState((s) => {
         s.data.opportunities.push(job('b'));
         s.generation++;
         return s;
       });
+      return { syncTransactionId };
     },
   };
-  const r = await syncWorkspace({ client, ...store });
+  const r = await syncWorkspace({
+    client,
+    ...store,
+    acknowledgeState: async (captured, uploaded, syncTransactionId) => {
+      assert.equal(syncTransactionId, 'sync-issued-before-upload');
+      return store.updateState((current) => acknowledge(current, captured, uploaded));
+    },
+  });
   assert.equal(sent.opportunities.length, 1);
   assert.equal(store.get().base.opportunities.length, 1);
   assert.equal(store.get().data.opportunities.length, 2);
@@ -106,16 +120,31 @@ test('PUT 超时但远端已提交，读回确认而不重复写', async () => {
   const store = storage(start);
   let remote = clone(start.base),
     writes = 0;
+  let reads = 0,
+    acknowledged = '';
   const client = {
-    read: async () => ({ data: remote, sha: 's', missing: false }),
+    read: async () => ({
+      data: remote,
+      sha: 's',
+      missing: false,
+      syncTransactionId: `sync-confirmation-${++reads}`,
+    }),
     write: async (d) => {
       writes++;
       remote = clone(d);
       throw new RemoteError('timeout', 0);
     },
   };
-  const r = await syncWorkspace({ client, ...store });
+  const r = await syncWorkspace({
+    client,
+    ...store,
+    acknowledgeState: async (captured, uploaded, syncTransactionId) => {
+      acknowledged = syncTransactionId;
+      return store.updateState((current) => acknowledge(current, captured, uploaded));
+    },
+  });
   assert.equal(writes, 1);
+  assert.equal(acknowledged, 'sync-confirmation-2');
   assert.equal(r.dirty, false);
 });
 test('离线失败保留本机修改与原基线', async () => {

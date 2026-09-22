@@ -46,15 +46,15 @@ test('旧工作区升级幂等，保留数据、基线、删除标记和冲突�
   old.data.tasks.push({ id: 'deleted-task', deletedAt: '2026-01-01' });
   const before = clone(old),
     upgraded = migrateWorkspace(old);
-  assert.equal(upgraded.workspaceVersion, 2);
+  assert.equal(upgraded.workspaceVersion, 3);
   assert.deepEqual(old, before);
   assert.deepEqual(migrateWorkspace(upgraded), upgraded);
   assert.equal(upgraded.pending.conflicts[0].remote.notes, '远端');
   assert.equal(upgraded.data.tasks[0].deletedAt, '2026-01-01');
 });
 test('未来数据/工作区版本和未知字段拒绝写入，不静默丢弃字段', () => {
-  assert.throws(() => migrateData({ ...emptyData(), schemaVersion: 2 }), /版本/);
-  assert.throws(() => migrateWorkspace({ ...workspace(), workspaceVersion: 3 }), /版本/);
+  assert.throws(() => migrateData({ ...emptyData(), schemaVersion: 4 }), /版本/);
+  assert.throws(() => migrateWorkspace({ ...workspace(), workspaceVersion: 4 }), /版本/);
   const d = data(job('a'));
   d.opportunities[0].futureField = '保留';
   assert.throws(() => migrateData(d), /未知字段/);

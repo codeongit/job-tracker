@@ -15,11 +15,13 @@ const config = { owner: 'example', repo: 'browser-regression', path: 'fixtures/d
 const fakeToken = 'browser-regression-fake-token';
 const clone = (value) => structuredClone(value);
 const emptyData = () => ({
-  schemaVersion: 1,
+  schemaVersion: 2,
   opportunities: [],
   activities: [],
   tasks: [],
   imports: [],
+  sourceBindings: [],
+  sourceEvents: [],
 });
 const fixtureData = () => ({
   ...emptyData(),

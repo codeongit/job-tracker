@@ -1,6 +1,7 @@
 import { validateDrafts } from './draft-data.js';
 import { clone, emptyData, GROUPS, validateData, removeOpportunity } from './model.js';
 import { APP_VERSION, BACKUP_VERSION, DATA_VERSION, WORKSPACE_VERSION } from './version.js';
+import { upgradeSourceLedger } from './source-ledger.js';
 
 export function initialWorkspace() {
   return {
@@ -14,8 +15,42 @@ export function initialWorkspace() {
   };
 }
 
-// Add a pure, one-version step here when the shared data format actually changes.
-const dataMigrations = new Map();
+const V1_GROUPS = ['opportunities', 'activities', 'tasks', 'imports'];
+const dataMigrations = new Map([
+  [
+    1,
+    (input) => {
+      if (Object.keys(input).some((key) => !['schemaVersion', ...V1_GROUPS].includes(key)))
+        throw new Error('旧数据包含未知字段，已停止迁移；原数据未改动。');
+      return {
+        ...input,
+        schemaVersion: 2,
+        sourceBindings: [],
+        sourceEvents: [],
+      };
+    },
+  ],
+  [
+    2,
+    (input) => {
+      const fields = ['schemaVersion', ...V1_GROUPS, 'sourceBindings', 'sourceEvents'];
+      if (
+        Object.keys(input).some((key) => !fields.includes(key)) ||
+        !Array.isArray(input.sourceEvents)
+      )
+        throw new Error('旧数据包含未知字段或来源集合无效，已停止迁移；原数据未改动。');
+      return {
+        ...input,
+        schemaVersion: 3,
+        // The v3 adapter aggregates semantic facts and decisions once. Starting
+        // empty avoids duplicate application IDs and makes migration independent
+        // of the v2 event array order.
+        sourceFacts: [],
+        sourceApplications: [],
+      };
+    },
+  ],
+]);
 export function migrateData(input, options) {
   let data = clone(input);
   if (!Number.isInteger(data?.schemaVersion) || data.schemaVersion > DATA_VERSION) {
@@ -26,6 +61,7 @@ export function migrateData(input, options) {
     if (!migrate) throw new Error('缺少此版本的数据迁移步骤，已保留原数据。');
     data = migrate(data);
   }
+  data = upgradeSourceLedger(data);
   return validateData(data, options);
 }
 
@@ -63,7 +99,7 @@ function validatePending(pending) {
 export function migrateWorkspace(input) {
   if (!input) return initialWorkspace();
   const version = input.workspaceVersion ?? 1;
-  if (![1, WORKSPACE_VERSION].includes(version))
+  if (![1, 2, WORKSPACE_VERSION].includes(version))
     throw new Error('本地工作区来自更新版本，请更新工作台；原数据未改动。');
   if (
     Object.keys(input).some(
@@ -144,6 +180,7 @@ export function parseBackup(input) {
 export function restoreWorkspace(current, backup, mode) {
   const s = migrateWorkspace(current),
     incoming = parseBackup(backup);
+  const before = clone(s);
   if (!['merge', 'snapshot'].includes(mode)) throw new Error('请选择恢复方式。');
   if (s.pending) throw new Error('请先解决当前冲突，再恢复备份；仍可导出完整备份。');
   if (incoming.workspace?.pending) {
@@ -160,7 +197,7 @@ export function restoreWorkspace(current, backup, mode) {
     s.data = clone(incoming.data);
     for (const group of GROUPS) {
       const ids = new Set(s.data[group].map((row) => row.id));
-      for (const row of [...current.data[group], ...current.base[group]]) {
+      for (const row of [...before.data[group], ...before.base[group]]) {
         if (!ids.has(row.id)) {
           s.data[group].push({ ...clone(row), deletedAt: new Date().toISOString() });
           ids.add(row.id);

@@ -59,7 +59,7 @@ test('同公司匹配支持排除 ID，空值和包含关系不提示，岗位�
   assert.equal(matches[0].sameRole, false);
 });
 
-test('全部日期保留原顺序和无日期岗位，默认包含已结束岗位并排除删除记录', () => {
+test('缺少添加时间的旧岗位保留相对顺序，包含已结束岗位并排除删除记录', () => {
   const data = emptyData();
   data.opportunities.push(
     opportunity('undated'),
@@ -74,6 +74,57 @@ test('全部日期保留原顺序和无日期岗位，默认包含已结束岗�
   assert.ok(rows.every(({ dailyRecord }) => dailyRecord === null));
   assert.deepEqual(ids(getFilteredOpportunities(data, { stage: '已结束' })), ['ended']);
   assert.deepEqual(data, before);
+});
+
+test('全部日期按实际添加时间倒序，编辑不置顶，相同或缺失时间保持稳定且不修改源数据', () => {
+  const data = emptyData();
+  data.opportunities.push(
+    opportunity('legacy', { appliedAt: '2026-09-20' }),
+    opportunity('older-edited', {
+      createdAt: '2026-09-16T23:00:00.000Z',
+      updatedAt: '2026-09-18T01:00:00.000Z',
+    }),
+    opportunity('invalid', { createdAt: 'invalid' }),
+    opportunity('same-time-first', { createdAt: '2026-09-17T08:00:00+08:00' }),
+    opportunity('same-time-second', { createdAt: '2026-09-17T00:00:00.000Z' }),
+    opportunity('deleted-newest', {
+      createdAt: '2026-09-18T03:00:00.000Z',
+      deletedAt: '2026-09-18T04:00:00.000Z',
+    }),
+    opportunity('newest', { createdAt: '2026-09-17T01:00:00.000Z', stage: '已结束' }),
+  );
+  const before = structuredClone(data),
+    expected = [
+      'newest',
+      'same-time-first',
+      'same-time-second',
+      'older-edited',
+      'legacy',
+      'invalid',
+    ];
+  assert.deepEqual(ids(getFilteredOpportunities(data)), expected);
+  assert.deepEqual(
+    ids(getFilteredOpportunities(data, { query: '合成公司', stage: '已触达' })),
+    expected.slice(1),
+  );
+  assert.deepEqual(data, before);
+});
+
+test('新增岗位追加在数据末尾时，仍排在第一页最前面', () => {
+  const data = emptyData();
+  for (let day = 1; day <= 11; day++) {
+    data.opportunities.push(
+      opportunity(`job-${day}`, {
+        createdAt: `2026-09-${String(day).padStart(2, '0')}T00:00:00.000Z`,
+      }),
+    );
+  }
+  const rows = getFilteredOpportunities(data);
+  assert.deepEqual(
+    ids(rows.slice(0, 10)),
+    Array.from({ length: 10 }, (_, i) => `job-${11 - i}`),
+  );
+  assert.deepEqual(ids(rows.slice(10)), ['job-1']);
 });
 
 test('关键词匹配公司岗位联系人且忽略大小写，日期和当前阶段取交集', () => {
@@ -104,8 +155,17 @@ test('关键词匹配公司岗位联系人且忽略大小写，日期和当前�
 test('日期结果按岗位合并并保留计划优先排序，跨日结果及首次联系去重一致', () => {
   const data = emptyData();
   data.opportunities.push(
-    opportunity('ended', { company: 'A 合成公司', appliedAt: DATE, stage: '已结束' }),
-    opportunity('busy', { company: 'Z 合成公司', appliedAt: DATE }),
+    opportunity('ended', {
+      company: 'A 合成公司',
+      appliedAt: DATE,
+      stage: '已结束',
+      createdAt: '2026-09-17T00:00:00.000Z',
+    }),
+    opportunity('busy', {
+      company: 'Z 合成公司',
+      appliedAt: DATE,
+      createdAt: '2026-09-11T00:00:00.000Z',
+    }),
     opportunity('undated'),
     opportunity('deleted', { deletedAt: '2026-09-12T01:00:00.000Z' }),
     opportunity('only-deleted-records'),

@@ -1,9 +1,28 @@
-import { clone, equal } from './model.js';
+import {
+  clone,
+  emptyData,
+  equal,
+  mergeData,
+  releaseManualFieldOwnership,
+  resolveConflicts,
+} from './model.js';
 import { migrateWorkspace, restoreWorkspace } from './workspace.js';
+import { acknowledge } from './github.js';
 import { WORKSPACE_VERSION } from './version.js';
+import { createLocalWorkspaceClient } from './local-workspace.js';
 
 const SNAPSHOT_LIMIT = 20;
 let dbPromise;
+let localWorkspace;
+function service() {
+  return (localWorkspace ??= createLocalWorkspaceClient({
+    readCache: readRawState,
+    writeCache: (workspace, options = {}) =>
+      updateCachedState(() => workspace, { emit: false, ...options }),
+    onCacheFailure: () => window.dispatchEvent(new Event('workspace-cache-failed')),
+    onOffline: () => window.dispatchEvent(new Event('workspace-offline')),
+  }));
+}
 function database() {
   return (dbPromise ??= new Promise((resolve, reject) => {
     const req = indexedDB.open('job-tracker-v1', 2);
@@ -68,7 +87,7 @@ export async function readRawState() {
   });
 }
 
-export async function updateState(transform, { reason = '' } = {}) {
+async function updateCachedState(transform, { reason = '', emit = true } = {}) {
   const db = await database();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(['workspace', 'snapshots'], 'readwrite');
@@ -92,7 +111,7 @@ export async function updateState(transform, { reason = '' } = {}) {
       }
     };
     tx.oncomplete = () => {
-      if (changed) window.dispatchEvent(new Event('workspace-saved'));
+      if (changed && emit) window.dispatchEvent(new Event('workspace-saved'));
       resolve(next);
     };
     tx.onerror = () => {
@@ -102,20 +121,85 @@ export async function updateState(transform, { reason = '' } = {}) {
   });
 }
 
-export const readState = () => updateState((s) => s);
-export const editData = (transform, options) =>
-  updateState((s) => {
+export async function updateState(transform, options = {}) {
+  if (await service().active()) {
+    const result = await service().update(transform, options);
+    window.dispatchEvent(new Event('workspace-saved'));
+    return result;
+  }
+  return updateCachedState(transform, options);
+}
+export const readState = async () => (await service().read()) ?? updateCachedState((s) => s);
+export const prepareLocalWorkspaceMigration = (drafts) => service().prepareImport(drafts);
+export const initializeLocalWorkspace = (prepared, drafts) =>
+  service().importCurrent(prepared, drafts);
+export const storageStatus = () => service().status();
+export async function editData(transform, options = {}) {
+  if (await service().active()) {
+    const result = await service().editData(transform, options);
+    window.dispatchEvent(new Event('workspace-saved'));
+    return result;
+  }
+  return updateCachedState((s) => {
     if (s.pending) throw new Error('请先到“数据与同步”解决冲突，再继续编辑。');
-    const next = transform(clone(s.data));
+    const next = releaseManualFieldOwnership(s.data, transform(clone(s.data)));
     if (!equal(next, s.data)) {
       s.data = next;
       s.generation++;
     }
     return s;
   }, options);
-export const saveSnapshot = (reason) => updateState((s) => s, { reason });
-export const restoreBackup = (backup, mode) =>
-  updateState((s) => restoreWorkspace(s, backup, mode), { reason: '恢复备份前' });
+}
+export async function setSyncConfig(config) {
+  if (await service().active()) return service().setSyncConfig(config);
+  return updateCachedState((s) => ({
+    ...s,
+    config,
+    base: equal(config, s.config) ? s.base : emptyData(),
+    lastSync: equal(config, s.config) ? s.lastSync : '',
+    pending: equal(config, s.config) ? s.pending : null,
+  }));
+}
+export async function stageSyncConflict({ remote, generation, syncTransactionId }) {
+  if (await service().active()) return service().stageSyncConflict(syncTransactionId, generation);
+  return updateCachedState((s) => {
+    if (s.generation !== generation) throw new Error('本机记录刚发生修改，请重新同步。');
+    const merged = mergeData(s.base, s.data, remote);
+    if (!merged.conflicts.length) throw new Error('当前数据没有需要暂存的同步冲突。');
+    s.pending = { data: merged.data, remote, conflicts: merged.conflicts, generation };
+    return s;
+  });
+}
+export async function resolveSyncConflict(pending, choices) {
+  if (await service().active()) return service().resolveSyncConflict(choices, pending.generation);
+  return updateCachedState((s) => {
+    if (s.generation !== pending.generation)
+      throw new Error('本机记录已变化，请关闭后再次同步，重新核对冲突。');
+    s.data = resolveConflicts(pending.data, pending.conflicts, choices);
+    if (pending.remote) s.base = pending.remote;
+    s.pending = null;
+    s.generation++;
+    return s;
+  });
+}
+export async function acknowledgeSync(captured, uploaded, syncTransactionId) {
+  if (await service().active()) return service().acknowledgeSync(syncTransactionId);
+  return updateCachedState((current) => acknowledge(current, captured, uploaded));
+}
+export async function bindBossSource(accountNamespace, { restore = false } = {}) {
+  if (!(await service().active())) return null;
+  return service().bindBossAccount(accountNamespace, restore);
+}
+export async function saveSnapshot(reason) {
+  if (await service().active()) return (await service().read()) ?? null;
+  return updateCachedState((s) => s, { reason });
+}
+export async function restoreBackup(backup, mode) {
+  if (await service().active()) return service().restoreWorkspace(backup, mode);
+  return updateCachedState((s) => restoreWorkspace(s, backup, mode), {
+    reason: '恢复备份前',
+  });
+}
 
 export async function listSnapshots() {
   const db = await database();

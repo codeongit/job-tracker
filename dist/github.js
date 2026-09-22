@@ -1,5 +1,6 @@
 import { MAX_SYNC_BYTES, checkSyncText, serializeForSync } from './limits.js';
 import { emptyData, validateData, mergeData, equal } from './model.js';
+import { migrateData } from './workspace.js';
 export class RemoteError extends Error {
   constructor(message, status) {
     super(message);
@@ -113,7 +114,7 @@ export function githubClient(config, token, fetcher = fetch) {
           file.encoding === 'none'
             ? await request(`/git/blobs/${encodeURIComponent(file.sha)}`, {}, true)
             : decodeUtf8(file.content);
-        data = validateData(JSON.parse(checkSyncText(text)));
+        data = migrateData(JSON.parse(checkSyncText(text)));
       } catch (e) {
         throw new Error(`云端文件校验失败：${e.message}`);
       }
@@ -146,7 +147,13 @@ export function acknowledge(current, captured, uploaded) {
       : null,
   };
 }
-export async function syncWorkspace({ client, readState, updateState, allowCreate = false }) {
+export async function syncWorkspace({
+  client,
+  readState,
+  updateState,
+  acknowledgeState,
+  allowCreate = false,
+}) {
   for (let attempt = 0; attempt < 3; attempt++) {
     const remote = await client.read(),
       captured = await readState();
@@ -161,24 +168,31 @@ export async function syncWorkspace({ client, readState, updateState, allowCreat
         data: combined.data,
         remote: remote.data,
         generation: captured.generation,
+        syncTransactionId: remote.syncTransactionId,
       };
     validateData(combined.data);
+    let syncTransactionId = remote.syncTransactionId;
     if (!equal(combined.data, remote.data) || remote.missing) {
       try {
-        await client.write(combined.data, remote.sha);
+        const written = await client.write(combined.data, remote.sha, remote.syncTransactionId);
+        syncTransactionId = written?.syncTransactionId || syncTransactionId;
       } catch (e) {
         if (e.status === 409) continue;
         if (e.status === 0) {
           // A timed-out write may already exist remotely; confirm before retrying it.
           const check = await client.read();
           if (check.missing || !equal(check.data, combined.data)) throw e;
+          syncTransactionId = check.syncTransactionId;
         } else throw e;
       }
     }
-    const updated = await updateState((current) => {
-      if (!equal(current.config, captured.config)) throw new Error('同步目标已改变，请重新同步。');
-      return acknowledge(current, captured, combined.data);
-    });
+    const updated = acknowledgeState
+      ? await acknowledgeState(captured, combined.data, syncTransactionId)
+      : await updateState((current) => {
+          if (!equal(current.config, captured.config))
+            throw new Error('同步目标已改变，请重新同步。');
+          return acknowledge(current, captured, combined.data);
+        });
     return {
       state: updated,
       pending: !!updated.pending,

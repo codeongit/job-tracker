@@ -9,6 +9,11 @@ function normalizeMatchText(value) {
     .toLowerCase();
 }
 
+function creationTime(opportunity) {
+  const time = Date.parse(opportunity.createdAt);
+  return Number.isFinite(time) ? time : -Infinity;
+}
+
 export function findCompanyMatches(data, { company = '', role = '', excludeId = '' } = {}) {
   const companyKey = normalizeMatchText(company),
     roleKey = normalizeMatchText(role);
@@ -33,7 +38,9 @@ export function getFilteredOpportunities(data, { query = '', stage = '', date = 
           opportunity: dailyRecord.opportunity,
           dailyRecord,
         }))
-      : live(data.opportunities).map((opportunity) => ({ opportunity, dailyRecord: null })),
+      : live(data.opportunities)
+          .sort((a, b) => creationTime(b) - creationTime(a) || 0)
+          .map((opportunity) => ({ opportunity, dailyRecord: null })),
     keyword = query.toLowerCase();
 
   return rows.filter(

@@ -46,6 +46,101 @@ test('同一记录并发修改需要选择，双方相同修改不冲突', () =>
   );
   assert.equal(mergeData(b, l, l).conflicts.length, 0);
 });
+test('同一记录的不同字段自动合并，并保留较新的更新时间', () => {
+  const b = dataset(
+      job('a', {
+        notes: '',
+        updatedAt: '2026-09-20T01:00:00.000Z',
+      }),
+    ),
+    l = clone(b),
+    r = clone(b);
+  l.opportunities[0].notes = '本机备注';
+  l.opportunities[0].updatedAt = '2026-09-20T02:00:00.000Z';
+  r.opportunities[0].stage = '沟通中';
+  r.opportunities[0].updatedAt = '2026-09-20T03:00:00.000Z';
+  const m = mergeData(b, l, r);
+  assert.equal(m.conflicts.length, 0);
+  assert.equal(m.data.opportunities[0].notes, '本机备注');
+  assert.equal(m.data.opportunities[0].stage, '沟通中');
+  assert.equal(m.data.opportunities[0].updatedAt, '2026-09-20T03:00:00.000Z');
+});
+test('同字段分歧只核对该字段，选择任一侧都不丢独立修改', () => {
+  const b = dataset(job('a', { notes: '', contact: '', updatedAt: '2026-09-20T01:00:00.000Z' })),
+    l = clone(b),
+    r = clone(b);
+  Object.assign(l.opportunities[0], {
+    notes: '本机备注',
+    contact: '本机补充联系人',
+    updatedAt: '2026-09-20T02:00:00.000Z',
+  });
+  Object.assign(r.opportunities[0], {
+    notes: '云端备注',
+    stage: '沟通中',
+    updatedAt: '2026-09-20T03:00:00.000Z',
+  });
+  const m = mergeData(b, l, r);
+  assert.equal(m.conflicts.length, 1);
+  assert.equal(m.conflicts[0].local.contact, '本机补充联系人');
+  assert.equal(m.conflicts[0].local.stage, '沟通中');
+  assert.equal(m.conflicts[0].remote.contact, '本机补充联系人');
+  assert.equal(m.conflicts[0].remote.stage, '沟通中');
+  const resolved = resolveConflicts(m.data, m.conflicts, { 'opportunities:a': 'remote' });
+  assert.equal(resolved.opportunities[0].notes, '云端备注');
+  assert.equal(resolved.opportunities[0].contact, '本机补充联系人');
+  assert.equal(resolved.opportunities[0].stage, '沟通中');
+});
+test('有关联语义的字段作为原子组冲突，不拼出无效的混合状态', () => {
+  const base = dataset(
+      job('a', {
+        platform: 'BOSS',
+        url: 'https://www.zhipin.com/job_detail/base.html',
+        externalId: 'base',
+        resumeState: '未知',
+        readState: '未读',
+        endReason: '',
+      }),
+    ),
+    local = clone(base),
+    remote = clone(base);
+  Object.assign(local.opportunities[0], {
+    stage: '已结束',
+    endReason: '不匹配/拒绝',
+    platform: '内推',
+  });
+  Object.assign(remote.opportunities[0], {
+    stage: '面试中',
+    url: 'https://example.com/jobs/new',
+    externalId: 'new',
+  });
+  const merged = mergeData(base, local, remote);
+  assert.equal(merged.conflicts.length, 1);
+  assert.equal(merged.conflicts[0].local.stage, '已结束');
+  assert.equal(merged.conflicts[0].local.endReason, '不匹配/拒绝');
+  assert.equal(merged.conflicts[0].local.platform, '内推');
+  assert.equal(merged.conflicts[0].local.url, base.opportunities[0].url);
+  assert.equal(merged.conflicts[0].remote.stage, '面试中');
+  assert.equal(merged.conflicts[0].remote.endReason, '');
+  assert.equal(merged.conflicts[0].remote.platform, 'BOSS');
+  assert.equal(merged.conflicts[0].remote.url, 'https://example.com/jobs/new');
+});
+test('任务完成状态和完成时间保持同一原子组', () => {
+  const base = dataset(job('a')),
+    local = clone(base),
+    remote = clone(base);
+  base.tasks.push({ id: 't', opportunityId: 'a', text: '跟进', status: '待办', completedAt: '' });
+  local.tasks = clone(base.tasks);
+  remote.tasks = clone(base.tasks);
+  local.tasks[0].status = '完成';
+  local.tasks[0].completedAt = '2026-09-21T08:00:00.000Z';
+  remote.tasks[0].status = '取消';
+  const merged = mergeData(base, local, remote);
+  assert.equal(merged.conflicts.length, 1);
+  assert.equal(merged.conflicts[0].local.status, '完成');
+  assert.equal(merged.conflicts[0].local.completedAt, '2026-09-21T08:00:00.000Z');
+  assert.equal(merged.conflicts[0].remote.status, '取消');
+  assert.equal(merged.conflicts[0].remote.completedAt, '');
+});
 test('双方各新增不同 ID 保留；同 ID 新建不同内容冲突', () => {
   const m = mergeData(emptyData(), dataset(job('a')), dataset(job('b')));
   assert.equal(m.data.opportunities.length, 2);
@@ -76,7 +171,7 @@ test('岗位删除与远端新增任务冲突，选删除后关联任务一并�
   assert.ok(resolved.tasks[0].deletedAt);
 });
 test('未知版本、重复 ID、孤立任务被拒绝；未知字段明确拒绝而非丢弃', () => {
-  assert.throws(() => validateData({ schemaVersion: 2 }));
+  assert.throws(() => validateData({ schemaVersion: 3 }));
   assert.throws(() => validateData(dataset(job('a'), job('a'))));
   const d = dataset(job('a'));
   d.tasks.push({ id: 't', opportunityId: 'missing', text: '跟进', status: '待办' });
