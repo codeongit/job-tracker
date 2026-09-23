@@ -6,6 +6,7 @@ import { promisify } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   BOSS_BATCH_FORMAT,
+  BOSS_CONTROL_MAX_ATTEMPTS,
   BOSS_CONTROL_FORMAT,
   BOSS_INCIDENT_FORMAT,
   BOSS_INTEGRATION_VERSION,
@@ -1228,9 +1229,9 @@ export function reserveCheckAttempt(inputControl, date) {
   // an old cooldown cannot survive the v0.8 migration.
   if (duplicateUntil && Number.isFinite(duplicateUntil.getTime()) && now < duplicateUntil)
     integrationFail('BOSS_CHECK_TOO_SOON', { nextAllowedAt: duplicateUntil.toISOString() });
-  const attempts = control.attempts.filter(
-    (attempt) => now.getTime() - Date.parse(attempt) < 8 * 24 * 60 * 60 * 1_000,
-  );
+  const attempts = control.attempts
+    .filter((attempt) => now.getTime() - Date.parse(attempt) < 8 * 24 * 60 * 60 * 1_000)
+    .slice(-(BOSS_CONTROL_MAX_ATTEMPTS - 1));
   const attemptedAt = now.toISOString();
   attempts.push(attemptedAt);
   const next = new Date(now.getTime() + MIN_CHECK_INTERVAL_MS).toISOString();

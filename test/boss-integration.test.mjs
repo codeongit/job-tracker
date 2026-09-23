@@ -703,6 +703,22 @@ test('saved snapshot recovers before any browser command and only merges duplica
     ),
   );
   assert.ok(next.nextAllowedAt);
+
+  const saturatedAttempts = Array.from({ length: 128 }, (_, index) =>
+    new Date(Date.parse('2026-09-19T00:00:00.000Z') + index * 10_000).toISOString(),
+  );
+  const saturated = reserveCheckAttempt(
+    {
+      ...base,
+      attempts: saturatedAttempts,
+      lastAttemptAt: saturatedAttempts.at(-1),
+      nextAllowedAt: '',
+    },
+    new Date('2026-09-19T00:21:20.000Z'),
+  );
+  assert.equal(saturated.attempts.length, 128);
+  assert.equal(saturated.attempts.includes(saturatedAttempts[0]), false);
+  assert.equal(saturated.attempts.at(-1), '2026-09-19T00:21:20.000Z');
 });
 
 test('explicit resume clears pause but preserves browser budget and checkpoint', async (t) => {

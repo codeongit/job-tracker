@@ -18,6 +18,7 @@ export const BOSS_CONTROL_FORMAT = 'job-tracker-boss-control';
 export const BOSS_RUN_FORMAT = 'job-tracker-boss-run';
 export const BOSS_INCIDENT_FORMAT = 'job-tracker-boss-incident';
 export const BOSS_INTEGRATION_VERSION = 2;
+export const BOSS_CONTROL_MAX_ATTEMPTS = 128;
 const SUPPORTED_QUEUE_VERSIONS = new Set([1, BOSS_INTEGRATION_VERSION]);
 
 const MAX_BATCH_BYTES = 5_000_000;
@@ -574,7 +575,7 @@ export function validateBossControl(input) {
     iso(value.checkpoint.capturedAt, 'control.checkpoint.capturedAt');
     integer(value.checkpoint.sourceSequence, 'control.checkpoint.sourceSequence', { min: 0 });
   }
-  if (!Array.isArray(value.attempts) || value.attempts.length > 128)
+  if (!Array.isArray(value.attempts) || value.attempts.length > BOSS_CONTROL_MAX_ATTEMPTS)
     fail('control.attempts 格式无效。');
   value.attempts.forEach((attempt, index) => iso(attempt, `control.attempts[${index}]`));
   if (new Set(value.attempts).size !== value.attempts.length)
