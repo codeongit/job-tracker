@@ -20,6 +20,7 @@ import {
   main,
   previewInitialEnvelope,
   previewCommand,
+  readBossConfig,
   readTrackerSnapshot,
   recoverSavedCommand,
   reserveCheckAttempt,
@@ -32,6 +33,27 @@ const ACCOUNT = `boss-geek:${'a'.repeat(64)}`;
 const START = '2026-09-18T14:45:09.648Z';
 const FIRST_NAME = '2026-09-18T14-49-59-473Z_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa.json';
 const SECOND_NAME = '2026-09-18T15-00-00-000Z_bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb.json';
+
+test('legacy trackerRoot is accepted only as migration input and cannot choose executable code', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'job-tracker-boss-config-'));
+  t.after(async () => rm(root, { recursive: true, force: true }));
+  const configPath = join(root, 'config.json');
+  await writeFile(
+    configPath,
+    JSON.stringify({
+      bossIntegration: {
+        trackerRoot: join(root, 'untrusted-collector'),
+        account: 'main',
+        initialSnapshot: FIRST_NAME,
+      },
+    }),
+    { mode: 0o600 },
+  );
+  const config = await readBossConfig(configPath);
+  assert.notEqual(config.trackerRoot, join(root, 'untrusted-collector'));
+  assert.match(config.trackerRoot, /\/collector\/boss$/);
+  assert.match(config.dataRoot, /\/\.local\/boss-collector$/);
+});
 
 function fixture({
   rows = 100,
@@ -699,6 +721,7 @@ test('recover-saved CLI 原子补交本地快照且不调用采集器', async (t
   });
   const output = await runMainQuietly(['recover-saved'], {
     configPath,
+    configReader: async () => config,
     inboxRoot: inbox.root,
     initialIdentity: expectedInitial,
   });
@@ -796,6 +819,7 @@ test('CLI enqueue failure after durable batch retains exact checkpoint stage and
   await writeFile(configPath, JSON.stringify({ bossIntegration: config }), { mode: 0o600 });
   const output = await runMainQuietly(['enqueue'], {
     configPath,
+    configReader: async () => config,
     inboxRoot: inbox.root,
     initialIdentity: expectedInitial,
     inboxFactory: (path) =>
@@ -833,6 +857,7 @@ test('CLI preview, resume and config failures each preserve a private run and in
     }
     const output = await runMainQuietly([command], {
       configPath,
+      ...(command === 'status' ? {} : { configReader: async () => config }),
       inboxRoot: inbox.root,
       initialIdentity: expectedInitial,
     });

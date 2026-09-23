@@ -33,6 +33,7 @@ v0.8.0 区分两种模式：本机模式由服务保存唯一正式工作区，�
 | `scripts/boss-runtime.mjs`                           | 显式跟踪生命周期、单轮串行、实际动作预算与暂停                     |
 | `scripts/boss-integration.mjs`                       | 快照转换、历史入口兼容、采集检查点与不可变入队                     |
 | `scripts/boss-inbox.mjs`                             | 私有不可变队列、回执、运行和故障材料                               |
+| `collector/boss/`                                    | CDP 只读采集、历史/详情补齐、不可变证据与纯测试                    |
 | `scripts/workspace-store.mjs`、`workspace-api.mjs`   | 不可变工作区提交、单写者、CAS、幂等命令及固定 API v1               |
 | `scripts/workspace-consumer.mjs`                     | 无页面队列消费、岗位依赖冲突隔离、提交后回执                       |
 | `scripts/service-control.mjs`、`service-runtime.mjs` | 本机服务身份与所有权安全的启动/查询/停止                           |
@@ -52,7 +53,7 @@ v0.8.0 区分两种模式：本机模式由服务保存唯一正式工作区，�
 
 本机用户保存 → 读取正式 revision → 页面生成最小白名单业务变更 → 服务重跑校验与所有权规则 → 固定命令 CAS 提交不可变完整工作区 → 原子更新 HEAD → 更新浏览器缓存。网页不能调用服务内部整库提交，也不能用人工编辑改写来源账本。静态用户保存仍通过 IndexedDB 事务。两者均保持“待同步 → 用户手动读取远端 → base/local/remote 合并 → 确认实际上传快照”的云同步流程；本机 SSH 额外由服务为每次真实读取签发一次性事务，绑定正式 revision、远端 SHA 和计划摘要，实际 PUT 前再次核对写者、目标、基线和 pending，成功后才允许用事务 ID 确认，网页不回传 captured/uploaded 整库。已有同步基线时远端文件缺失或远端单边转移本机 BOSS 账号身份在服务端停止/形成冲突；HEAD 原子替换已可见但目录 fsync 报错时只重试持久化屏障，持续失败隔离写者且不确认提交。上传期间的新正式编辑在服务端以签发快照为基线重基，仍保持待同步。
 
-BOSS 只读接入是另一条本机入口：用户明确开始跟踪 → 固定采集器 → 不可变快照 → 确定性批次 → 私有队列 → 本机单写者提交岗位、来源事实、应用结果和命令回执元数据 → 提交成功后确认队列。页面关闭不阻止正式录入；服务启动只处理本地队列，不访问 BOSS，服务重启不自动恢复跟踪。正常链路不调用模型，GitHub 仍只有人工触发同步。
+BOSS 只读接入是另一条本机入口：用户明确开始跟踪 → 仓库内固定 `collector/boss/` 采集器 → 不可变快照 → 确定性批次 → 私有队列 → 本机单写者提交岗位、来源事实、应用结果和命令回执元数据 → 提交成功后确认队列。页面关闭不阻止正式录入；服务启动只处理本地队列，不访问 BOSS，服务重启不自动恢复跟踪。正常链路不调用模型，GitHub 仍只有人工触发同步。采集器进程继续与工作台服务隔离，但源码、协议和测试同仓版本化；私有运行材料固定在 `.local/boss-collector/`。
 
 账号 namespace 与稳定服务工作区 ID 先确认绑定，初次迁移转换 data、pending 本机候选及冲突中两个可选 live 结果的旧浏览器归属；同步基线、pending remote 数据集与冲突 base 保留迁移前云端身份，首次同步据此上传新绑定。岗位以账号范围内的平台岗位 ID/规范链接精确关联，多个会话可指向同岗位。已有人工岗位的日期和字段不覆盖，主动清空也保留人工所有权。共享数据 v3 的 sourceFacts 与 sourceApplications 分别记录事实及规则应用，旧 sourceEvents 保留；缺稳定消息 ID 时只保留等待证据，不创建岗位或语义事实。缺证据为 waiting、人工保护为 protected、真正身份歧义为 review，不都要求人工重核。受同步冲突影响的岗位和依赖延后，无关岗位仍可提交；重基时新发现的岗位冲突会自动重新求解为等待项，只有账号或无法隔离的结构冲突才中止整批。旧观察不回退新状态，不复活已删除岗位。精确简历白名单可按 D025 联动本机消息和阶段，普通平台回执仍不冒充人工消息状态。
 
@@ -78,7 +79,7 @@ BOSS 只读接入是另一条本机入口：用户明确开始跟踪 → 固定�
 
 ## 公开和私有内容
 
-公开仓库只含界面代码、说明和合成测试。IndexedDB、草稿 localStorage、下载备份及整个 `.local/`（包括 workspace、服务身份、backups、boss-integration、config、SSH 缓存）均为私有。采集原始快照留在采集器私有目录；禁止把真实记录、源 Markdown、简历或令牌放入 `dist/` 或测试 fixture。PAT 只在页面内存，SSH key 由系统 Git/SSH 使用。服务仅监听回环地址，写接口校验 Host/Origin、随机会话与协议版本；旧客户端不可绕过工作区协议写本机远端。
+公开仓库只含界面代码、采集器源码、说明和合成测试。IndexedDB、草稿 localStorage、下载备份及整个 `.local/`（包括 workspace、服务身份、backups、boss-integration、boss-collector、config、SSH 缓存）均为私有。采集原始快照、连接状态和浏览器 profile 固定留在 `.local/boss-collector/`；禁止把真实记录、源 Markdown、简历或令牌放入 `dist/`、`collector/` 或测试 fixture。PAT 只在页面内存，SSH key 由系统 Git/SSH 使用。服务仅监听回环地址，写接口校验 Host/Origin、随机会话与协议版本；旧客户端不可绕过工作区协议写本机远端。
 
 本机 SSH 固定目标、独立缓存、普通 push，只修改指定 JSON；不操作 Obsidian 工作树。网页手机访问使用 REST，不能调用本机 SSH key。
 

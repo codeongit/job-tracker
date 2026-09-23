@@ -43,7 +43,9 @@ async function setup() {
       return { stdout: JSON.stringify({ ok: true, operation: command }) };
     },
     controller = createBossController({
-      config: { trackerRoot, account: 'main' },
+      config: { account: 'main' },
+      trackerRoot,
+      trackerDataRoot: join(root, 'collector-data'),
       inboxRoot: join(root, 'inbox'),
       workspaceStore,
       inboxConsumer,
@@ -370,7 +372,9 @@ test('未迁移正式工作区时不会启动或接触采集器', async () => {
     await writeFile(join(trackerRoot, 'tracker.mjs'), '', { mode: 0o600 });
     let invoked = false;
     const controller = createBossController({
-      config: { trackerRoot, account: 'main' },
+      config: { account: 'main' },
+      trackerRoot,
+      trackerDataRoot: join(emptyRoot, 'collector-data'),
       inboxRoot: join(emptyRoot, 'inbox'),
       workspaceStore: { read: async () => ({ workspace: null, revision: 0 }) },
       inboxConsumer: { run: async () => {}, status: () => ({}) },

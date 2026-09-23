@@ -6,7 +6,6 @@
     "path": "job-tracker/data.json"
   },
   "bossIntegration": {
-    "trackerRoot": "/absolute/path/to/boss-chat-tracker",
     "account": "main",
     "initialSnapshot": "2026-09-18T14-49-59-473Z_ae82d08d-b89d-46a4-b8ec-cb855214bd5a.json"
   }

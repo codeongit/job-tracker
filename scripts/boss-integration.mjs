@@ -21,6 +21,8 @@ const execFile = promisify(execFileCallback);
 const projectRoot = fileURLToPath(new URL('../', import.meta.url));
 const defaultConfigPath = join(projectRoot, '.local', 'config.json');
 const defaultInboxRoot = join(projectRoot, '.local', 'boss-integration');
+const defaultTrackerRoot = join(projectRoot, 'collector', 'boss');
+const defaultTrackerDataRoot = join(projectRoot, '.local', 'boss-collector');
 const SNAPSHOT_FILE = /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z_[a-f0-9-]{36}\.json$/;
 const ACCOUNT_NAMESPACE = /^boss-geek:[a-f0-9]{64}$/;
 const HH_MM = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
@@ -199,16 +201,28 @@ async function releaseStaleProducerLock(inbox) {
 function normalizeConfig(input) {
   const value = plain(input, 'BOSS_CONFIG_INVALID');
   const config = plain(value.bossIntegration, 'BOSS_CONFIG_REQUIRED');
-  exactKeys(config, ['trackerRoot', 'account', 'initialSnapshot'], 'BOSS_CONFIG_INVALID');
+  const keys = Object.keys(config).sort();
+  const currentKeys = ['account', 'initialSnapshot'];
+  const legacyKeys = ['account', 'initialSnapshot', 'trackerRoot'];
   if (
-    !requiredString(config.trackerRoot, { max: 1_000 }) ||
-    !isAbsolute(config.trackerRoot) ||
+    JSON.stringify(keys) !== JSON.stringify(currentKeys) &&
+    JSON.stringify(keys) !== JSON.stringify(legacyKeys)
+  )
+    integrationFail('BOSS_CONFIG_INVALID');
+  if (
+    (config.trackerRoot !== undefined &&
+      (!requiredString(config.trackerRoot, { max: 1_000 }) || !isAbsolute(config.trackerRoot))) ||
     !requiredString(config.account, { max: 40, pattern: /^[A-Za-z0-9_-]+$/ }) ||
     !requiredString(config.initialSnapshot, { max: 205, pattern: SNAPSHOT_FILE }) ||
     basename(config.initialSnapshot) !== config.initialSnapshot
   )
     integrationFail('BOSS_CONFIG_INVALID');
-  return structuredClone(config);
+  return {
+    account: config.account,
+    initialSnapshot: config.initialSnapshot,
+    trackerRoot: defaultTrackerRoot,
+    dataRoot: defaultTrackerDataRoot,
+  };
 }
 
 export async function readBossConfig(path = defaultConfigPath) {
@@ -658,7 +672,9 @@ export async function readTrackerSnapshot(path) {
 }
 
 function snapshotDirectory(config) {
-  return join(config.trackerRoot, 'data', config.account);
+  return config.dataRoot
+    ? join(config.dataRoot, config.account)
+    : join(config.trackerRoot, 'data', config.account);
 }
 
 function initialSnapshotPath(config) {
@@ -1456,6 +1472,10 @@ async function invokeTracker(
         encoding: 'utf8',
         maxBuffer: MAX_TRACKER_OUTPUT_BYTES,
         timeout: 22 * 60 * 1_000,
+        env: {
+          ...process.env,
+          ...(config.dataRoot ? { JOB_TRACKER_BOSS_DATA_ROOT: config.dataRoot } : {}),
+        },
       },
     );
   } catch (error) {
@@ -1942,6 +1962,7 @@ export async function main(
     now = () => new Date(),
     initialIdentity = APPROVED_INITIAL,
     inboxFactory = (root) => new BossInbox(root),
+    configReader = readBossConfig,
     internalAuthorization = process.env.JOB_TRACKER_BOSS_INTERNAL_AUTHORIZATION || '',
   } = {},
 ) {
@@ -1962,7 +1983,7 @@ export async function main(
   let step = 'read_config';
   let beforeControl = null;
   try {
-    config = await readBossConfig(configPath);
+    config = await configReader(configPath);
     if (command === 'preview') {
       step = 'read_initial_snapshot';
       const result = await previewCommand(config, initialIdentity);

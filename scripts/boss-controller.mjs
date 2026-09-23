@@ -13,6 +13,8 @@ import {
 const execFile = promisify(execFileCallback);
 const projectRoot = fileURLToPath(new URL('../', import.meta.url));
 const integrationScript = join(projectRoot, 'scripts', 'boss-integration.mjs');
+const defaultTrackerRoot = join(projectRoot, 'collector', 'boss');
+const defaultTrackerDataRoot = join(projectRoot, '.local', 'boss-collector');
 const MAX_OUTPUT_BYTES = 1_000_000;
 
 function safeCode(value, fallback = 'BOSS_CONTROLLER_FAILED') {
@@ -82,6 +84,8 @@ async function executeJson(file, args, runner = execFile, environment = {}) {
 
 export function createBossController({
   config,
+  trackerRoot = defaultTrackerRoot,
+  trackerDataRoot = defaultTrackerDataRoot,
   inboxRoot,
   workspaceStore,
   inboxConsumer,
@@ -90,15 +94,9 @@ export function createBossController({
   setTimer,
   clearTimer,
 } = {}) {
-  if (
-    !config ||
-    typeof config.trackerRoot !== 'string' ||
-    typeof config.account !== 'string' ||
-    !inboxRoot ||
-    !workspaceStore
-  )
+  if (!config || typeof config.account !== 'string' || !inboxRoot || !workspaceStore)
     throw new BossRuntimeError('BOSS_CONTROLLER_CONFIG_INVALID');
-  const tracker = join(config.trackerRoot, 'tracker.mjs');
+  const tracker = join(trackerRoot, 'tracker.mjs');
   const producerInbox = new BossInbox(inboxRoot);
 
   async function requireWorkspace() {
@@ -109,7 +107,9 @@ export function createBossController({
 
   const trackerAction = async (action) => {
     await requireWorkspace();
-    return executeJson(tracker, [action, '--account', config.account], runner);
+    return executeJson(tracker, [action, '--account', config.account], runner, {
+      JOB_TRACKER_BOSS_DATA_ROOT: trackerDataRoot,
+    });
   };
 
   const runtime = new BossRuntime({
