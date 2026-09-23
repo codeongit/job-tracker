@@ -1,6 +1,6 @@
 import { open, rename, unlink } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { compareSnapshots } from './compare.mjs';
 import { latest } from './storage.mjs';

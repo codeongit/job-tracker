@@ -171,6 +171,74 @@ test('outbound type-4 with message and job identity is strong, while inbound or 
   assert.equal(repeated.envelope.resume.observations.length, 3);
 });
 
+test('same platform message ignores timestamp jitter but keeps a different resume fact', () => {
+  const { envelope } = createEnvelopeV2(snapshot);
+  const result = toResumeHistoryResult(
+    payload([
+      {
+        conversationKey,
+        friendId: '301',
+        friendSource: '0',
+        messageId: 'm-jitter',
+        direction: 'inbound',
+        messageType: 4,
+        kind: 'resume_card_other',
+        platformTime: '2026-09-20T01:01:58.720Z',
+        externalJobId: null,
+        source: 'geek_history_type_4',
+      },
+      {
+        conversationKey,
+        friendId: '301',
+        friendSource: '0',
+        messageId: 'm-jitter',
+        direction: 'inbound',
+        messageType: 4,
+        kind: 'resume_card_other',
+        platformTime: '2026-09-20T01:01:59.000Z',
+        externalJobId: null,
+        source: 'geek_history_type_4',
+      },
+      {
+        conversationKey,
+        friendId: '301',
+        friendSource: '0',
+        messageId: 'm-jitter',
+        direction: 'system',
+        messageType: 5,
+        kind: 'request_sent',
+        platformTime: '2026-09-20T01:01:59.000Z',
+        externalJobId: null,
+        source: 'geek_history_status_message',
+      },
+    ]),
+    envelope,
+  );
+  const applied = applyResumeHistoryV2(envelope, result);
+  assert.equal(applied.report.counts.observed, 3);
+  assert.equal(applied.report.counts.added, 2);
+  assert.deepEqual(applied.envelope.resume.observations.map((item) => item.kind).sort(), [
+    'request_sent',
+    'resume_card_other',
+  ]);
+  assert.equal(
+    applied.envelope.resume.observations.find((item) => item.kind === 'resume_card_other')
+      .platformTime,
+    '2026-09-20T01:01:58.720Z',
+  );
+
+  const legacyDuplicates = structuredClone(envelope);
+  legacyDuplicates.resume.observations = structuredClone(result.observations);
+  const cleaned = applyResumeHistoryV2(legacyDuplicates, {
+    capturedAt: '2026-09-21T06:20:00.000Z',
+    observations: [],
+    unresolved: [],
+    coverage: { requestedConversations: 0, resolvedConversations: 0, pagesPerConversation: 2 },
+  });
+  assert.equal(cleaned.report.counts.deduplicated, 1);
+  assert.equal(cleaned.envelope.resume.observations.length, 2);
+});
+
 test('legacy v2 envelopes gain an empty resume container and malformed evidence fails closed', () => {
   const { envelope } = createEnvelopeV2(snapshot);
   envelope.version = 2;

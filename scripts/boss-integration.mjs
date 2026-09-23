@@ -110,6 +110,23 @@ export function stableHash(value) {
     .digest('hex');
 }
 
+function uniqueEventsById(events) {
+  const unique = new Map();
+  for (const event of events) {
+    const existing = unique.get(event.eventId);
+    if (!existing) {
+      unique.set(event.eventId, event);
+      continue;
+    }
+    const { observedAt: existingObservedAt, ...existingIdentity } = existing;
+    const { observedAt, ...eventIdentity } = event;
+    if (stableHash(existingIdentity) !== stableHash(eventIdentity))
+      integrationFail('BOSS_EVENT_ID_COLLISION', { fatal: true });
+    if (observedAt.localeCompare(existingObservedAt) < 0) unique.set(event.eventId, event);
+  }
+  return [...unique.values()];
+}
+
 function bytesHash(bytes) {
   return createHash('sha256').update(bytes).digest('hex');
 }
@@ -819,7 +836,7 @@ export function createResumeEvents(envelope, { sourceSequence, evidenceDate = ''
     attachment_sent: 'resume_attachment_sent',
     viewed_confirmed: 'resume_viewed_confirmed',
   };
-  return envelope.resume.observations
+  const events = envelope.resume.observations
     .filter(
       (observation) =>
         !evidenceDate || shanghaiDay(new Date(observation.platformTime)) === evidenceDate,
@@ -886,6 +903,7 @@ export function createResumeEvents(envelope, { sourceSequence, evidenceDate = ''
         sourceSequence,
       };
     });
+  return uniqueEventsById(events);
 }
 
 const RESUME_STATUS_SUMMARIES = new Map([
@@ -1112,7 +1130,7 @@ export function createResumeBatch(snapshot, sourceSequence, evidenceDate = '') {
       ? createResumeStatusEvents(snapshot.envelope, { sourceSequence, evidenceDate })
       : []),
   ];
-  const events = [...new Map(candidates.map((event) => [event.eventId, event])).values()];
+  const events = uniqueEventsById(candidates);
   if (!events.length) integrationFail('BOSS_RESUME_OBSERVATIONS_EMPTY');
   return createBatch({
     envelope: snapshot.envelope,
@@ -1139,10 +1157,10 @@ function createIncrementalBatch(previous, current, sourceSequence, { afterInitia
       ...createResumeEvents(previous.envelope, { sourceSequence }),
     ].map((event) => event.eventId),
   );
-  const events = [
+  const events = uniqueEventsById([
     ...eventsFor(current),
     ...createResumeEvents(current.envelope, { sourceSequence }),
-  ].filter((event) => !previousIds.has(event.eventId));
+  ]).filter((event) => !previousIds.has(event.eventId));
   if (!events.length) return null;
   const policy = {
     id: INCREMENTAL_POLICY,

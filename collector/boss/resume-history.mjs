@@ -747,7 +747,6 @@ export function applyResumeHistoryV2(inputEnvelope, result) {
       item.direction,
       item.messageType,
       item.kind,
-      item.platformTime,
       item.externalJobId,
       item.source,
     ]);

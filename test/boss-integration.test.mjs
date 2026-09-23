@@ -391,6 +391,48 @@ test('简历观察独立入队、只读且重复执行不重复排队', async (t
   assert.equal(replay.counts.events, 0);
 });
 
+test('同一消息的重复简历观察只生成一个事件，独立状态事实保留', () => {
+  const envelope = fixture({ rows: 1 });
+  const duplicate = resumeObservation(envelope, {
+    direction: 'inbound',
+    kind: 'resume_card_other',
+    externalJobId: null,
+    status: 'review',
+  });
+  envelope.resume = {
+    observations: [
+      duplicate,
+      {
+        ...duplicate,
+        id: 'd'.repeat(64),
+        platformTime: '2026-09-20T08:00:00.280Z',
+      },
+      resumeObservation(envelope, {
+        id: 'c'.repeat(64),
+        direction: 'system',
+        messageType: 5,
+        kind: 'request_sent',
+        externalJobId: null,
+        source: 'geek_history_status_message',
+        status: 'review',
+      }),
+    ],
+    lastScanAt: '2026-09-20T08:01:00.000Z',
+    lastCoverage: null,
+    lastUnresolved: [],
+  };
+  const events = createResumeEvents(envelope, { sourceSequence: 2 });
+  assert.equal(events.length, 2);
+  assert.deepEqual(events.map((event) => event.summary).sort(), [
+    'resume_card_other',
+    'resume_request_sent',
+  ]);
+  assert.equal(
+    events.find((event) => event.summary === 'resume_card_other').observedAt,
+    '2026-09-20T08:00:00.000Z',
+  );
+});
+
 test('平台简历状态文案只按精确规则生成可关联事件', () => {
   const envelope = fixture();
   envelope.snapshot.records[30].preview = '您的附件简历 示例文件.pdf 已发送给Boss';
