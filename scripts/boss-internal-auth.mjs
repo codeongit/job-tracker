@@ -49,8 +49,11 @@ function validateRequest(value) {
     typeof value !== 'object' ||
     Array.isArray(value) ||
     JSON.stringify(Object.keys(value).sort()) !==
-      JSON.stringify(['command', 'detailLimit', 'domLimit', 'historyRequests'].sort()) ||
+      JSON.stringify(
+        ['command', 'detailLimit', 'domLimit', 'historyRequests', 'historyMode'].sort(),
+      ) ||
     value.command !== 'collect-cycle' ||
+    !['change', 'backfill'].includes(value.historyMode) ||
     !Number.isSafeInteger(value.historyRequests) ||
     value.historyRequests < 0 ||
     value.historyRequests > 20 ||

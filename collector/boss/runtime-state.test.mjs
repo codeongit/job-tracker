@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, stat } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -59,7 +59,7 @@ test('legacy runtime state gains an empty shared CDP retry budget', () => {
     blockedAt: null,
     tasks: [],
   });
-  assert.equal(migrated.version, 2);
+  assert.equal(migrated.version, 3);
 });
 
 test('detail retries persist 30 minute, 2 hour and 24 hour backoff before isolation', () => {
@@ -283,6 +283,30 @@ test('runtime and resume checkpoints are private, atomic and reloadable', async 
     assert.deepEqual(await loadResumeCheckpoint(directory), checkpoint);
     assert.equal(await removeResumeCheckpoint(directory), true);
     assert.equal(await loadResumeCheckpoint(directory), null);
+  } finally {
+    await rm(directory, { recursive: true });
+  }
+});
+
+test('v2 runtime migrates without rewriting its file or losing the backfill cursor', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'boss-runtime-migrate-'));
+  try {
+    const legacy = {
+      version: 2,
+      cursors: { resume: 'a'.repeat(64), detail: 'job_a' },
+      cdpRetry: { attempts: 0, nextRetryAt: null, lastError: null, exhausted: false },
+      detail: { blocked: false, blockCode: null, blockedAt: null, tasks: [] },
+      lastRun: null,
+      updatedAt: null,
+    };
+    const path = join(directory, '.runtime-v2.json');
+    await writeFile(path, JSON.stringify(legacy), { mode: 0o600 });
+    const migrated = await loadRuntimeState(directory);
+    assert.equal(migrated.version, 3);
+    assert.equal(migrated.cursors.resume, 'a'.repeat(64));
+    assert.equal(migrated.history.initializedDay, null);
+    await saveRuntimeState(directory, migrated);
+    assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), legacy);
   } finally {
     await rm(directory, { recursive: true });
   }

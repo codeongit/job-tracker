@@ -18,6 +18,16 @@ export function bossIntegrationView(status) {
     );
   }
   const detail = status?.tracking?.detailEnrichment;
+  const history = status?.tracking?.history;
+  if (history) {
+    const historyBudget = status?.tracking?.budget;
+    const waitingBudget =
+      Number(history.pending || 0) > 0 && Number(historyBudget?.historyRequests ?? 20) < 2;
+    view = view.replace(
+      '<div class="source-bindings section-gap">',
+      `<div class="section-gap"><strong>历史采集 · ${history.mode === 'backfill' ? '最近一次手动回填' : '变化驱动'}</strong><div class="integration-stats"><span><strong>${Number(history.pending || 0)}</strong> 增量待处理</span><span><strong>${Number(history.paginating || 0)}</strong> 分页未完成</span><span><strong>${Number(history.waitingRetry || 0)}</strong> 故障退避</span><span><strong>${waitingBudget ? Number(history.pending || 0) : 0}</strong> 等待预算</span><span><strong>${Number(history.truncated || 0)}</strong> 覆盖截断</span></div><small>已完成水位：${Number(history.completed || 0)} 个会话；失败 ${Number(history.failed || 0)} 项、技术隔离 ${Number(history.isolated || 0)} 项。${waitingBudget ? `下次额度：${esc(historyBudget?.nextHistoryAt || '待确认')}；` : ''}正式录入等待另见队列统计。</small></div><div class="source-bindings section-gap">`,
+    );
+  }
   if (detail) {
     const nextRetry = detail.nextRetryAt
         ? new Date(detail.nextRetryAt).toLocaleString('zh-CN')

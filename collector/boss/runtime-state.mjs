@@ -1,10 +1,12 @@
 import { mkdir, open, readFile, rename, unlink, lstat } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
+import { emptyHistoryState, normalizeHistoryState } from './change-history.mjs';
 
-const runtimeName = '.runtime-v2.json';
-const legacyRuntimeName = '.runtime-v1.json';
+const runtimeName = '.runtime-v3.json';
+const legacyRuntimeNames = ['.runtime-v2.json', '.runtime-v1.json'];
 const checkpointName = '.resume-checkpoint-v1.json';
+const changeCheckpointName = '.change-checkpoint-v1.json';
 const iso = (value) => typeof value === 'string' && Number.isFinite(Date.parse(value));
 const code = (value) => typeof value === 'string' && /^[A-Z][A-Z0-9_]{2,80}$/.test(value);
 const retryDelays = [2000, 10_000, 30_000];
@@ -24,8 +26,9 @@ const emptyDetailState = () => ({ blocked: false, blockCode: null, blockedAt: nu
 
 function emptyRuntime() {
   return {
-    version: 2,
+    version: 3,
     cursors: { resume: null, detail: null },
+    history: emptyHistoryState(),
     cdpRetry: emptyCdpRetry(),
     detail: emptyDetailState(),
     lastRun: null,
@@ -105,7 +108,7 @@ function normalizeCounts(value, path) {
 export function normalizeRuntimeState(value) {
   if (
     !value ||
-    ![1, 2].includes(value.version) ||
+    ![1, 2, 3].includes(value.version) ||
     !value.cursors ||
     !['resume', 'detail'].every(
       (key) =>
@@ -153,8 +156,9 @@ export function normalizeRuntimeState(value) {
     };
   }
   return {
-    version: 2,
+    version: 3,
     cursors: { resume: value.cursors.resume, detail: value.cursors.detail },
+    history: normalizeHistoryState(value.history ?? emptyHistoryState()),
     cdpRetry: {
       attempts: retry.attempts,
       nextRetryAt: retry.nextRetryAt,
@@ -393,15 +397,16 @@ export async function loadRuntimeState(directory) {
     return normalizeRuntimeState(JSON.parse(await readFile(join(directory, runtimeName), 'utf8')));
   } catch (error) {
     if (error.code === 'ENOENT') {
-      try {
-        return normalizeRuntimeState(
-          JSON.parse(await readFile(join(directory, legacyRuntimeName), 'utf8')),
-        );
-      } catch (legacyError) {
-        if (legacyError.code === 'ENOENT') return emptyRuntime();
-        if (legacyError instanceof SyntaxError) throw new Error('RUNTIME_STATE_UNREADABLE');
-        throw legacyError;
+      for (const name of legacyRuntimeNames) {
+        try {
+          return normalizeRuntimeState(JSON.parse(await readFile(join(directory, name), 'utf8')));
+        } catch (legacyError) {
+          if (legacyError.code === 'ENOENT') continue;
+          if (legacyError instanceof SyntaxError) throw new Error('RUNTIME_STATE_UNREADABLE');
+          throw legacyError;
+        }
       }
+      return emptyRuntime();
     }
     if (error instanceof SyntaxError) throw new Error('RUNTIME_STATE_UNREADABLE');
     throw error;
@@ -462,7 +467,15 @@ function normalizeCheckpoint(value) {
     !value.usage ||
     !Number.isSafeInteger(value.usage.historyRequests) ||
     typeof value.partial !== 'boolean' ||
-    (value.error !== null && !code(value.error))
+    (value.error !== null && !code(value.error)) ||
+    (value.completedConversationKey !== undefined &&
+      value.completedConversationKey !== null &&
+      !/^[a-f0-9]{64}$/.test(value.completedConversationKey)) ||
+    (value.head !== undefined &&
+      value.head !== null &&
+      !/^[A-Za-z0-9_-]{1,128}$/.test(value.head)) ||
+    (value.truncated !== undefined && typeof value.truncated !== 'boolean') ||
+    (value.targetFingerprint !== undefined && !/^[a-f0-9]{64}$/.test(value.targetFingerprint))
   ) {
     throw new Error('RESUME_CHECKPOINT_INVALID');
   }
@@ -486,6 +499,32 @@ export async function loadResumeCheckpoint(directory) {
 export async function removeResumeCheckpoint(directory) {
   try {
     await unlink(join(directory, checkpointName));
+    return true;
+  } catch (error) {
+    if (error.code === 'ENOENT') return false;
+    throw error;
+  }
+}
+
+export async function saveChangeCheckpoint(directory, value) {
+  return writePrivateJson(directory, changeCheckpointName, normalizeCheckpoint(value));
+}
+
+export async function loadChangeCheckpoint(directory) {
+  try {
+    return normalizeCheckpoint(
+      JSON.parse(await readFile(join(directory, changeCheckpointName), 'utf8')),
+    );
+  } catch (error) {
+    if (error.code === 'ENOENT') return null;
+    if (error instanceof SyntaxError) throw new Error('RESUME_CHECKPOINT_UNREADABLE');
+    throw error;
+  }
+}
+
+export async function removeChangeCheckpoint(directory) {
+  try {
+    await unlink(join(directory, changeCheckpointName));
     return true;
   } catch (error) {
     if (error.code === 'ENOENT') return false;

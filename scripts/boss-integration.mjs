@@ -1880,6 +1880,7 @@ export async function checkCommand(
       trackerOutput.partial === true ? safeErrorCode({ code: trackerOutput.error }) : '',
     failureScope: trackerOutput.failureScope,
     detailEnrichment: trackerOutput.detailEnrichment,
+    history: trackerOutput.history,
     usage: trackerOutput.usage ?? {
       historyRequests: 0,
       domSwitches: 0,
@@ -1917,14 +1918,16 @@ export async function statusCommand(config, inbox) {
 function parseArguments(argv) {
   if (argv[0] === 'check') integrationFail('BOSS_USE_UNIFIED_RUNTIME');
   if (
-    argv.length === 7 &&
+    argv.length === 9 &&
     argv[0] === 'collect-cycle' &&
     argv[1] === '--history-requests' &&
     /^(?:[0-9]|1[0-9]|20)$/.test(argv[2]) &&
     argv[3] === '--detail-limit' &&
     /^(?:[0-9]|1[0-9]|20)$/.test(argv[4]) &&
     argv[5] === '--dom-limit' &&
-    /^[0-1]$/.test(argv[6])
+    /^[0-1]$/.test(argv[6]) &&
+    argv[7] === '--history-mode' &&
+    ['change', 'backfill'].includes(argv[8])
   )
     return {
       command: argv[0],
@@ -1932,6 +1935,7 @@ function parseArguments(argv) {
       historyRequests: Number(argv[2]),
       detailLimit: Number(argv[4]),
       domLimit: Number(argv[6]),
+      historyMode: argv[8],
     };
   if (
     argv.length === 3 &&
@@ -1985,12 +1989,13 @@ export async function main(
     internalAuthorization = process.env.JOB_TRACKER_BOSS_INTERNAL_AUTHORIZATION || '',
   } = {},
 ) {
-  const { command, evidenceDate, historyRequests, detailLimit, domLimit } = parseArguments(argv);
+  const { command, evidenceDate, historyRequests, detailLimit, domLimit, historyMode } =
+    parseArguments(argv);
   if (command === 'collect-cycle')
     await consumeBossInternalAuthorization(
       inboxRoot,
       internalAuthorization,
-      { command, historyRequests, detailLimit, domLimit },
+      { command, historyRequests, detailLimit, domLimit, historyMode },
       { now },
     );
   const started = now();
@@ -2168,6 +2173,8 @@ export async function main(
               String(detailLimit),
               '--dom-limit',
               String(domLimit),
+              '--history-mode',
+              historyMode,
             ],
             onStage: (value) => {
               checkStep = value;
@@ -2209,6 +2216,7 @@ export async function main(
               error: result.trackerError || '',
               failureScope: result.failureScope,
               detailEnrichment: result.detailEnrichment,
+              history: result.history,
               paused: result.control.paused,
               counts,
               usage: result.usage,

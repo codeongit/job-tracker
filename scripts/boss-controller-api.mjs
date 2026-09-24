@@ -3,6 +3,7 @@ import { BossRuntimeError } from './boss-runtime.mjs';
 const ACTIONS = new Set([
   'start',
   'run',
+  'backfill',
   'pause',
   'resume',
   'resume-details',

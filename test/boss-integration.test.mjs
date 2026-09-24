@@ -849,7 +849,17 @@ test('旧脚本拒绝直接check，collect-cycle没有controller单次授权也�
   });
   await assert.rejects(
     main(
-      ['collect-cycle', '--history-requests', '20', '--detail-limit', '20', '--dom-limit', '1'],
+      [
+        'collect-cycle',
+        '--history-requests',
+        '20',
+        '--detail-limit',
+        '20',
+        '--dom-limit',
+        '1',
+        '--history-mode',
+        'change',
+      ],
       {
         inboxRoot: inbox.root,
         internalAuthorization: '',
@@ -859,7 +869,17 @@ test('旧脚本拒绝直接check，collect-cycle没有controller单次授权也�
   );
   await assert.rejects(
     main(
-      ['collect-cycle', '--history-requests', '20', '--detail-limit', '21', '--dom-limit', '1'],
+      [
+        'collect-cycle',
+        '--history-requests',
+        '20',
+        '--detail-limit',
+        '21',
+        '--dom-limit',
+        '1',
+        '--history-mode',
+        'change',
+      ],
       {
         inboxRoot: inbox.root,
         internalAuthorization: '',

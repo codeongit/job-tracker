@@ -58,8 +58,19 @@ import {
   clearDetailFailures,
   resumeDetailState,
   detailRuntimeSummary,
+  saveChangeCheckpoint,
+  loadChangeCheckpoint,
+  removeChangeCheckpoint,
 } from './runtime-state.mjs';
-import { randomUUID } from 'node:crypto';
+import {
+  observeHistoryList,
+  pendingHistory,
+  advanceHistoryTask,
+  failHistoryTask,
+  recordHistoryWatermark,
+  historySummary,
+} from './change-history.mjs';
+import { createHash, randomUUID } from 'node:crypto';
 import { accountDataDirectory } from './paths.mjs';
 
 const identityOptions = {
@@ -96,6 +107,7 @@ export function parseArguments(argv) {
       historyRequests: 20,
       domLimit: 0,
       detailLimit: MAX_DETAIL_ENRICH_JOBS,
+      historyMode: 'change',
     };
   const input = [...argv];
   const mode = input.shift() ?? 'status';
@@ -107,7 +119,8 @@ export function parseArguments(argv) {
     jobId = null;
   let historyRequests = 20,
     domLimit = 0,
-    detailLimit = MAX_DETAIL_ENRICH_JOBS;
+    detailLimit = MAX_DETAIL_ENRICH_JOBS,
+    historyMode = 'change';
   const seen = new Set();
   while (input.length) {
     const flag = input.shift();
@@ -121,6 +134,7 @@ export function parseArguments(argv) {
         '--history-requests',
         '--dom-limit',
         '--detail-limit',
+        '--history-mode',
       ].includes(flag) ||
       seen.has(flag) ||
       !input.length
@@ -158,6 +172,9 @@ export function parseArguments(argv) {
       ) {
         throw new Error('ARGUMENTS_INVALID');
       }
+    } else if (flag === '--history-mode') {
+      if (!['change', 'backfill'].includes(value)) throw new Error('ARGUMENTS_INVALID');
+      historyMode = value;
     } else {
       if (value !== '昨天') throw new Error('ARGUMENTS_INVALID');
       timeLabel = value;
@@ -171,7 +188,10 @@ export function parseArguments(argv) {
   if (mode !== 'resume-scan' && seen.has('--job-id')) throw new Error('ARGUMENTS_INVALID');
   if (
     mode !== 'run' &&
-    (seen.has('--history-requests') || seen.has('--dom-limit') || seen.has('--detail-limit'))
+    (seen.has('--history-requests') ||
+      seen.has('--dom-limit') ||
+      seen.has('--detail-limit') ||
+      seen.has('--history-mode'))
   ) {
     throw new Error('ARGUMENTS_INVALID');
   }
@@ -187,6 +207,7 @@ export function parseArguments(argv) {
     historyRequests,
     domLimit,
     detailLimit,
+    historyMode,
   };
 }
 
@@ -581,10 +602,18 @@ export async function collectResume({
     initialObservations: priorCheckpoint?.observations ?? [],
     startConversationKey,
     startPage,
-    knownMessageIds: envelope.resume.observations.map((item) => ({
-      conversationKey: item.conversationKey,
-      messageId: item.messageId,
-    })),
+    knownMessageIds: [
+      ...envelope.resume.observations.map((item) => ({
+        conversationKey: item.conversationKey,
+        messageId: item.messageId,
+      })),
+      ...(runtime.history?.conversations ?? [])
+        .filter((item) => item.watermark)
+        .map((item) => ({
+          conversationKey: item.key,
+          messageId: item.watermark,
+        })),
+    ],
     execute: async (expression) => {
       // The page may already have issued this platform request when CDP drops.
       // Never replay it inside the reconnect loop: the in-page XHR aborts at
@@ -609,6 +638,262 @@ export async function collectResume({
     cursor: scan.cursor ?? runtime.cursors.resume,
     checkpointPending: true,
     continuation: scan.continuation,
+    completed: scan.completed,
+    verification: finalCheck.report,
+  };
+}
+
+export async function collectChangedResume({
+  directory,
+  connection,
+  envelope,
+  runtime,
+  maxRequests,
+  saveProgress = (state) => saveRuntimeState(directory, { ...runtime, history: state }),
+  saveEvidence = (value) => saveEnvelope(directory, value),
+  requestDelayMs = 3000,
+  betweenTargetsDelayMs = 3000,
+  reportOperation = (operation) => operation(),
+  evaluate = evaluateBound,
+}) {
+  let state = runtime.history;
+  let prior = await loadChangeCheckpoint(directory);
+  const loaded = new Set(envelope.snapshot.records.map((item) => item.key));
+  const pending = pendingHistory(state).filter(
+    (item) =>
+      loaded.has(item.key) ||
+      item.key === prior?.nextConversationKey ||
+      item.key === prior?.completedConversationKey,
+  );
+  const checkpointKey = prior?.nextConversationKey ?? prior?.completedConversationKey;
+  const checkpointTask = pending.find((item) => item.key === checkpointKey);
+  if (prior && checkpointTask && prior.targetFingerprint !== checkpointTask.task.fingerprint) {
+    // A newer list fingerprint supersedes the in-flight page target. Commit
+    // the old page evidence, then restart the newer task from page one.
+    if (prior.observations.length) {
+      const recovered = toResumeHistoryResult(
+        {
+          ok: true,
+          url: 'https://www.zhipin.com/web/geek/chat',
+          capturedAt: prior.capturedAt,
+          observations: prior.observations,
+          unresolved: prior.unresolved,
+          coverage: prior.coverage,
+        },
+        envelope,
+      );
+      envelope = applyResumeHistoryV2(envelope, recovered).envelope;
+      await saveEvidence(envelope);
+    }
+    await removeChangeCheckpoint(directory);
+    prior = null;
+  }
+  if (
+    prior &&
+    !pending.some(
+      (item) => item.key === (prior.nextConversationKey ?? prior.completedConversationKey),
+    )
+  ) {
+    // A crash after the state commit but before checkpoint removal is safe to
+    // finalize locally; the evidence was already written in that commit.
+    await removeChangeCheckpoint(directory);
+    prior = null;
+  }
+  if (!pending.length && !prior)
+    return {
+      envelope,
+      state,
+      counts: {
+        observed: 0,
+        added: 0,
+        strong: 0,
+        review: 0,
+        unresolved: 0,
+        unresolvedByReason: {},
+        deduplicated: 0,
+      },
+      coverage: null,
+      usage: { historyRequests: 0 },
+      partial: false,
+      error: null,
+    };
+  const preflight = await reportOperation(() => resumeBrowser(connection, identityOptions));
+  if (!preflight.ok)
+    return {
+      envelope,
+      state,
+      counts: null,
+      coverage: null,
+      usage: { historyRequests: 0 },
+      partial: true,
+      error: preflight.report.error,
+      verification: preflight.report,
+    };
+  let used = 0,
+    coverage = null,
+    partial = false,
+    error = null;
+  const counts = {
+    observed: 0,
+    added: 0,
+    strong: 0,
+    review: 0,
+    unresolved: 0,
+    unresolvedByReason: {},
+    deduplicated: 0,
+  };
+  const ordered =
+    prior?.nextConversationKey || prior?.completedConversationKey
+      ? [...pending].sort(
+          (a, b) =>
+            (a.key === (prior.nextConversationKey ?? prior.completedConversationKey) ? -1 : 0) -
+            (b.key === (prior.nextConversationKey ?? prior.completedConversationKey) ? -1 : 0),
+        )
+      : pending;
+  for (const item of ordered) {
+    if (maxRequests - used < 2 && !prior?.completedConversationKey) break;
+    const task = item.task;
+    if (!task) continue;
+    if (used && betweenTargetsDelayMs)
+      await new Promise((resolve) => setTimeout(resolve, betweenTargetsDelayMs));
+    const checkpoint =
+      prior?.nextConversationKey === item.key || prior?.completedConversationKey === item.key
+        ? prior
+        : null;
+    if (checkpoint && checkpoint.targetFingerprint !== task.fingerprint)
+      throw new Error('CHANGE_CHECKPOINT_TARGET_CHANGED');
+    if (checkpoint?.observations.length) {
+      const recovered = toResumeHistoryResult(
+        {
+          ok: true,
+          url: 'https://www.zhipin.com/web/geek/chat',
+          capturedAt: checkpoint.capturedAt,
+          observations: checkpoint.observations,
+          unresolved: checkpoint.unresolved,
+          coverage: checkpoint.coverage,
+        },
+        envelope,
+      );
+      envelope = applyResumeHistoryV2(envelope, recovered).envelope;
+    }
+    if (checkpoint?.completedConversationKey === item.key) {
+      await saveEvidence(envelope);
+      state = advanceHistoryTask(state, item.key, task.fingerprint, {
+        complete: true,
+        head: checkpoint.head,
+      });
+      await saveProgress(state);
+      await removeChangeCheckpoint(directory);
+      continue;
+    }
+    const record = envelope.snapshot.records.find((entry) => entry.key === item.key);
+    if (!record) {
+      if (checkpoint) {
+        await saveEvidence(envelope);
+        await removeChangeCheckpoint(directory);
+      }
+      continue;
+    }
+    const startPage = checkpoint?.nextPage ?? task.page;
+    const scan = await runResumeHistoryRequests({
+      targets: [
+        {
+          conversationKey: item.key,
+          friendId: record.platformIdentity.friendId,
+          friendSource: record.platformIdentity.friendSource,
+        },
+      ],
+      pages: 2,
+      maxRequests: maxRequests - used,
+      requestDelayMs,
+      startConversationKey: item.key,
+      startPage,
+      initialObservations: checkpoint?.observations ?? [],
+      initialHead: checkpoint?.head ?? task.head,
+      knownMessageIds: item.watermark
+        ? [{ conversationKey: item.key, messageId: item.watermark }]
+        : [],
+      execute: (expression, metadata) => evaluate(connection, expression, metadata),
+      onCheckpoint: (value) =>
+        saveChangeCheckpoint(directory, { ...value, targetFingerprint: task.fingerprint }),
+    });
+    used += scan.usage.historyRequests;
+    const result = toResumeHistoryResult(scan.payload, envelope);
+    const applied = applyResumeHistoryV2(envelope, result);
+    envelope = applied.envelope;
+    for (const key of ['observed', 'added', 'strong', 'review', 'unresolved', 'deduplicated'])
+      counts[key] += applied.report.counts[key] ?? 0;
+    for (const [reason, amount] of Object.entries(applied.report.counts.unresolvedByReason ?? {}))
+      counts.unresolvedByReason[reason] = (counts.unresolvedByReason[reason] ?? 0) + amount;
+    if (!coverage)
+      coverage = {
+        requestedConversations: 0,
+        resolvedConversations: 0,
+        pagesPerConversation: 2,
+        requestedPages: 0,
+        completedPages: 0,
+        exhaustedConversations: 0,
+        truncatedConversations: 0,
+        failedConversations: 0,
+      };
+    for (const key of [
+      'requestedConversations',
+      'resolvedConversations',
+      'requestedPages',
+      'completedPages',
+      'exhaustedConversations',
+      'truncatedConversations',
+      'failedConversations',
+    ])
+      coverage[key] += result.coverage[key] ?? 0;
+    // The immutable snapshot is committed before advancing the task or deleting
+    // its page checkpoint. A replay after a crash is harmless and idempotent.
+    await saveEvidence(envelope);
+    const head =
+      scan.heads.find((entry) => entry.conversationKey === item.key)?.head ??
+      checkpoint?.head ??
+      task.head;
+    if (scan.completed.some((entry) => entry.conversationKey === item.key))
+      state = advanceHistoryTask(state, item.key, task.fingerprint, { complete: true, head });
+    else if (scan.payload.coverage.failedConversations && !scan.error) {
+      const reason = scan.payload.unresolved.find(
+        (entry) => entry.conversationKey === item.key,
+      )?.reason;
+      state = failHistoryTask(
+        state,
+        item.key,
+        task.fingerprint,
+        /^[A-Z][A-Z0-9_]{2,80}$/.test(reason ?? '') ? reason : 'HISTORY_UNAVAILABLE',
+        new Date().toISOString(),
+      );
+    } else if (scan.continuation)
+      state = advanceHistoryTask(state, item.key, task.fingerprint, {
+        nextPage: scan.continuation.page,
+        head,
+      });
+    else if (scan.payload.coverage.truncatedConversations && !scan.error)
+      state = advanceHistoryTask(state, item.key, task.fingerprint, {
+        nextPage: 20,
+        head,
+        truncated: true,
+      });
+    await saveProgress(state);
+    await removeChangeCheckpoint(directory);
+    if (scan.error) {
+      partial = true;
+      error = scan.error;
+      break;
+    }
+  }
+  const finalCheck = await reportOperation(() => resumeBrowser(connection, identityOptions));
+  return {
+    envelope,
+    state,
+    counts,
+    coverage,
+    usage: { historyRequests: used },
+    partial: partial || !finalCheck.ok,
+    error: error ?? (finalCheck.ok ? null : finalCheck.report.error),
     verification: finalCheck.report,
   };
 }
@@ -643,7 +928,8 @@ export async function main(argv = process.argv.slice(2)) {
         'resume: 只核验已绑定浏览器与标签，不创建、导航或刷新',
         'resume-details: 仅解除详情所有权技术阻断，不访问浏览器、不清除岗位退避或隔离',
         'recover-page: 显式恢复任务页并重新绑定；最多创建或导航一次',
-        'run: 一次有界执行列表、历史、最多 1 个受控 DOM 补采和最多 20 个岗位详情步骤',
+        'run: 默认变化驱动，一次有界执行列表、历史、DOM 和详情补齐',
+        'run --history-mode backfill: 显式公平轮转历史扫描；正常轮次仍为变化驱动',
         'run budget: --history-requests 0..20 --dom-limit 0..1 --detail-limit 0..20；0 表示跳过该阶段',
         'check: 从任务专用后台页读取已加载会话、比较并保存 v3 快照',
         'enrich: 用任务自建详情标签补齐缺失岗位名称；默认且最多 --limit 20',
@@ -655,8 +941,18 @@ export async function main(argv = process.argv.slice(2)) {
     );
     return;
   }
-  const { mode, account, limit, pages, timeLabel, jobId, historyRequests, domLimit, detailLimit } =
-    options;
+  const {
+    mode,
+    account,
+    limit,
+    pages,
+    timeLabel,
+    jobId,
+    historyRequests,
+    domLimit,
+    detailLimit,
+    historyMode,
+  } = options;
   const directory = accountDataDirectory(account);
   let release;
   const failureUsage = {
@@ -705,6 +1001,7 @@ export async function main(argv = process.argv.slice(2)) {
                     }).pendingJobs
                   : 0,
             }),
+            history: { ...historySummary(runtime.history), backfillCursor: runtime.cursors.resume },
             dom,
           },
           null,
@@ -1162,6 +1459,38 @@ export async function main(argv = process.argv.slice(2)) {
     }
     if (mode === 'run') {
       const startedAt = commandStartedAt;
+      // Preserve legacy page evidence before creating a new change-driven task.
+      const legacyCheckpoint = await loadResumeCheckpoint(directory);
+      const legacyDigest = legacyCheckpoint
+        ? createHash('sha256').update(JSON.stringify(legacyCheckpoint)).digest('hex')
+        : null;
+      if (
+        legacyCheckpoint?.observations.length &&
+        legacyDigest !== runtime.history.legacyCheckpointDigest
+      ) {
+        const recovered = toResumeHistoryResult(
+          {
+            ok: true,
+            url: 'https://www.zhipin.com/web/geek/chat',
+            capturedAt: legacyCheckpoint.capturedAt,
+            observations: legacyCheckpoint.observations,
+            unresolved: legacyCheckpoint.unresolved,
+            coverage: legacyCheckpoint.coverage,
+          },
+          envelope,
+        );
+        envelope = applyResumeHistoryV2(envelope, recovered).envelope;
+        await saveEnvelope(directory, envelope);
+      }
+      runtime = {
+        ...runtime,
+        history: {
+          ...observeHistoryList(runtime.history, snapshot.records, startedAt),
+          legacyCheckpointDigest: legacyDigest ?? runtime.history.legacyCheckpointDigest,
+        },
+      };
+      sharedRuntime = runtime;
+      await saveRuntimeState(directory, runtime);
       let history = {
         envelope,
         counts: { observed: 0, added: 0, strong: 0, review: 0, unresolved: 0, deduplicated: 0 },
@@ -1172,17 +1501,40 @@ export async function main(argv = process.argv.slice(2)) {
         cursor: runtime.cursors.resume,
       };
       if ([2, 3].includes(envelope.version) && historyRequests > 0)
-        history = await collectResume({
-          directory,
-          connection: activeConnection,
-          envelope,
-          runtime,
-          limit: 10,
-          pages: 2,
-          maxRequests: historyRequests,
-          reportOperation: retryReport,
-        });
-      runtime = sharedRuntime;
+        history =
+          historyMode === 'backfill'
+            ? await collectResume({
+                directory,
+                connection: activeConnection,
+                envelope,
+                runtime,
+                limit: 10,
+                pages: 2,
+                maxRequests: historyRequests,
+                reportOperation: retryReport,
+              })
+            : await collectChangedResume({
+                directory,
+                connection: activeConnection,
+                envelope,
+                runtime,
+                maxRequests: historyRequests,
+                saveProgress: async (state) => {
+                  sharedRuntime = { ...sharedRuntime, history: state };
+                  await saveRuntimeState(directory, sharedRuntime);
+                },
+                reportOperation: retryReport,
+              });
+      runtime = { ...sharedRuntime, history: history.state ?? runtime.history };
+      if (historyMode === 'backfill' && history.completed?.length) {
+        for (const item of history.completed)
+          runtime.history = recordHistoryWatermark(
+            runtime.history,
+            item.conversationKey,
+            item.head,
+          );
+      }
+      sharedRuntime = runtime;
       failureUsage.historyRequests = history.usage.historyRequests;
       envelope = history.envelope;
       let dom = {
@@ -1288,7 +1640,7 @@ export async function main(argv = process.argv.slice(2)) {
       );
       runtime = sharedRuntime;
       const files = await saveEnvelope(directory, envelope);
-      await settleResumeCheckpoint(directory, history);
+      if (historyMode === 'backfill') await settleResumeCheckpoint(directory, history);
       const detailFailed = Boolean(detailCollected.halted || detailCollected.failures.length);
       const partial = history.partial || dom.partial || detailFailed || !finalIdentity.ok;
       const failureScope =
@@ -1302,7 +1654,13 @@ export async function main(argv = process.argv.slice(2)) {
         detailCollected.halted?.code ??
         (detailCollected.failures.length ? 'DETAIL_ENRICH_PARTIAL' : null);
       const finishedAt = new Date().toISOString();
-      runtime = { ...runtime, cursors: { resume: history.cursor, detail: detailCursor } };
+      runtime = {
+        ...runtime,
+        cursors: {
+          resume: historyMode === 'backfill' ? history.cursor : runtime.cursors.resume,
+          detail: detailCursor,
+        },
+      };
       const finalDetailSummary =
         detailCollected.detailEnrichment ??
         detailRuntimeSummary(runtime, {
@@ -1354,6 +1712,11 @@ export async function main(argv = process.argv.slice(2)) {
               detail: { ...detailCollected.counts, ...detailApplied.report.counts },
             },
             coverage: { list: snapshot.coverage, resume: history.coverage },
+            history: {
+              mode: historyMode,
+              ...historySummary(runtime.history),
+              backfillCursor: runtime.cursors.resume,
+            },
             dom: {
               reason: dom.reason,
               policyStatus: dom.policyStatus,

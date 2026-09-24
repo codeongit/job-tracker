@@ -2,7 +2,7 @@
 
 这是一个按需运行、仅保存在本机的 BOSS 沟通页追踪器。它读取页面已经加载的会话，不自动滚动历史，不发送消息、不投递简历。采集器不自行创建定时任务；工作台后台调度器通过有界 `run` 命令调用它。
 
-采集器源码随求职工作台 v0.8.4 一起保存在 `collector/boss/`，由 `pnpm boss start|run|pause|resume|stop|recover-page|status|doctor` 统一调用。私有快照、浏览器 profile 和运行状态保存在仓库忽略的 `.local/boss-collector/`，不与源码混放。本机服务把确定性事件写入私有队列及正式不可变工作区；工作台网页关闭不影响队列录入。本采集器不会自行上传 GitHub 或安装登录自启任务。首批日期、去重、节奏和故障规则以工作台 [接入说明](../../docs/BOSS_AUTOMATION_DESIGN.md) 为准。
+采集器源码随求职工作台 v0.8.5 一起保存在 `collector/boss/`，由 `pnpm boss start|run|backfill|pause|resume|stop|recover-page|status|doctor` 统一调用。私有快照、浏览器 profile 和运行状态保存在仓库忽略的 `.local/boss-collector/`，不与源码混放。本机服务把确定性事件写入私有队列及正式不可变工作区；工作台网页关闭不影响队列录入。本采集器不会自行上传 GitHub 或安装登录自启任务。首批日期、去重、节奏和故障规则以工作台 [接入说明](../../docs/BOSS_AUTOMATION_DESIGN.md) 为准。
 
 ## 常用流程
 
@@ -18,8 +18,11 @@ node tracker.mjs resume
 # 此后只读复用该任务标签，无需保持选中
 node tracker.mjs check
 
-# 一次工程化周期。预算由工作台传入，0 表示跳过相应阶段
-node tracker.mjs run --history-requests 20 --dom-limit 0 --detail-limit 20
+# 一次工程化周期，默认变化驱动；统一入口分配预算并完成正式录入
+pnpm boss run
+
+# 工作台服务入口的显式单轮历史回填（仍受同一预算和账号锁约束）
+pnpm boss backfill
 
 # 仅看本地状态，不连接浏览器
 node tracker.mjs status

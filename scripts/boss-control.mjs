@@ -7,6 +7,7 @@ const RUNTIME_COMMANDS = new Set([
   'start',
   'run',
   'check',
+  'backfill',
   'pause',
   'resume',
   'resume-details',
@@ -50,7 +51,7 @@ async function runtimeRequest(action, fetcher = fetch) {
           ? undefined
           : JSON.stringify({ action: action === 'check' ? 'run' : action }),
         signal: AbortSignal.timeout(
-          ['run', 'check', 'recover-saved'].includes(action) ? 25 * 60_000 : 30_000,
+          ['run', 'check', 'backfill', 'recover-saved'].includes(action) ? 25 * 60_000 : 30_000,
         ),
       },
     );

@@ -89,6 +89,8 @@ test('单次完整运行使用剩余额度并在采集后消费正式队列', as
       '20',
       '--dom-limit',
       '1',
+      '--history-mode',
+      'change',
     ]);
     assert.equal(status.budget.historyUsed, 4);
     assert.equal(status.budget.navigationUsed, 2);
@@ -98,6 +100,28 @@ test('单次完整运行使用剩余额度并在采集后消费正式队列', as
       /^[a-f0-9]{64}$/,
     );
     assert.deepEqual(await readdir(join(f.root, 'inbox', 'controller-authorizations')), []);
+  } finally {
+    await f.controller.stop();
+    await f.cleanup();
+  }
+});
+
+test('explicit backfill is one bounded cycle and the next run returns to change mode', async () => {
+  const f = await setup();
+  try {
+    await f.controller.action('backfill');
+    f.advance(11_000);
+    await f.controller.action('run');
+    const cycles = f.calls.filter((args) => args[1] === 'collect-cycle');
+    assert.equal(cycles.length, 2);
+    assert.deepEqual(
+      cycles.map((args) => args.slice(-2)),
+      [
+        ['--history-mode', 'backfill'],
+        ['--history-mode', 'change'],
+      ],
+    );
+    assert.equal(f.controller.status().budget.historyUsed, 8);
   } finally {
     await f.controller.stop();
     await f.cleanup();

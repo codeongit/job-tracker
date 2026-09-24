@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   collectResume,
+  collectChangedResume,
   detailInputs,
   fairDetailInputs,
   fairResumeTargets,
@@ -14,6 +15,7 @@ import {
 } from './tracker.mjs';
 import { applyDetailEvidenceV2, compareLoadedSnapshotsV2, conversationKeyV2 } from './model-v2.mjs';
 import { normalizeRuntimeState, recordDetailFailure } from './runtime-state.mjs';
+import { observeHistoryList, pendingHistory } from './change-history.mjs';
 
 test('CLI keeps compatibility while exposing persistent connection and bounded enrichment modes', () => {
   const base = {
@@ -26,6 +28,7 @@ test('CLI keeps compatibility while exposing persistent connection and bounded e
     historyRequests: 20,
     domLimit: 0,
     detailLimit: 20,
+    historyMode: 'change',
   };
   assert.deepEqual(parseArguments([]), { ...base, mode: 'status' });
   assert.deepEqual(parseArguments(['check', '--account', 'personal']), {
@@ -503,5 +506,194 @@ test('unknown history request outcome is counted once and never replayed by a CD
     assert.equal(result.continuation.conversationKey, record.key);
   } finally {
     await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('change-driven history saves an ordinary-message watermark and makes no repeat request', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'boss-history-change-'));
+  try {
+    const namespace = 'boss-geek:' + 'f'.repeat(64);
+    const key = conversationKeyV2(namespace, '701', '0');
+    const record = {
+      key,
+      platformIdentity: { friendId: '701', friendSource: '0', uniqueId: '701-0' },
+      contact: 'Synthetic',
+      company: 'Company',
+      title: 'Recruiter',
+      preview: 'ordinary',
+      timeLabel: '10:00',
+      unread: null,
+      latestMessageId: 'm1',
+      outgoingReceipt: { status: 'unknown', label: null, source: null },
+      jobAssociation: { jobId: null, detailUrl: null },
+      observedJobName: null,
+    };
+    const snapshot = {
+      capturedAt: '2026-09-24T02:00:00.000Z',
+      scope: 'loaded-chat-list',
+      accountNamespace: namespace,
+      records: [record],
+      coverage: {
+        loadedRows: 1,
+        loadedDataRows: 1,
+        renderedRows: 1,
+        offscreenRows: 0,
+        unresolvedRows: 0,
+        truncated: false,
+      },
+    };
+    let envelope = compareLoadedSnapshotsV2(null, snapshot).envelope;
+    let history = observeHistoryList(
+      normalizeRuntimeState({
+        version: 2,
+        cursors: { resume: null, detail: null },
+        lastRun: null,
+        updatedAt: null,
+      }).history,
+      snapshot.records,
+      snapshot.capturedAt,
+    );
+    let requests = 0,
+      commits = 0;
+    const run = async () =>
+      collectChangedResume({
+        directory,
+        connection: {},
+        envelope,
+        runtime: { history },
+        maxRequests: 4,
+        requestDelayMs: 0,
+        betweenTargetsDelayMs: 0,
+        reportOperation: async () => ({ ok: true, report: {} }),
+        saveEvidence: async () => {
+          commits += 1;
+        },
+        saveProgress: async (value) => {
+          history = value;
+        },
+        evaluate: async (_connection, _expression, metadata) => {
+          requests += 1;
+          return metadata.kind === 'friend'
+            ? { ok: true, identity: { bossId: 'boss701', securityId: 'security701' } }
+            : {
+                ok: true,
+                observations: [],
+                unresolved: [],
+                messageIds: ['ordinary1'],
+                exhausted: true,
+                page: metadata.page,
+              };
+        },
+      });
+    const first = await run();
+    envelope = first.envelope;
+    assert.equal(first.usage.historyRequests, 2);
+    assert.equal(commits, 1);
+    assert.equal(history.conversations[0].watermark, 'ordinary1');
+    assert.equal(pendingHistory(history).length, 0);
+    const second = await run();
+    assert.equal(second.usage.historyRequests, 0);
+    assert.equal(requests, 2);
+  } finally {
+    await rm(directory, { recursive: true });
+  }
+});
+
+test('completed-page checkpoint replays locally after progress write fails', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'boss-history-replay-'));
+  try {
+    const namespace = 'boss-geek:' + 'd'.repeat(64);
+    const record = {
+      key: conversationKeyV2(namespace, '801', '0'),
+      platformIdentity: { friendId: '801', friendSource: '0', uniqueId: '801-0' },
+      contact: 'Synthetic',
+      company: 'Company',
+      title: 'Recruiter',
+      preview: 'ordinary',
+      timeLabel: '10:00',
+      unread: null,
+      latestMessageId: 'm1',
+      outgoingReceipt: { status: 'unknown', label: null, source: null },
+      jobAssociation: { jobId: null, detailUrl: null },
+      observedJobName: null,
+    };
+    const snapshot = {
+      capturedAt: '2026-09-24T02:00:00.000Z',
+      scope: 'loaded-chat-list',
+      accountNamespace: namespace,
+      records: [record],
+      coverage: {
+        loadedRows: 1,
+        loadedDataRows: 1,
+        renderedRows: 1,
+        offscreenRows: 0,
+        unresolvedRows: 0,
+        truncated: false,
+      },
+    };
+    const envelope = compareLoadedSnapshotsV2(null, snapshot).envelope;
+    let history = observeHistoryList(
+      normalizeRuntimeState({
+        version: 2,
+        cursors: { resume: null, detail: null },
+        lastRun: null,
+        updatedAt: null,
+      }).history,
+      snapshot.records,
+      snapshot.capturedAt,
+    );
+    let requests = 0,
+      commits = 0;
+    const base = {
+      directory,
+      connection: {},
+      envelope,
+      maxRequests: 4,
+      requestDelayMs: 0,
+      betweenTargetsDelayMs: 0,
+      reportOperation: async () => ({ ok: true, report: {} }),
+      saveEvidence: async () => {
+        commits += 1;
+      },
+    };
+    await assert.rejects(
+      collectChangedResume({
+        ...base,
+        runtime: { history },
+        saveProgress: async () => {
+          throw new Error('LOCAL_PROGRESS_FAILED');
+        },
+        evaluate: async (_connection, _expression, metadata) => {
+          requests += 1;
+          return metadata.kind === 'friend'
+            ? { ok: true, identity: { bossId: 'boss801', securityId: 'security801' } }
+            : {
+                ok: true,
+                observations: [],
+                unresolved: [],
+                messageIds: ['ordinary801'],
+                exhausted: true,
+                page: metadata.page,
+              };
+        },
+      }),
+      /LOCAL_PROGRESS_FAILED/,
+    );
+    assert.equal(commits, 1);
+    const recovered = await collectChangedResume({
+      ...base,
+      runtime: { history },
+      saveProgress: async (value) => {
+        history = value;
+      },
+      evaluate: async () => {
+        throw new Error('PLATFORM_SHOULD_NOT_BE_CALLED');
+      },
+    });
+    assert.equal(recovered.usage.historyRequests, 0);
+    assert.equal(requests, 2);
+    assert.equal(history.conversations[0].watermark, 'ordinary801');
+  } finally {
+    await rm(directory, { recursive: true });
   }
 });

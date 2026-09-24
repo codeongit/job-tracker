@@ -45,6 +45,50 @@ const initialDetailEnrichment = () => ({
   nextRetryAt: null,
   lastError: null,
 });
+const initialHistory = () => ({
+  mode: 'change',
+  initializedDay: null,
+  pending: 0,
+  paginating: 0,
+  completed: 0,
+  truncated: 0,
+  waitingRetry: 0,
+  failed: 0,
+  isolated: 0,
+  backfillCursor: null,
+});
+function validateHistory(value) {
+  if (
+    !value ||
+    !['change', 'backfill'].includes(value.mode) ||
+    (value.backfillCursor !== undefined &&
+      value.backfillCursor !== null &&
+      !/^[A-Za-z0-9_-]{1,300}$/.test(value.backfillCursor)) ||
+    (value.initializedDay !== null && !/^\d{4}-\d{2}-\d{2}$/.test(value.initializedDay)) ||
+    ![
+      'pending',
+      'paginating',
+      'completed',
+      'truncated',
+      'waitingRetry',
+      'failed',
+      'isolated',
+    ].every((key) => Number.isSafeInteger(value[key]) && value[key] >= 0)
+  )
+    throw new BossRuntimeError('BOSS_RUNTIME_STATE_INVALID');
+  return {
+    mode: value.mode,
+    initializedDay: value.initializedDay,
+    pending: value.pending,
+    paginating: value.paginating,
+    completed: value.completed,
+    truncated: value.truncated,
+    waitingRetry: value.waitingRetry,
+    failed: value.failed,
+    isolated: value.isolated,
+    backfillCursor: value.backfillCursor ?? null,
+  };
+}
 
 function validateDetailEnrichment(input) {
   const value = structuredClone(input);
@@ -79,6 +123,7 @@ function initialState(now = new Date()) {
     pauseCode: '',
     consecutiveFailures: 0,
     detailEnrichment: initialDetailEnrichment(),
+    history: initialHistory(),
     actions: [],
   };
 }
@@ -92,6 +137,13 @@ export function validateBossRuntimeState(input) {
     !Object.hasOwn(value, 'detailEnrichment')
   )
     value.detailEnrichment = initialDetailEnrichment();
+  if (
+    value &&
+    typeof value === 'object' &&
+    !Array.isArray(value) &&
+    !Object.hasOwn(value, 'history')
+  )
+    value.history = initialHistory();
   const keys = [
     'format',
     'version',
@@ -105,6 +157,7 @@ export function validateBossRuntimeState(input) {
     'pauseCode',
     'consecutiveFailures',
     'detailEnrichment',
+    'history',
     'actions',
   ];
   if (
@@ -138,6 +191,7 @@ export function validateBossRuntimeState(input) {
   )
     throw new BossRuntimeError('BOSS_RUNTIME_STATE_INVALID');
   value.detailEnrichment = validateDetailEnrichment(value.detailEnrichment);
+  value.history = validateHistory(value.history);
   for (const action of value.actions) {
     if (
       !action ||
@@ -458,7 +512,7 @@ export class BossRuntime {
     });
   }
 
-  async runCycle({ scheduled = false } = {}) {
+  async runCycle({ scheduled = false, historyMode = 'change' } = {}) {
     const admission = await this.enqueueState(async () => {
       await this.initializeState();
       if (scheduled && this.state.lifecycle !== 'running') return null;
@@ -471,6 +525,7 @@ export class BossRuntime {
       // bypass this guard, and an in-flight cycle is joined in requestCycle.
       if (
         !scheduled &&
+        historyMode !== 'backfill' &&
         Number.isFinite(previousTick) &&
         elapsedSincePrevious >= 0 &&
         elapsedSincePrevious < this.manualDebounceMs
@@ -512,7 +567,7 @@ export class BossRuntime {
     const { started, budget, baseActions, reservedUsage, controlRevision } = admission;
     let result;
     try {
-      result = await this.executeCycle({ budget, scheduled });
+      result = await this.executeCycle({ budget, scheduled, historyMode });
       const trustedUsage = reportedUsage(result, budget);
       if (!trustedUsage) throw new BossRuntimeError('BOSS_USAGE_INVALID');
       await this.enqueueState(async () => {
@@ -535,6 +590,7 @@ export class BossRuntime {
               nextTickAt: '',
               consecutiveFailures: 0,
               detailEnrichment: validateDetailEnrichment(result.detailEnrichment),
+              history: result.history ? validateHistory(result.history) : this.state.history,
             });
             return;
           }
@@ -559,6 +615,7 @@ export class BossRuntime {
           detailEnrichment: validateDetailEnrichment(
             result?.detailEnrichment ?? this.state.detailEnrichment,
           ),
+          history: result?.history ? validateHistory(result.history) : this.state.history,
         });
       });
       return result;

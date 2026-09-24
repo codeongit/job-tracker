@@ -128,7 +128,7 @@ export function createBossController({
       await executeJson(integrationScript, ['resume'], runner);
     },
     recoverPage: () => trackerAction('recover-page'),
-    executeCycle: async ({ budget }) => {
+    executeCycle: async ({ budget, historyMode = 'change' }) => {
       try {
         await requireWorkspace();
       } catch (error) {
@@ -140,6 +140,7 @@ export function createBossController({
           historyRequests: budget.historyRequests,
           detailLimit: budget.detailActions,
           domLimit: budget.domActions,
+          historyMode,
         },
         authorization = await issueBossInternalAuthorization(inboxRoot, request, { now }),
         args = [
@@ -150,6 +151,8 @@ export function createBossController({
           String(budget.detailActions),
           '--dom-limit',
           String(budget.domActions),
+          '--history-mode',
+          historyMode,
         ];
       let output;
       try {
@@ -203,6 +206,11 @@ export function createBossController({
       if (action === 'start') return runtime.start();
       if (action === 'run') {
         const result = await runtime.requestCycle({ scheduled: false });
+        return { ...runtime.status(), result };
+      }
+      if (action === 'backfill') {
+        if (runtime.cycle) throw new BossRuntimeError('BOSS_CYCLE_IN_PROGRESS');
+        const result = await runtime.requestCycle({ scheduled: false, historyMode: 'backfill' });
         return { ...runtime.status(), result };
       }
       if (action === 'pause') return runtime.pause();

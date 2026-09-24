@@ -212,6 +212,7 @@ export async function runResumeHistoryRequests({
   maxRequests = 20,
   requestDelayMs = 3000,
   initialObservations = [],
+  initialHead = null,
   startConversationKey = null,
   startPage = 1,
   knownMessageIds = [],
@@ -231,6 +232,7 @@ export async function runResumeHistoryRequests({
     maxRequests < 1 ||
     maxRequests > 20 ||
     !Array.isArray(initialObservations) ||
+    (initialHead !== null && !MESSAGE_ID.test(initialHead)) ||
     (startConversationKey !== null && !/^[a-f0-9]{64}$/.test(startConversationKey)) ||
     !Number.isInteger(startPage) ||
     startPage < 1 ||
@@ -283,7 +285,10 @@ export async function runResumeHistoryRequests({
     cursor = null,
     budgetExhausted = false,
     continuation = null;
-  const checkpoint = async (nextConversationKey, nextPage) =>
+  const completedConversations = [];
+  const heads = new Map();
+  if (initialHead && startConversationKey) heads.set(startConversationKey, initialHead);
+  const checkpoint = async (nextConversationKey, nextPage, metadata = {}) =>
     onCheckpoint({
       version: 1,
       capturedAt: now(),
@@ -295,6 +300,7 @@ export async function runResumeHistoryRequests({
       usage: { historyRequests },
       partial,
       error,
+      ...metadata,
     });
   const request = async (expression, metadata) => {
     if (historyRequests >= maxRequests) return { budget: false };
@@ -390,8 +396,28 @@ export async function runResumeHistoryRequests({
         break;
       }
       coverage.completedPages += 1;
+      if (!heads.has(target.conversationKey) && firstPage === 1)
+        heads.set(target.conversationKey, pageResult.payload.messageIds[0] ?? null);
       observations.push(...pageResult.payload.observations);
       unresolved.push(...pageResult.payload.unresolved);
+      if (
+        pageResult.payload.unresolved.some((item) =>
+          /IDENTITY_INCOMPLETE/.test(item?.reason ?? ''),
+        ) ||
+        (!pageResult.payload.messageIds.length && pageResult.payload.unresolved.length)
+      ) {
+        unresolved.push({
+          conversationKey: target.conversationKey,
+          reason: 'HISTORY_MESSAGE_ID_MISSING',
+        });
+        completed = false;
+        coverage.failedConversations += 1;
+        continuation = { conversationKey: target.conversationKey, page };
+        await checkpoint(target.conversationKey, page, {
+          head: heads.get(target.conversationKey) ?? null,
+        });
+        break;
+      }
       exhausted = pageResult.payload.exhausted === true;
       const known = knownByConversation.get(target.conversationKey) ?? new Set();
       knownBoundary = pageResult.payload.messageIds.some(
@@ -399,17 +425,28 @@ export async function runResumeHistoryRequests({
       );
       if (exhausted || knownBoundary || page === 20) {
         continuation = null;
-        await checkpoint(null, 0);
+        await checkpoint(null, 0, {
+          completedConversationKey: exhausted || knownBoundary ? target.conversationKey : null,
+          head: heads.get(target.conversationKey) ?? null,
+          truncated: page === 20 && !exhausted && !knownBoundary,
+        });
         break;
       }
       continuation = { conversationKey: target.conversationKey, page: page + 1 };
-      await checkpoint(target.conversationKey, page + 1);
+      await checkpoint(target.conversationKey, page + 1, {
+        head: heads.get(target.conversationKey) ?? null,
+      });
     }
     if (completed) {
       coverage.resolvedConversations += 1;
       if (exhausted || knownBoundary) {
         coverage.exhaustedConversations += 1;
         cursor = target.conversationKey;
+        completedConversations.push({
+          conversationKey: target.conversationKey,
+          head: heads.get(target.conversationKey) ?? null,
+          complete: true,
+        });
       } else {
         coverage.truncatedConversations += 1;
         if (lastPage >= 20) cursor = target.conversationKey;
@@ -436,6 +473,8 @@ export async function runResumeHistoryRequests({
     cursor,
     budgetExhausted,
     continuation,
+    completed: completedConversations,
+    heads: [...heads].map(([conversationKey, head]) => ({ conversationKey, head })),
   };
 }
 

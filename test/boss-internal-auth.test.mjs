@@ -14,6 +14,7 @@ const REQUEST = {
   historyRequests: 20,
   detailLimit: 20,
   domLimit: 1,
+  historyMode: 'change',
 };
 const START = new Date('2026-09-22T00:00:00.000Z');
 
