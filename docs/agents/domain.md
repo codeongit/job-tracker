@@ -1,13 +1,13 @@
 # Domain docs
 
-This is a single-context repository. Engineering skills use `CONTEXT.md` at the repo root for domain terms and `docs/adr/` for new ADRs.
+This is a single-context repository. `CONTEXT.md` at the repo root defines domain terms. `docs/adr/` holds the full numbered decision history; `docs/DECISIONS.md` is its index and preserves old links.
 
 ## Before exploring
 
-- Read `docs/DECISIONS.md` first. Its numbered decisions and supersession links remain authoritative for existing project choices.
-- Read relevant parts of `docs/ARCHITECTURE.md`, `docs/DATA_AND_RECOVERY.md`, and `docs/MAINTENANCE.md`.
-- Read root `CONTEXT.md` and relevant ADRs in `docs/adr/` when they exist.
+- Read `docs/DECISIONS.md` and the relevant ADRs for accepted decisions, rationale, supersession, and review triggers.
+- Read `CONTEXT.md` for the relevant domain language.
+- Read relevant parts of `docs/ARCHITECTURE.md`, `docs/DATA_AND_RECOVERY.md`, and `docs/MAINTENANCE.md` for current behavior.
 
-Do not create `CONTEXT.md` or ADRs just to fill this layout. Add them when domain terms or a new decision need recording. A new ADR must not silently replace an existing numbered decision; follow the update rules in `docs/DECISIONS.md`.
+When a key decision changes, add the next numbered ADR with its source and supersession links, retain the old ADR, and update the index. Do not rewrite the old rationale. New user instructions take precedence over older decisions.
 
-Use terms defined in `CONTEXT.md` when naming concepts in issues, proposals, and code. Surface conflicts with existing decisions rather than silently overriding them.
+Use terms defined in `CONTEXT.md` when naming concepts in issues, proposals, and code. Keep implementation choices in ADRs and current behavior in the operational docs, not in the glossary. Surface conflicts with existing decisions explicitly.

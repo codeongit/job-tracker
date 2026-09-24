@@ -1,6 +1,6 @@
 # Project boundaries
 
-- Read [docs/DECISIONS.md](docs/DECISIONS.md) first for accepted decisions, their rationale, and review triggers. When changing a key decision, append a new numbered entry with its source and supersession links; retain the old rationale. New user instructions take precedence over older decisions.
+- Read [docs/DECISIONS.md](docs/DECISIONS.md) and the relevant [ADRs](docs/adr/) first for accepted decisions, rationale, and review triggers. Read [CONTEXT.md](CONTEXT.md) for domain terms. When changing a key decision, add the next numbered ADR with its source and supersession links; retain the old ADR and update the index. New user instructions take precedence over older decisions.
 
 - Recruitment automation must follow [docs/AUTOMATION_POLICY.md](docs/AUTOMATION_POLICY.md): serial operation, recruitment-platform reads only, no replies/applications or unplanned actions, deterministic scripts, and minimal private incident evidence. [BOSS integration](docs/BOSS_AUTOMATION_DESIGN.md) runs only after explicit tracking start; starting/restarting the local service does not authorize BOSS access or resume a previous tracking session. Never install login autostart or enable automatic GitHub sync as a side effect.
 

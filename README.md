@@ -156,7 +156,8 @@ pnpm format:check
 
 “数据与同步”提供完整备份、本机快照、版本与连接检查。静态模式保留最近 20 个操作前浏览器快照；本机服务保留不可变完整提交与原始迁移副本。浏览器草稿的独立备份仍需要页面在线，请另行下载完整备份。
 
-- [关键决策与选择原因](docs/DECISIONS.md)
+- [领域术语](CONTEXT.md)
+- [关键决策索引与历史 ADR](docs/DECISIONS.md)
 - [架构与代码职责](docs/ARCHITECTURE.md)
 - [数据升级与恢复](docs/DATA_AND_RECOVERY.md)
 - [开发、发布与排障](docs/MAINTENANCE.md)

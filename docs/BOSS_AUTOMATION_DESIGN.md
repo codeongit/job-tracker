@@ -2,7 +2,7 @@
 
 更新日期：2026-09-24；实现版本：v0.8.5。脚本、协议和合成数据测试不等于真实环境验收；任务页连接和关页运行仍由用户验收。
 
-当前规约见 [AUTOMATION_POLICY](AUTOMATION_POLICY.md)，架构决策见 [D026](DECISIONS.md#d026本机权威工作区与显式持续跟踪)。v0.7 的首批日期和只读边界继续有效；“工作台关页只能积压”“每次只手动 check”“45 分钟/每天 16 次”等历史限制已被本版替代。
+当前规约见 [AUTOMATION_POLICY](AUTOMATION_POLICY.md)，架构决策见 [D026](adr/0026-local-authoritative-workspace.md)。v0.7 的首批日期和只读边界继续有效；“工作台关页只能积压”“每次只手动 check”“45 分钟/每天 16 次”等历史限制已被本版替代。
 
 ## 运行与入口
 
