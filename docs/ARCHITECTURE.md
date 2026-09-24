@@ -34,6 +34,7 @@ v0.8.0 区分两种模式：本机模式由服务保存唯一正式工作区，�
 | `scripts/boss-integration.mjs`                       | 快照转换、历史入口兼容、采集检查点与不可变入队                     |
 | `scripts/boss-inbox.mjs`                             | 私有不可变队列、回执、运行和故障材料                               |
 | `collector/boss/`                                    | CDP 只读采集、历史/详情补齐、不可变证据与纯测试                    |
+| `collector/boss/history-commit.mjs`                  | 变更驱动历史的检查点恢复及证据、进度、检查点顺序提交               |
 | `scripts/workspace-store.mjs`、`workspace-api.mjs`   | 不可变工作区提交、单写者、CAS、幂等命令及固定 API v1               |
 | `scripts/workspace-consumer.mjs`                     | 无页面队列消费、岗位依赖冲突隔离、提交后回执                       |
 | `scripts/service-control.mjs`、`service-runtime.mjs` | 本机服务身份与所有权安全的启动/查询/停止                           |

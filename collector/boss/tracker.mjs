@@ -58,18 +58,9 @@ import {
   clearDetailFailures,
   resumeDetailState,
   detailRuntimeSummary,
-  saveChangeCheckpoint,
-  loadChangeCheckpoint,
-  removeChangeCheckpoint,
 } from './runtime-state.mjs';
-import {
-  observeHistoryList,
-  pendingHistory,
-  advanceHistoryTask,
-  failHistoryTask,
-  recordHistoryWatermark,
-  historySummary,
-} from './change-history.mjs';
+import { observeHistoryList, recordHistoryWatermark, historySummary } from './change-history.mjs';
+import { createHistoryCommit } from './history-commit.mjs';
 import { createHash, randomUUID } from 'node:crypto';
 import { accountDataDirectory } from './paths.mjs';
 
@@ -656,53 +647,19 @@ export async function collectChangedResume({
   reportOperation = (operation) => operation(),
   evaluate = evaluateBound,
 }) {
-  let state = runtime.history;
-  let prior = await loadChangeCheckpoint(directory);
-  const loaded = new Set(envelope.snapshot.records.map((item) => item.key));
-  const pending = pendingHistory(state).filter(
-    (item) =>
-      loaded.has(item.key) ||
-      item.key === prior?.nextConversationKey ||
-      item.key === prior?.completedConversationKey,
-  );
-  const checkpointKey = prior?.nextConversationKey ?? prior?.completedConversationKey;
-  const checkpointTask = pending.find((item) => item.key === checkpointKey);
-  if (prior && checkpointTask && prior.targetFingerprint !== checkpointTask.task.fingerprint) {
-    // A newer list fingerprint supersedes the in-flight page target. Commit
-    // the old page evidence, then restart the newer task from page one.
-    if (prior.observations.length) {
-      const recovered = toResumeHistoryResult(
-        {
-          ok: true,
-          url: 'https://www.zhipin.com/web/geek/chat',
-          capturedAt: prior.capturedAt,
-          observations: prior.observations,
-          unresolved: prior.unresolved,
-          coverage: prior.coverage,
-        },
-        envelope,
-      );
-      envelope = applyResumeHistoryV2(envelope, recovered).envelope;
-      await saveEvidence(envelope);
-    }
-    await removeChangeCheckpoint(directory);
-    prior = null;
-  }
-  if (
-    prior &&
-    !pending.some(
-      (item) => item.key === (prior.nextConversationKey ?? prior.completedConversationKey),
-    )
-  ) {
-    // A crash after the state commit but before checkpoint removal is safe to
-    // finalize locally; the evidence was already written in that commit.
-    await removeChangeCheckpoint(directory);
-    prior = null;
-  }
+  const history = createHistoryCommit({
+    directory,
+    envelope,
+    state: runtime.history,
+    saveEvidence,
+    saveProgress,
+  });
+  const pending = await history.prepare();
+  const prior = history.checkpoint;
   if (!pending.length && !prior)
     return {
-      envelope,
-      state,
+      envelope: history.envelope,
+      state: history.state,
       counts: {
         observed: 0,
         added: 0,
@@ -756,42 +713,16 @@ export async function collectChangedResume({
     if (!task) continue;
     if (used && betweenTargetsDelayMs)
       await new Promise((resolve) => setTimeout(resolve, betweenTargetsDelayMs));
-    const checkpoint =
-      prior?.nextConversationKey === item.key || prior?.completedConversationKey === item.key
-        ? prior
-        : null;
+    const checkpoint = history.forTask(item.key);
     if (checkpoint && checkpoint.targetFingerprint !== task.fingerprint)
       throw new Error('CHANGE_CHECKPOINT_TARGET_CHANGED');
-    if (checkpoint?.observations.length) {
-      const recovered = toResumeHistoryResult(
-        {
-          ok: true,
-          url: 'https://www.zhipin.com/web/geek/chat',
-          capturedAt: checkpoint.capturedAt,
-          observations: checkpoint.observations,
-          unresolved: checkpoint.unresolved,
-          coverage: checkpoint.coverage,
-        },
-        envelope,
-      );
-      envelope = applyResumeHistoryV2(envelope, recovered).envelope;
-    }
     if (checkpoint?.completedConversationKey === item.key) {
-      await saveEvidence(envelope);
-      state = advanceHistoryTask(state, item.key, task.fingerprint, {
-        complete: true,
-        head: checkpoint.head,
-      });
-      await saveProgress(state);
-      await removeChangeCheckpoint(directory);
+      await history.completeFromCheckpoint(item);
       continue;
     }
-    const record = envelope.snapshot.records.find((entry) => entry.key === item.key);
+    const record = history.envelope.snapshot.records.find((entry) => entry.key === item.key);
     if (!record) {
-      if (checkpoint) {
-        await saveEvidence(envelope);
-        await removeChangeCheckpoint(directory);
-      }
+      await history.discardMissingRecord();
       continue;
     }
     const startPage = checkpoint?.nextPage ?? task.page;
@@ -814,16 +745,13 @@ export async function collectChangedResume({
         ? [{ conversationKey: item.key, messageId: item.watermark }]
         : [],
       execute: (expression, metadata) => evaluate(connection, expression, metadata),
-      onCheckpoint: (value) =>
-        saveChangeCheckpoint(directory, { ...value, targetFingerprint: task.fingerprint }),
+      onCheckpoint: (value) => history.checkpointPage(value, task.fingerprint),
     });
     used += scan.usage.historyRequests;
-    const result = toResumeHistoryResult(scan.payload, envelope);
-    const applied = applyResumeHistoryV2(envelope, result);
-    envelope = applied.envelope;
+    const committed = await history.commitScan(item, scan);
     for (const key of ['observed', 'added', 'strong', 'review', 'unresolved', 'deduplicated'])
-      counts[key] += applied.report.counts[key] ?? 0;
-    for (const [reason, amount] of Object.entries(applied.report.counts.unresolvedByReason ?? {}))
+      counts[key] += committed.counts[key] ?? 0;
+    for (const [reason, amount] of Object.entries(committed.counts.unresolvedByReason ?? {}))
       counts.unresolvedByReason[reason] = (counts.unresolvedByReason[reason] ?? 0) + amount;
     if (!coverage)
       coverage = {
@@ -845,40 +773,7 @@ export async function collectChangedResume({
       'truncatedConversations',
       'failedConversations',
     ])
-      coverage[key] += result.coverage[key] ?? 0;
-    // The immutable snapshot is committed before advancing the task or deleting
-    // its page checkpoint. A replay after a crash is harmless and idempotent.
-    await saveEvidence(envelope);
-    const head =
-      scan.heads.find((entry) => entry.conversationKey === item.key)?.head ??
-      checkpoint?.head ??
-      task.head;
-    if (scan.completed.some((entry) => entry.conversationKey === item.key))
-      state = advanceHistoryTask(state, item.key, task.fingerprint, { complete: true, head });
-    else if (scan.payload.coverage.failedConversations && !scan.error) {
-      const reason = scan.payload.unresolved.find(
-        (entry) => entry.conversationKey === item.key,
-      )?.reason;
-      state = failHistoryTask(
-        state,
-        item.key,
-        task.fingerprint,
-        /^[A-Z][A-Z0-9_]{2,80}$/.test(reason ?? '') ? reason : 'HISTORY_UNAVAILABLE',
-        new Date().toISOString(),
-      );
-    } else if (scan.continuation)
-      state = advanceHistoryTask(state, item.key, task.fingerprint, {
-        nextPage: scan.continuation.page,
-        head,
-      });
-    else if (scan.payload.coverage.truncatedConversations && !scan.error)
-      state = advanceHistoryTask(state, item.key, task.fingerprint, {
-        nextPage: 20,
-        head,
-        truncated: true,
-      });
-    await saveProgress(state);
-    await removeChangeCheckpoint(directory);
+      coverage[key] += committed.coverage[key] ?? 0;
     if (scan.error) {
       partial = true;
       error = scan.error;
@@ -887,8 +782,8 @@ export async function collectChangedResume({
   }
   const finalCheck = await reportOperation(() => resumeBrowser(connection, identityOptions));
   return {
-    envelope,
-    state,
+    envelope: history.envelope,
+    state: history.state,
     counts,
     coverage,
     usage: { historyRequests: used },
