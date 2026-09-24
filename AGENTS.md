@@ -27,3 +27,17 @@
 - Drafts contain only explicitly allowed job/task/activity fields. Never auto-submit drafts or persist settings/PATs. Resume with a fresh ID; clear only the submitted immutable revision. A draft-cleanup failure must not turn a committed record into a failed save.
 - Prepare and preflight all imported drafts before restoring the workspace; roll back prepared copies on failure. Keep both data and conflict state in full backups.
 - Disk backups stay in ignored `.local/backups/`, independent of SSH and browser clearing. Keep daily first snapshots and atomic latest replacement; test only with temporary directories and synthetic data.
+
+## Agent skills
+
+### Issue tracker
+
+Issues and specs are tracked in GitHub Issues for `codeongit/job-tracker`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five triage state roles use their default label names. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context layout: `CONTEXT.md` at the repo root and ADRs in `docs/adr/`. See `docs/agents/domain.md`.
