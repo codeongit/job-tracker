@@ -1,6 +1,6 @@
 # 关键决策索引
 
-历史 D001–D028 已按原编号迁至 [`docs/adr/`](adr/)；每条原有的决定、原因、备选、约束、来源和替代关系均保留。此页继续提供总览与旧链接入口。当前行为和操作步骤分别见 [架构说明](ARCHITECTURE.md)、[数据与恢复](DATA_AND_RECOVERY.md)、[维护手册](MAINTENANCE.md)。版本改动见 [CHANGELOG](../CHANGELOG.md)。
+历史 D001–D028 已按原编号迁至 [`docs/adr/`](adr/)；新决定从 D029 起继续编号。每条原有的决定、原因、备选、约束、来源和替代关系均保留。此页继续提供总览与旧链接入口。当前行为和操作步骤分别见 [架构说明](ARCHITECTURE.md)、[数据与恢复](DATA_AND_RECOVERY.md)、[维护手册](MAINTENANCE.md)。版本改动见 [CHANGELOG](../CHANGELOG.md)。
 
 首次整理日期：2026-09-11。迁移日期：2026-09-24。日期不代表各决策首次讨论时间；来源与历史理由以对应 ADR 原文为准。
 
@@ -38,10 +38,11 @@
 | [D022](adr/0022-read-only-recruitment-automation.md)    | 招聘自动化只读、低频串行与故障现场保留     | 有效；运行方式由 D026 调整          | 用户明确要求；由 D023 落实首版接入     |
 | [D023](adr/0023-boss-private-queue-integration.md)      | BOSS 私有队列接入与 2026-09-18 首批规则    | 首批规则有效；运行/存储由 D026 替代 | 用户确认完整实施计划并要求执行         |
 | [D024](adr/0024-boss-date-label-import.md)              | BOSS 日期标签的用户确认补录规则            | 日期规则有效；预算由 D026 调整      | 用户指定“昨天”为 2026-09-20 并要求导入 |
-| [D025](adr/0025-controlled-conversation-detail-read.md) | 允许受控读取会话详情并设计简历状态采集     | 有效；精确状态已完成首批验收        | 用户取消禁止切换聊天并要求分析         |
+| [D025](adr/0025-controlled-conversation-detail-read.md) | 允许受控读取会话详情并设计简历状态采集     | 有效；请求状态映射由 D029 调整      | 用户取消禁止切换聊天并要求分析         |
 | [D026](adr/0026-local-authoritative-workspace.md)       | 本机权威工作区与显式持续跟踪               | 已实现；真实迁移待人工验收          | 用户确认关页录入、两种模式与手动启动   |
 | [D027](adr/0027-collector-source-colocation.md)         | 采集器源码与工作台同仓、私有状态分离       | 有效                                | 用户要求继续迁移并减少外部目录依赖     |
 | [D028](adr/0028-change-driven-history.md)               | 历史采集默认变化驱动、手动保留公平回填     | 已实现；真实浏览器待验收            | 用户确认新旧模式并要求实施             |
+| [D029](adr/0029-resume-request-is-not-sent.md)          | 附件简历请求不等于简历已发送               | 有效；真实浏览器待验收              | 用户指出同公司两个会话统计串联         |
 
 ## D001：面向个人使用的独立网页
 
@@ -155,10 +156,14 @@
 
 完整记录见 [ADR-0028](adr/0028-change-driven-history.md)。
 
+## D029：附件简历请求不等于简历已发送
+
+完整记录见 [ADR-0029](adr/0029-resume-request-is-not-sent.md)。
+
 ## 新决策模板
 
 ```markdown
-## D029：一句话说明决定
+## D030：一句话说明决定
 
 - **记录日期 / 状态：** YYYY-MM-DD / 待定或有效。
 - **来源：** 用户明确要求、实现选择，或所替代的决策编号。

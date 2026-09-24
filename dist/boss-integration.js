@@ -717,11 +717,11 @@ function applyResumeStatus(data, result, event, stamp) {
   const target =
     event.summary === 'resume_viewed_confirmed'
       ? '对方已接收'
-      : ['resume_request_sent', 'resume_sent_confirmed', 'resume_attachment_sent'].includes(
-            event.summary,
-          )
+      : ['resume_sent_confirmed', 'resume_attachment_sent'].includes(event.summary)
         ? '已发送'
-        : '';
+        : event.summary === 'resume_request_sent'
+          ? '被索要'
+          : '';
   if (!target) {
     result.applicationStatus = 'no_effect';
     result.reason = 'observation_only';
@@ -745,11 +745,14 @@ function applyResumeStatus(data, result, event, stamp) {
     return;
   }
   const allowed =
-    target === '已发送'
-      ? ['未知', '被索要'].includes(opportunity.resumeState)
-      : ['未知', '被索要', '已发送'].includes(opportunity.resumeState);
+    target === '被索要'
+      ? opportunity.resumeState === '未知'
+      : target === '已发送'
+        ? ['未知', '被索要'].includes(opportunity.resumeState)
+        : ['未知', '被索要', '已发送'].includes(opportunity.resumeState);
   const alreadySupported =
     opportunity.resumeState === target ||
+    (target === '被索要' && ['已发送', '对方已接收'].includes(opportunity.resumeState)) ||
     (target === '已发送' && opportunity.resumeState === '对方已接收');
   if (!allowed && !alreadySupported) {
     result.applicationStatus = 'protected';
@@ -774,6 +777,61 @@ function applyResumeStatus(data, result, event, stamp) {
   }
   result.applicationStatus = changed ? 'applied' : 'no_effect';
   result.reason = changed ? 'resume_status_advanced' : 'state_already_supported';
+}
+
+// Repairs the old request-card promotion without treating a request as proof
+// that the applicant sent a resume. Only fields still owned by this source may
+// be changed; later send/view evidence or manual edits make the repair unsafe.
+export function correctRequestOnlyResumeStatus(data, { opportunityId, requestEventId, stamp }) {
+  const next = clone(data);
+  const opportunity = live(next.opportunities).find((row) => row.id === opportunityId);
+  const bindings = live(next.sourceBindings).filter(
+    (row) => row.kind === 'opportunity' && row.opportunityId === opportunityId,
+  );
+  const evidence = live(next.sourceEvents).filter(
+    (row) => row.opportunityId === opportunityId && row.eventType === 'resume_observed',
+  );
+  const request = evidence.find(
+    (row) =>
+      row.id === requestEventId &&
+      row.status === 'recorded' &&
+      row.summary === 'resume_request_sent',
+  );
+  const binding = bindings.length === 1 ? bindings[0] : null;
+  const owned = binding ? splitAutoFields(binding) : new Set();
+  if (
+    !opportunity ||
+    !binding ||
+    !request ||
+    request.accountNamespace !== binding.accountNamespace ||
+    request.externalJobId !== binding.externalJobId ||
+    evidence.some((row) =>
+      ['resume_sent_confirmed', 'resume_attachment_sent', 'resume_viewed_confirmed'].includes(
+        row.summary,
+      ),
+    ) ||
+    !owned.has('resumeState') ||
+    opportunity.resumeState !== '已发送' ||
+    binding.lastAutoResumeState !== '已发送'
+  )
+    throw integrationError(
+      '简历请求纠正条件不满足，未改动正式记录。',
+      'BOSS_RESUME_CORRECTION_UNSAFE',
+    );
+
+  opportunity.resumeState = '被索要';
+  binding.lastAutoResumeState = '被索要';
+  if (owned.has('readState') && opportunity.readState === binding.lastAutoReadState) {
+    delete opportunity.readState;
+    binding.lastAutoReadState = '';
+  }
+  if (owned.has('stage') && opportunity.stage === '沟通中' && binding.lastAutoStage === '沟通中') {
+    opportunity.stage = '已触达';
+    binding.lastAutoStage = '已触达';
+  }
+  opportunity.updatedAt = stamp;
+  binding.updatedAt = stamp;
+  return validateData(next);
 }
 
 function resolveEvent(data, batch, event, stamp) {

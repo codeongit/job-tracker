@@ -10,6 +10,7 @@ const PUBLIC_WORKSPACE_COMMANDS = new Set([
   'restore_workspace',
   'acknowledge_sync',
   'bind_boss_account',
+  'correct_boss_resume_request',
 ]);
 
 export async function handleWorkspaceApi(

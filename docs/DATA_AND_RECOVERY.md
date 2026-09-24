@@ -4,7 +4,7 @@
 
 | 层次                    | 当前版本           | 含义                                                                         |
 | ----------------------- | ------------------ | ---------------------------------------------------------------------------- |
-| 应用                    | 0.8.5              | package.json 与 APP_VERSION 一致                                             |
+| 应用                    | 0.8.6              | package.json 与 APP_VERSION 一致                                             |
 | 共享数据                | schemaVersion 3    | 原业务集合、sourceBindings/sourceEvents，以及 sourceFacts/sourceApplications |
 | 工作区                  | workspaceVersion 3 | data、base、config、generation、lastSync、pending；完整迁移各侧              |
 | 完整备份外层            | backupVersion 2    | 完整工作区及草稿，仍兼容旧备份                                               |
@@ -43,6 +43,8 @@ v1→v2 为旧数据增加来源绑定/事件；v2→v3 保留这些事件，并
 v0.8.5 的采集器私有运行状态写入 `.runtime-v3.json`，读取旧 v1/v2 后保留旧文件；旧公平游标和详情退避、平台动作预算均不清空。增量历史任务按会话保存列表指纹、成功消息水位和下一页。每页先保存 `.change-checkpoint-v1.json`，快照提交后才确认任务；中断后优先本地重放检查点，再决定是否访问平台。旧 `.resume-checkpoint-v1.json` 属于显式 `backfill`，先恢复其中的证据，未完成页仍由回填继续。不要手工删除检查点以“清零”等待项；预算耗尽时看 `pnpm boss status` 的下次额度时间，需检查旧会话时明确执行一次 `pnpm boss backfill`。真实浏览器验收未完成前不要把合成测试当作采集成功。
 
 ## 来源事实、应用与冲突
+
+v0.8.6 将平台“附件简历请求已发送”解释为请求证据，只能把未知简历状态推进到“被索要”，不会推断求职者已发送简历。旧规则已误提升的记录通过按岗位和请求事件限定的 `correct_boss_resume_request` 本机服务命令纠正；命令核对没有实际发送或查看确认、字段仍由来源自动化拥有且当前没有待处理同步冲突。它新增不可变工作区提交，不修改旧快照、来源事实或云端数据。
 
 `sourceBindings` 记录账号及平台岗位/会话关联；`sourceEvents` 保留兼容历史观察；`sourceFacts` 保存最小来源事实；`sourceApplications` 保存采用规则和 applied/protected/waiting/review/no_effect 结果。事实 ID 只使用平台、账号、会话、消息 ID 和事实类型；岗位名、联系人、采集时间和规则版本均不参与，不同回执状态使用不同事实类型。缺少稳定消息 ID 的观察只保存为独立等待事件，不创建岗位、事实或应用，后续补证再重算。相同事实跨浏览器同步保留相同 ID，业务是否应用需另查应用账本，不能只看事实或批次是否存在。旧事件 ID 原样保留，并由幂等适配补充语义事实映射。
 
