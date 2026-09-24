@@ -8,6 +8,7 @@ import {
 } from './model.js';
 import {
   recordSourceApplication,
+  sourceApplicationForEvent,
   sourceReviewCounts,
   effectiveSourceFacts,
 } from './source-ledger.js';
@@ -717,11 +718,11 @@ function applyResumeStatus(data, result, event, stamp) {
   const target =
     event.summary === 'resume_viewed_confirmed'
       ? '对方已接收'
-      : ['resume_sent_confirmed', 'resume_attachment_sent'].includes(event.summary)
+      : ['resume_request_sent', 'resume_sent_confirmed', 'resume_attachment_sent'].includes(
+            event.summary,
+          )
         ? '已发送'
-        : event.summary === 'resume_request_sent'
-          ? '被索要'
-          : '';
+        : '';
   if (!target) {
     result.applicationStatus = 'no_effect';
     result.reason = 'observation_only';
@@ -745,14 +746,11 @@ function applyResumeStatus(data, result, event, stamp) {
     return;
   }
   const allowed =
-    target === '被索要'
-      ? opportunity.resumeState === '未知'
-      : target === '已发送'
-        ? ['未知', '被索要'].includes(opportunity.resumeState)
-        : ['未知', '被索要', '已发送'].includes(opportunity.resumeState);
+    target === '已发送'
+      ? ['未知', '被索要'].includes(opportunity.resumeState)
+      : ['未知', '被索要', '已发送'].includes(opportunity.resumeState);
   const alreadySupported =
     opportunity.resumeState === target ||
-    (target === '被索要' && ['已发送', '对方已接收'].includes(opportunity.resumeState)) ||
     (target === '已发送' && opportunity.resumeState === '对方已接收');
   if (!allowed && !alreadySupported) {
     result.applicationStatus = 'protected';
@@ -779,10 +777,9 @@ function applyResumeStatus(data, result, event, stamp) {
   result.reason = changed ? 'resume_status_advanced' : 'state_already_supported';
 }
 
-// Repairs the old request-card promotion without treating a request as proof
-// that the applicant sent a resume. Only fields still owned by this source may
-// be changed; later send/view evidence or manual edits make the repair unsafe.
-export function correctRequestOnlyResumeStatus(data, { opportunityId, requestEventId, stamp }) {
+// A user-confirmed wrong-conversation observation remains in the immutable
+// evidence ledger, but no longer contributes to product views or auto fields.
+export function rejectMisattributedResumeObservation(data, { opportunityId, eventId, stamp }) {
   const next = clone(data);
   const opportunity = live(next.opportunities).find((row) => row.id === opportunityId);
   const bindings = live(next.sourceBindings).filter(
@@ -791,37 +788,38 @@ export function correctRequestOnlyResumeStatus(data, { opportunityId, requestEve
   const evidence = live(next.sourceEvents).filter(
     (row) => row.opportunityId === opportunityId && row.eventType === 'resume_observed',
   );
-  const request = evidence.find(
-    (row) =>
-      row.id === requestEventId &&
-      row.status === 'recorded' &&
-      row.summary === 'resume_request_sent',
-  );
+  const request = evidence.find((row) => row.id === eventId);
   const binding = bindings.length === 1 ? bindings[0] : null;
   const owned = binding ? splitAutoFields(binding) : new Set();
+  const application = request ? sourceApplicationForEvent(next, request) : null;
   if (
     !opportunity ||
     !binding ||
     !request ||
+    evidence.length !== 1 ||
+    request.status !== 'recorded' ||
+    request.summary !== 'resume_request_sent' ||
     request.accountNamespace !== binding.accountNamespace ||
     request.externalJobId !== binding.externalJobId ||
-    evidence.some((row) =>
-      ['resume_sent_confirmed', 'resume_attachment_sent', 'resume_viewed_confirmed'].includes(
-        row.summary,
-      ),
-    ) ||
+    !application ||
+    application.status !== 'applied' ||
+    application.opportunityId !== opportunityId ||
     !owned.has('resumeState') ||
-    opportunity.resumeState !== '已发送' ||
-    binding.lastAutoResumeState !== '已发送'
+    !['已发送', '被索要'].includes(opportunity.resumeState) ||
+    binding.lastAutoResumeState !== opportunity.resumeState
   )
     throw integrationError(
-      '简历请求纠正条件不满足，未改动正式记录。',
-      'BOSS_RESUME_CORRECTION_UNSAFE',
+      '简历观察否决条件不满足，未改动正式记录。',
+      'BOSS_RESUME_REJECTION_UNSAFE',
     );
 
-  opportunity.resumeState = '被索要';
-  binding.lastAutoResumeState = '被索要';
-  if (owned.has('readState') && opportunity.readState === binding.lastAutoReadState) {
+  opportunity.resumeState = '未知';
+  binding.lastAutoResumeState = '未知';
+  if (
+    owned.has('readState') &&
+    opportunity.readState === '已读' &&
+    binding.lastAutoReadState === '已读'
+  ) {
     delete opportunity.readState;
     binding.lastAutoReadState = '';
   }
@@ -829,6 +827,10 @@ export function correctRequestOnlyResumeStatus(data, { opportunityId, requestEve
     opportunity.stage = '已触达';
     binding.lastAutoStage = '已触达';
   }
+  application.status = 'protected';
+  application.reason = 'user_rejected_wrong_conversation';
+  application.appliedAt = '';
+  application.updatedAt = stamp;
   opportunity.updatedAt = stamp;
   binding.updatedAt = stamp;
   return validateData(next);

@@ -13,7 +13,7 @@ import {
   resolveConflicts,
   validateData,
 } from '../dist/model.js';
-import { bindBossAccount, correctRequestOnlyResumeStatus } from '../dist/boss-integration.js';
+import { bindBossAccount, rejectMisattributedResumeObservation } from '../dist/boss-integration.js';
 import { MAX_BACKUP_BYTES } from '../dist/limits.js';
 
 export const WORKSPACE_PROTOCOL_VERSION = 1;
@@ -38,6 +38,7 @@ const COMMAND_TYPES = new Set([
   'acknowledge_sync',
   'bind_boss_account',
   'correct_boss_resume_request',
+  'reject_boss_resume_observation',
 ]);
 
 export class WorkspaceStoreError extends Error {
@@ -719,25 +720,27 @@ export class WorkspaceStore {
             };
           }
         } else if (command.type === 'correct_boss_resume_request') {
-          object(payload, ['opportunityId', 'requestEventId']);
+          fail('BOSS_RESUME_CORRECTION_SUPERSEDED', '旧简历纠正命令已停用。', 409);
+        } else if (command.type === 'reject_boss_resume_observation') {
+          object(payload, ['opportunityId', 'eventId']);
           if (
             typeof payload.opportunityId !== 'string' ||
             !payload.opportunityId ||
-            typeof payload.requestEventId !== 'string' ||
-            !/^boss-event-[a-f0-9]{64}$/.test(payload.requestEventId)
+            typeof payload.eventId !== 'string' ||
+            !/^boss-event-[a-f0-9]{64}$/.test(payload.eventId)
           )
-            fail('WORKSPACE_COMMAND_INVALID', '简历请求纠正参数无效。', 400);
+            fail('WORKSPACE_COMMAND_INVALID', '简历观察否决参数无效。', 400);
           if (current.workspace.pending)
-            fail('SYNC_CONFLICT', '请先核对待处理同步冲突，再纠正简历状态。', 409);
+            fail('SYNC_CONFLICT', '请先核对待处理同步冲突，再否决错误观察。', 409);
           workspace = copy(current.workspace);
           try {
-            workspace.data = correctRequestOnlyResumeStatus(workspace.data, {
+            workspace.data = rejectMisattributedResumeObservation(workspace.data, {
               ...payload,
               stamp: this.now(),
             });
           } catch (error) {
-            if (error.code === 'BOSS_RESUME_CORRECTION_UNSAFE')
-              fail('BOSS_RESUME_CORRECTION_UNSAFE', error.message, 409);
+            if (error.code === 'BOSS_RESUME_REJECTION_UNSAFE')
+              fail('BOSS_RESUME_REJECTION_UNSAFE', error.message, 409);
             throw error;
           }
           workspace.generation++;

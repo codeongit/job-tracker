@@ -7,11 +7,12 @@ import { stableHash } from '../scripts/boss-integration.mjs';
 import { WorkspaceStore } from '../scripts/workspace-store.mjs';
 import { validateBossBatch as validateQueuedBossBatch } from '../scripts/boss-inbox.mjs';
 import { emptyData, live, markManualFields } from '../dist/model.js';
+import { effectiveSourceFacts } from '../dist/source-ledger.js';
 import { initialWorkspace } from '../dist/workspace.js';
 import {
   applyBossBatch,
   bindBossAccount,
-  correctRequestOnlyResumeStatus,
+  rejectMisattributedResumeObservation,
   createBossQueueConsumer,
   latestPlatformObservation,
   verifyBossBatch,
@@ -431,7 +432,7 @@ test('平台明确的附件简历状态单向推进，并联动 BOSS 消息已�
   assert.equal(sameState.data.opportunities[0].readState, '未读');
 });
 
-test('同公司不同岗位的请求卡片不能算作已发简历', async () => {
+test('用户否决误归属的请求卡片只撤销目标岗位，不改变另一岗位的发送证据', async () => {
   const otherJobId = 'otherSyntheticJobId';
   const otherConversation = {
     conversationKey: '2'.repeat(64),
@@ -446,70 +447,79 @@ test('同公司不同岗位的请求卡片不能算作已发简历', async () =>
     workspaceSourceId: SOURCE_ID,
     stamp: STAMP,
   });
-  const observed = applyBossBatch(
-    created.data,
-    resumeBatch(
-      [
-        resumeEvent({
-          linked: true,
-          workflow: 'resume-status-linked-v2',
-          summary: 'resume_sent_confirmed',
-        }),
-        resumeEvent({
-          ...otherConversation,
-          linked: true,
-          workflow: 'resume-status-linked-v2',
-          summary: 'resume_request_sent',
-          messageId: 'resume-message-2',
-        }),
-      ],
-      { version: 3 },
-    ),
-    { workspaceSourceId: SOURCE_ID, stamp: '2026-09-20T08:05:00.000Z' },
+  const observations = resumeBatch(
+    [
+      resumeEvent({
+        linked: true,
+        workflow: 'resume-status-linked-v2',
+        summary: 'resume_sent_confirmed',
+      }),
+      resumeEvent({
+        ...otherConversation,
+        linked: true,
+        workflow: 'resume-status-linked-v2',
+        summary: 'resume_request_sent',
+        messageId: 'resume-message-2',
+      }),
+    ],
+    { version: 3 },
   );
+  const observed = applyBossBatch(created.data, observations, {
+    workspaceSourceId: SOURCE_ID,
+    stamp: '2026-09-20T08:05:00.000Z',
+  });
   const sent = observed.data.opportunities.find((row) => row.externalId === JOB_ID);
   const requested = observed.data.opportunities.find((row) => row.externalId === otherJobId);
   assert.equal(sent.resumeState, '已发送');
-  assert.equal(requested.resumeState, '被索要');
-  assert.equal(requested.readState ?? '', '');
-  assert.equal(requested.stage, '已触达');
+  assert.equal(requested.resumeState, '已发送');
+  assert.equal(requested.readState, '已读');
+  assert.equal(requested.stage, '沟通中');
   assert.equal(
     observed.data.sourceEvents.filter((row) => row.eventType === 'resume_observed').length,
     2,
   );
 
-  const legacy = structuredClone(observed.data);
-  const oldRecord = legacy.opportunities.find((row) => row.externalId === otherJobId);
-  const oldBinding = legacy.sourceBindings.find(
-    (row) => row.kind === 'opportunity' && row.opportunityId === oldRecord.id,
+  const request = observed.data.sourceEvents.find(
+    (row) => row.opportunityId === requested.id && row.summary === 'resume_request_sent',
   );
-  oldRecord.resumeState = oldBinding.lastAutoResumeState = '已发送';
-  oldRecord.readState = oldBinding.lastAutoReadState = '已读';
-  oldRecord.stage = oldBinding.lastAutoStage = '沟通中';
-  const request = legacy.sourceEvents.find(
-    (row) => row.opportunityId === oldRecord.id && row.summary === 'resume_request_sent',
-  );
-  const corrected = correctRequestOnlyResumeStatus(legacy, {
-    opportunityId: oldRecord.id,
-    requestEventId: request.id,
+  const corrected = rejectMisattributedResumeObservation(observed.data, {
+    opportunityId: requested.id,
+    eventId: request.id,
     stamp: '2026-09-20T08:06:00.000Z',
   });
-  assert.equal(
-    corrected.opportunities.find((row) => row.id === oldRecord.id).resumeState,
-    '被索要',
-  );
-  assert.equal(corrected.opportunities.find((row) => row.id === oldRecord.id).stage, '已触达');
-  assert.equal(corrected.opportunities.find((row) => row.id === oldRecord.id).readState, undefined);
+  assert.equal(corrected.opportunities.find((row) => row.id === requested.id).resumeState, '未知');
+  assert.equal(corrected.opportunities.find((row) => row.id === requested.id).stage, '已触达');
+  assert.equal(corrected.opportunities.find((row) => row.id === requested.id).readState, undefined);
   assert.equal(corrected.opportunities.find((row) => row.id === sent.id).resumeState, '已发送');
-  assert.deepEqual(corrected.sourceEvents, legacy.sourceEvents);
+  assert.deepEqual(corrected.sourceEvents, observed.data.sourceEvents);
+  assert.equal(
+    corrected.sourceApplications.find((row) => row.factId === request.factId).reason,
+    'user_rejected_wrong_conversation',
+  );
+  assert.equal(
+    effectiveSourceFacts(corrected).some((row) => row.id === request.id),
+    false,
+  );
+  const replayed = applyBossBatch(corrected, observations, {
+    workspaceSourceId: SOURCE_ID,
+    stamp: '2026-09-20T08:07:00.000Z',
+  });
+  assert.equal(
+    replayed.data.opportunities.find((row) => row.id === requested.id).resumeState,
+    '未知',
+  );
+  assert.equal(
+    replayed.data.sourceApplications.find((row) => row.factId === request.factId).reason,
+    'user_rejected_wrong_conversation',
+  );
   assert.throws(
     () =>
-      correctRequestOnlyResumeStatus(corrected, {
-        opportunityId: oldRecord.id,
-        requestEventId: request.id,
+      rejectMisattributedResumeObservation(corrected, {
+        opportunityId: requested.id,
+        eventId: request.id,
         stamp: '2026-09-20T08:07:00.000Z',
       }),
-    { code: 'BOSS_RESUME_CORRECTION_UNSAFE' },
+    { code: 'BOSS_RESUME_REJECTION_UNSAFE' },
   );
 
   const root = await mkdtemp(join(tmpdir(), 'boss-resume-correction-'));
@@ -518,7 +528,7 @@ test('同公司不同岗位的请求卡片不能算作已发简历', async () =>
   });
   try {
     const workspace = initialWorkspace();
-    workspace.data = legacy;
+    workspace.data = observed.data;
     const imported = await store.execute({
       commandId: 'synthetic-import',
       expectedRevision: 0,
@@ -526,15 +536,15 @@ test('同公司不同岗位的请求卡片不能算作已发简历', async () =>
       payload: { workspace, reason: 'synthetic fixture' },
     });
     const command = {
-      commandId: 'correct-request-only',
+      commandId: 'reject-wrong-conversation',
       expectedRevision: imported.revision,
-      type: 'correct_boss_resume_request',
-      payload: { opportunityId: oldRecord.id, requestEventId: request.id },
+      type: 'reject_boss_resume_observation',
+      payload: { opportunityId: requested.id, eventId: request.id },
     };
     const committed = await store.execute(command);
     assert.equal(
-      committed.workspace.data.opportunities.find((row) => row.id === oldRecord.id).resumeState,
-      '被索要',
+      committed.workspace.data.opportunities.find((row) => row.id === requested.id).resumeState,
+      '未知',
     );
     assert.equal((await store.execute(command)).replayed, true);
     assert.equal((await store.read()).revision, committed.revision);
@@ -940,7 +950,7 @@ test('等待关联的事实在岗位补齐后重评，原观察不改写且重�
     workspaceSourceId: SOURCE_ID,
     stamp: STAMP,
   });
-  assert.equal(applied.data.opportunities[0].resumeState, '被索要');
+  assert.equal(applied.data.opportunities[0].resumeState, '已发送');
   assert.deepEqual(applied.data.sourceEvents[0], original);
   assert.equal(applied.data.sourceApplications[0].status, 'applied');
   const replayed = applyBossBatch(applied.data, input, {

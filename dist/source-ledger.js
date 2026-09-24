@@ -99,6 +99,8 @@ export function effectiveSourceFacts(data) {
   const facts = new Map();
   for (const event of effectiveSourceEvents(data)) {
     if (event.deletedAt) continue;
+    if (sourceApplicationForEvent(data, event)?.reason === 'user_rejected_wrong_conversation')
+      continue;
     const key =
       event.factId ||
       (hasBossFactIdentity(event) ? bossFactId(event) : event.id || JSON.stringify(event));
