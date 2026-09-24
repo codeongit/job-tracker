@@ -1,3 +1,10 @@
+import {
+  RESUME_RULES,
+  RESUME_KINDS,
+  RESUME_STATUS_KINDS,
+  classifyResumeMessage,
+  classifyResumeText,
+} from '../../dist/resume-rules.js';
 import { createHash } from 'node:crypto';
 import { expectedUrl } from './guard.mjs';
 import {
@@ -145,25 +152,8 @@ export function createResumePageExpression({ target, identity, page, timeoutMs =
       const number=Number(value),millis=Number.isFinite(number)?(number>0&&number<100000000000?number*1000:number):NaN;
       const date=new Date(millis);return Number.isFinite(date.getTime())?date.toISOString():null;
     };
-    const statusKind = message => {
-      const body=message?.body;
-      if(Number(message?.type)===4&&Number(message?.bizType)===317&&
-          Number(body?.type)===16&&Number(body?.style)===3&&Number(body?.templateId)===1&&
-          Array.isArray(body?.articles)&&body.articles.length===1&&
-          normalizeId(message?.from?.uid,128)===identity.bossId)return 'request_sent';
-      if ([1,4].includes(Number(message?.type))) return null;
-      const values=[message?.text,message?.content,message?.title,message?.description,
-        message?.body?.text,message?.body?.content,message?.body?.title,message?.body?.description,
-        message?.body?.card?.text,message?.body?.card?.content,message?.body?.card?.title]
-        .filter(value=>typeof value==='string').map(value=>value.normalize('NFC').replace(/\\s+/g,' ').trim());
-      for (const value of values) {
-        if (value==='附件简历请求已发送') return 'request_sent';
-        if (value==='对方已同意，您的附件简历已发送给对方') return 'sent_confirmed';
-        if (value==='对方已查看了您的附件简历') return 'viewed_confirmed';
-        if (/^您的附件简历 .{1,300} 已发送给Boss(?:点击查看附件)?$/.test(value)) return 'attachment_sent';
-      }
-      return null;
-    };
+    const statusKind = (message, bossId) => (${classifyResumeMessage.toString()})(
+      message, bossId, ${JSON.stringify(RESUME_RULES)}, (${classifyResumeText.toString()}));
     const endpoint='https://www.zhipin.com/wapi/zpchat/geek/historyMsg?bossId='+encodeURIComponent(identity.bossId)+
       '&securityId='+encodeURIComponent(identity.securityId)+'&page='+page+'&c=20&src='+encodeURIComponent(target.friendSource);
     const response=await request('GET',endpoint);
@@ -174,7 +164,7 @@ export function createResumePageExpression({ target, identity, page, timeoutMs =
     for (const message of messages) {
       const id=messageId(message),platformTime=isoTime(message.time ?? message.msgTime ?? message.timestamp);
       if (id) messageIds.push(id);
-      const status=statusKind(message);
+      const status=statusKind(message, identity.bossId);
       if (status) {
         if (!id || !platformTime) { unresolved.push({conversationKey:target.conversationKey,reason:'RESUME_STATUS_IDENTITY_INCOMPLETE'});continue; }
         observations.push({conversationKey:target.conversationKey,friendId:target.friendId,
@@ -556,28 +546,8 @@ export function createResumeHistoryExpression({ targets, pages = 2 }) {
     const jobId = message => normalizeId(
       message.encryptJobId ?? message.jobId ?? message.body?.encryptJobId ?? message.body?.jobId ??
       message.body?.job?.encryptJobId ?? message.body?.job?.jobId, 300);
-    const statusKind = message => {
-      const body=message?.body;
-      if(Number(message?.type)===4&&Number(message?.bizType)===317&&
-          Number(body?.type)===16&&Number(body?.style)===3&&Number(body?.templateId)===1&&
-          Array.isArray(body?.articles)&&body.articles.length===1&&
-          normalizeId(message?.from?.uid,128)===identity.bossId)return 'request_sent';
-      const inspect = [message];
-      let visited = 0;
-      while (inspect.length && visited < 300) {
-        const current = inspect.shift(); visited += 1;
-        if (typeof current === 'string') {
-          const value = current.normalize('NFC').trim();
-          if (value.includes('附件简历请求已发送')) return 'request_sent';
-          if (value.includes('对方已同意，您的附件简历已发送给对方')) return 'sent_confirmed';
-          if (value.includes('对方已查看了您的附件简历')) return 'viewed_confirmed';
-          if (/您的附件简历 .{1,300} 已发送给Boss(?:点击查看附件)?/.test(value)) return 'attachment_sent';
-        } else if (current && typeof current === 'object') {
-          inspect.push(...(Array.isArray(current) ? current.slice(0,100) : Object.values(current).slice(0,100)));
-        }
-      }
-      return null;
-    };
+    const statusKind = (message, bossId) => (${classifyResumeMessage.toString()})(
+      message, bossId, ${JSON.stringify(RESUME_RULES)}, (${classifyResumeText.toString()}));
     const isoTime = value => {
       const number = Number(value);
       const millis = Number.isFinite(number) ? (number > 0 && number < 100000000000 ? number * 1000 : number) : NaN;
@@ -610,7 +580,7 @@ export function createResumeHistoryExpression({ targets, pages = 2 }) {
         exhausted = messages.length < 20;
         for (const message of messages) {
           const id = messageId(message), platformTime = isoTime(message.time ?? message.msgTime ?? message.timestamp);
-          const status = statusKind(message);
+          const status = statusKind(message, identity.bossId);
           if (status) {
             if (!id || !platformTime) {
               unresolved.push({conversationKey:target.conversationKey,reason:'RESUME_STATUS_IDENTITY_INCOMPLETE'}); continue;
@@ -656,12 +626,7 @@ export function toResumeHistoryResult(payload, envelope) {
     ids = new Set();
   for (const [index, value] of payload.observations.entries()) {
     const conversation = conversations.get(value?.conversationKey);
-    const statusKind = [
-      'request_sent',
-      'sent_confirmed',
-      'viewed_confirmed',
-      'attachment_sent',
-    ].includes(value?.kind);
+    const statusKind = RESUME_STATUS_KINDS.includes(value?.kind);
     const expectedSource =
       statusKind && value?.source === DOM_STATUS_SOURCE
         ? DOM_STATUS_SOURCE
@@ -675,14 +640,7 @@ export function toResumeHistoryResult(payload, envelope) {
       !MESSAGE_ID.test(value.messageId ?? '') ||
       !['inbound', 'outbound', 'system'].includes(value.direction) ||
       (!statusKind && value.messageType !== 4) ||
-      ![
-        'sent_candidate',
-        'resume_card_other',
-        'request_sent',
-        'sent_confirmed',
-        'viewed_confirmed',
-        'attachment_sent',
-      ].includes(value.kind) ||
+      !RESUME_KINDS.includes(value.kind) ||
       !Number.isFinite(Date.parse(value.platformTime)) ||
       value.source !== expectedSource ||
       (value.externalJobId !== null && !ID.test(value.externalJobId ?? ''))

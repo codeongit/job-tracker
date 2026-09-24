@@ -4,7 +4,7 @@
 
 | 层次                    | 当前版本           | 含义                                                                         |
 | ----------------------- | ------------------ | ---------------------------------------------------------------------------- |
-| 应用                    | 0.8.7              | package.json 与 APP_VERSION 一致                                             |
+| 应用                    | 0.8.8              | package.json 与 APP_VERSION 一致                                             |
 | 共享数据                | schemaVersion 3    | 原业务集合、sourceBindings/sourceEvents，以及 sourceFacts/sourceApplications |
 | 工作区                  | workspaceVersion 3 | data、base、config、generation、lastSync、pending；完整迁移各侧              |
 | 完整备份外层            | backupVersion 2    | 完整工作区及草稿，仍兼容旧备份                                               |

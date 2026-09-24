@@ -8,36 +8,37 @@ v0.8.0 区分两种模式：本机模式由服务保存唯一正式工作区，�
 
 ## 模块职责
 
-| 模块                                                 | 职责                                                               |
-| ---------------------------------------------------- | ------------------------------------------------------------------ |
-| `dist/app.js`                                        | 页面状态、表单保存、导航、同步生命周期与跨标签通知                 |
-| `dist/views.js`、`settings-view.js`                  | 行动、岗位列表、共用详情、每日事件与设置的 HTML 渲染               |
-| `dist/ui.js`、`text-input.js`                        | HTML 转义、下载、中文组合输入和焦点保护                            |
-| `dist/backup-ui.js`                                  | 备份预览、两种恢复方式、本机快照列表                               |
-| `dist/model.js`                                      | 岗位/任务/活动/导入模型、校验、稳定 ID、三方合并、删除标记         |
-| `dist/today.js`                                      | 今日分组、未设下一步和建议核实的纯业务规则                         |
-| `dist/planning.js`                                   | 下一步行动建议和本地日历日期快捷规则                               |
-| `dist/daily.js`                                      | 每日计划、结果、沟通和首次联系的只读分组规则                       |
-| `dist/jobs.js`                                       | 岗位列表的关键词、当前阶段及日期查询                               |
-| `dist/workspace.js`                                  | 工作区迁移、备份格式、恢复策略，均为纯函数                         |
-| `dist/storage.js`                                    | 本机/静态模式路由、IndexedDB 缓存或事务、快照与紧急导出            |
-| `dist/local-workspace.js`                            | 本机工作区发现、显式迁移、版本比较与幂等命令客户端                 |
-| `dist/github.js`                                     | REST 传输与共用同步流程                                            |
-| `dist/local-ssh.js`                                  | 浏览器到同源 SSH 桥的适配器                                        |
-| `dist/boss-integration.js`                           | BOSS 批次校验、账号/岗位匹配和业务应用纯函数；本机页面只读消费状态 |
-| `dist/source-ledger.js`                              | 来源事实与业务应用账本、迁移及人工字段所有权                       |
-| `dist/limits.js`、`version.js`                       | 统一体积限制及应用/工作区/数据/备份版本                            |
-| `scripts/ssh-store.mjs`                              | 独立 bare Git 缓存和限定文件的提交                                 |
-| `scripts/local-api.mjs`、`serve.mjs`                 | 同源会话校验、本机服务和静态文件                                   |
-| `scripts/boss-control.mjs`、`boss-controller.mjs`    | 固定 CLI、服务控制与采集/入队/录入编排                             |
-| `scripts/boss-runtime.mjs`                           | 显式跟踪生命周期、单轮串行、实际动作预算与暂停                     |
-| `scripts/boss-integration.mjs`                       | 快照转换、历史入口兼容、采集检查点与不可变入队                     |
-| `scripts/boss-inbox.mjs`                             | 私有不可变队列、回执、运行和故障材料                               |
-| `collector/boss/`                                    | CDP 只读采集、历史/详情补齐、不可变证据与纯测试                    |
-| `collector/boss/history-commit.mjs`                  | 变更驱动历史的检查点恢复及证据、进度、检查点顺序提交               |
-| `scripts/workspace-store.mjs`、`workspace-api.mjs`   | 不可变工作区提交、单写者、CAS、幂等命令及固定 API v1               |
-| `scripts/workspace-consumer.mjs`                     | 无页面队列消费、岗位依赖冲突隔离、提交后回执                       |
-| `scripts/service-control.mjs`、`service-runtime.mjs` | 本机服务身份与所有权安全的启动/查询/停止                           |
+| 模块                                                 | 职责                                                                         |
+| ---------------------------------------------------- | ---------------------------------------------------------------------------- |
+| `dist/app.js`                                        | 页面状态、表单保存、导航、同步生命周期与跨标签通知                           |
+| `dist/views.js`、`settings-view.js`                  | 行动、岗位列表、共用详情、每日事件与设置的 HTML 渲染                         |
+| `dist/ui.js`、`text-input.js`                        | HTML 转义、下载、中文组合输入和焦点保护                                      |
+| `dist/backup-ui.js`                                  | 备份预览、两种恢复方式、本机快照列表                                         |
+| `dist/model.js`                                      | 岗位/任务/活动/导入模型、校验、稳定 ID、三方合并、删除标记                   |
+| `dist/today.js`                                      | 今日分组、未设下一步和建议核实的纯业务规则                                   |
+| `dist/planning.js`                                   | 下一步行动建议和本地日历日期快捷规则                                         |
+| `dist/daily.js`                                      | 每日计划、结果、沟通和首次联系的只读分组规则                                 |
+| `dist/jobs.js`                                       | 岗位列表的关键词、当前阶段及日期查询                                         |
+| `dist/workspace.js`                                  | 工作区迁移、备份格式、恢复策略，均为纯函数                                   |
+| `dist/storage.js`                                    | 本机/静态模式路由、IndexedDB 缓存或事务、快照与紧急导出                      |
+| `dist/local-workspace.js`                            | 本机工作区发现、显式迁移、版本比较与幂等命令客户端                           |
+| `dist/github.js`                                     | REST 传输与共用同步流程                                                      |
+| `dist/local-ssh.js`                                  | 浏览器到同源 SSH 桥的适配器                                                  |
+| `dist/boss-integration.js`                           | BOSS 批次校验、账号/岗位匹配和业务应用纯函数；本机页面只读消费状态           |
+| `dist/resume-rules.js`                               | 简历观察枚举、精确文案识别、业务含义、展示标签与纯状态转换；采集器与服务共用 |
+| `dist/source-ledger.js`                              | 来源事实与业务应用账本、迁移及人工字段所有权                                 |
+| `dist/limits.js`、`version.js`                       | 统一体积限制及应用/工作区/数据/备份版本                                      |
+| `scripts/ssh-store.mjs`                              | 独立 bare Git 缓存和限定文件的提交                                           |
+| `scripts/local-api.mjs`、`serve.mjs`                 | 同源会话校验、本机服务和静态文件                                             |
+| `scripts/boss-control.mjs`、`boss-controller.mjs`    | 固定 CLI、服务控制与采集/入队/录入编排                                       |
+| `scripts/boss-runtime.mjs`                           | 显式跟踪生命周期、单轮串行、实际动作预算与暂停                               |
+| `scripts/boss-integration.mjs`                       | 快照转换、历史入口兼容、采集检查点与不可变入队                               |
+| `scripts/boss-inbox.mjs`                             | 私有不可变队列、回执、运行和故障材料                                         |
+| `collector/boss/`                                    | CDP 只读采集、历史/详情补齐、不可变证据与纯测试                              |
+| `collector/boss/history-commit.mjs`                  | 变更驱动历史的检查点恢复及证据、进度、检查点顺序提交                         |
+| `scripts/workspace-store.mjs`、`workspace-api.mjs`   | 不可变工作区提交、单写者、CAS、幂等命令及固定 API v1                         |
+| `scripts/workspace-consumer.mjs`                     | 无页面队列消费、岗位依赖冲突隔离、提交后回执                                 |
+| `scripts/service-control.mjs`、`service-runtime.mjs` | 本机服务身份与所有权安全的启动/查询/停止                                     |
 
 新增字段、导入逻辑、任务状态等业务规则放入模型或专门纯函数模块，浏览器和后台共用；页面不直接操作 Git。渲染不能替换正在组合输入的控件。跨标签保存后使用 BroadcastChannel 通知，更新时保留另一页的草稿。本机写入以服务最新 revision 为准；静态模式使用 IndexedDB 最新状态。
 
@@ -91,3 +92,11 @@ BOSS 只读接入是另一条本机入口：用户明确开始跟踪 → 仓库�
 REST 小文件使用 Contents Base64；大文件使用元数据给出的 blob SHA 读取 raw，避免分支变化导致内容和 SHA 不一致。SSH 输出先拼接字节再做严格 UTF-8 解码。
 
 官方接口依据：[Contents](https://docs.github.com/en/rest/repos/contents#get-repository-content)、[Git blobs](https://docs.github.com/en/rest/git/blobs#get-a-blob)。外部 API 有变化时先更新合成测试，再改适配器。
+
+## 简历规则的维护
+
+简历语义以 `dist/resume-rules.js` 的 `RESUME_RULES` 为唯一规则定义。平台观察标识与业务含义分开：旧 `request_sent` / `resume_request_sent` 保留作兼容标识，其含义明确为 `resume_sent`，不能从名称重新推断为“被索要”。枚举校验、转换和展示均读取该定义。当前与兼容历史采集、DOM 补采使用同一纯识别函数的序列化代码；模拟接口响应测试验证生成表达式的执行结果。
+
+状态转换函数只决定已核对观察能否推进简历状态。账号、会话、岗位归属和人工字段所有权仍由接入层验证；来源否决仍由应用账本保存。识别结果不授予岗位归属，也不绕过人工字段保护。未知观察类型拒绝进入规则，普通卡片不提升状态，较高状态不回退。
+
+修改业务含义时先核对用户确认的业务样例与 ADR，再修改规则。测试中的预期业务结果独立写出，不能从规则表自动生成预期值，以免规则与测试一起接受同一误解。保留原始事件及事实 ID；修改持久标识须另做迁移设计。见 [D031](adr/0031-explicit-resume-semantics.md)。

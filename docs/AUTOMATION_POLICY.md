@@ -1,6 +1,6 @@
 # 自动化操作规约
 
-首次记录：2026-09-18；当前规则：2026-09-24，v0.8.7。来源为用户确认的只读、脚本化、减少人工操作及关页后正式录入要求。首版限制保留在 [D023](adr/0023-boss-private-queue-integration.md)，现行架构见 [BOSS 接入说明](BOSS_AUTOMATION_DESIGN.md)。
+首次记录：2026-09-18；当前规则：2026-09-24，v0.8.8。来源为用户确认的只读、脚本化、减少人工操作及关页后正式录入要求。首版限制保留在 [D023](adr/0023-boss-private-queue-integration.md)，现行架构见 [BOSS 接入说明](BOSS_AUTOMATION_DESIGN.md)。
 
 ## 用户确认的边界
 

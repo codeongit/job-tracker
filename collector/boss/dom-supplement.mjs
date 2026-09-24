@@ -1,3 +1,4 @@
+import { RESUME_RULES, classifyResumeText } from '../../dist/resume-rules.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, open, readFile, rename, unlink, lstat } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -365,10 +366,7 @@ export function createDomSupplementReadExpression(target, { allowSwitch = true }
     const normalizeTime=value=>{const text=clean(value);if(!text)return null;const numeric=Number(text);
       const millis=Number.isFinite(numeric)?(numeric>0&&numeric<100000000000?numeric*1000:numeric):Date.parse(text);
       const date=new Date(millis);return Number.isFinite(date.getTime())?date.toISOString():null;};
-    const statusKind=text=>{if(text==='附件简历请求已发送')return 'request_sent';
-      if(text==='对方已同意，您的附件简历已发送给对方')return 'sent_confirmed';
-      if(text==='对方已查看了您的附件简历')return 'viewed_confirmed';
-      if(/^您的附件简历 .{1,300} 已发送给Boss(?:点击查看附件)?$/.test(text))return 'attachment_sent';return null;};
+    const statusKind = text => (${classifyResumeText.toString()})(text, ${JSON.stringify(RESUME_RULES)});
     const observations=[],unresolved=[],seen=new Set();
     for(const node of panels[0].querySelectorAll('[data-message-id][data-message-time]')){
       const statusNode=node.querySelector('.system-text');

@@ -1,3 +1,10 @@
+import {
+  RESUME_KINDS,
+  RESUME_STATUS_KINDS,
+  RESUME_RULES,
+  resumeRule,
+  classifyResumeText,
+} from '../dist/resume-rules.js';
 import { createHash, randomBytes } from 'node:crypto';
 import { execFile as execFileCallback } from 'node:child_process';
 import { lstat, open, readFile, readdir, unlink } from 'node:fs/promises';
@@ -591,12 +598,7 @@ export function validateTrackerEnvelope(input) {
       'status',
     ]);
     const record = conversations.get(observation.conversationKey);
-    const statusKind = [
-      'request_sent',
-      'sent_confirmed',
-      'viewed_confirmed',
-      'attachment_sent',
-    ].includes(observation.kind);
+    const statusKind = RESUME_STATUS_KINDS.includes(observation.kind);
     if (
       !requiredString(observation.id, { max: 64, pattern: /^[a-f0-9]{64}$/ }) ||
       resumeIds.has(observation.id) ||
@@ -605,14 +607,7 @@ export function validateTrackerEnvelope(input) {
       !requiredString(observation.messageId, { max: 128, pattern: /^[A-Za-z0-9_-]+$/ }) ||
       !['inbound', 'outbound', 'system'].includes(observation.direction) ||
       (!statusKind && observation.messageType !== 4) ||
-      ![
-        'sent_candidate',
-        'resume_card_other',
-        'request_sent',
-        'sent_confirmed',
-        'viewed_confirmed',
-        'attachment_sent',
-      ].includes(observation.kind) ||
+      !RESUME_KINDS.includes(observation.kind) ||
       (!statusKind &&
         (observation.direction === 'outbound') !== (observation.kind === 'sent_candidate')) ||
       (statusKind && observation.direction !== 'system') ||
@@ -829,14 +824,6 @@ export function createResumeEvents(envelope, { sourceSequence, evidenceDate = ''
       associatedJobs.set(association.conversationKey, new Set());
     associatedJobs.get(association.conversationKey).add(association.jobId);
   }
-  const summaryByKind = {
-    sent_candidate: 'resume_sent_candidate',
-    resume_card_other: 'resume_card_other',
-    request_sent: 'resume_request_sent',
-    sent_confirmed: 'resume_sent_confirmed',
-    attachment_sent: 'resume_attachment_sent',
-    viewed_confirmed: 'resume_viewed_confirmed',
-  };
   const events = envelope.resume.observations
     .filter(
       (observation) =>
@@ -863,7 +850,7 @@ export function createResumeEvents(envelope, { sourceSequence, evidenceDate = ''
         jobName: matchingJob ? row.jobName : '',
         company: matchingJob ? row.record.company : '',
         contact: row?.record.contact ?? '',
-        summary: summaryByKind[observation.kind],
+        summary: resumeRule(observation.kind).summary,
         messageId: observation.messageId,
         messageDirection: observation.direction === 'system' ? 'outbound' : observation.direction,
         receiptStatus: 'not_applicable',
@@ -907,17 +894,9 @@ export function createResumeEvents(envelope, { sourceSequence, evidenceDate = ''
   return uniqueEventsById(events);
 }
 
-const RESUME_STATUS_SUMMARIES = new Map([
-  ['附件简历请求已发送', 'resume_request_sent'],
-  ['对方已同意，您的附件简历已发送给对方', 'resume_sent_confirmed'],
-  ['对方已查看了您的附件简历', 'resume_viewed_confirmed'],
-]);
-
 function resumeStatusSummary(preview) {
-  if (RESUME_STATUS_SUMMARIES.has(preview)) return RESUME_STATUS_SUMMARIES.get(preview);
-  if (/^您的附件简历 .{1,300} 已发送给Boss(?:点击查看附件)?$/.test(preview))
-    return 'resume_attachment_sent';
-  return '';
+  const kind = classifyResumeText(preview, RESUME_RULES);
+  return kind ? resumeRule(kind).summary : '';
 }
 
 export function createResumeStatusEvents(envelope, { sourceSequence, evidenceDate }) {

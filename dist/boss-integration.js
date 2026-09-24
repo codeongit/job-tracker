@@ -1,3 +1,4 @@
+import { RESUME_SUMMARIES, resumeRule, resumeTransition } from './resume-rules.js';
 import {
   clone,
   equal,
@@ -187,14 +188,7 @@ function validateEvent(event, batch) {
     (!['inbound', 'outbound'].includes(event.messageDirection) ||
       event.receiptStatus !== 'not_applicable' ||
       event.receiptSource !== '' ||
-      ![
-        'resume_sent_candidate',
-        'resume_card_other',
-        'resume_request_sent',
-        'resume_sent_confirmed',
-        'resume_attachment_sent',
-        'resume_viewed_confirmed',
-      ].includes(event.summary) ||
+      !RESUME_SUMMARIES.includes(event.summary) ||
       event.intent !== 'observe_only')
   )
     throw integrationError('BOSS 简历观察结构无效。', 'BATCH_INVALID');
@@ -715,14 +709,7 @@ function applyResumeStatus(data, result, event, stamp) {
   if (result.status !== 'recorded' || !result.targetId) return;
   const opportunity = data.opportunities.find((row) => row.id === result.targetId);
   if (!opportunity || opportunity.deletedAt) return;
-  const target =
-    event.summary === 'resume_viewed_confirmed'
-      ? '对方已接收'
-      : ['resume_request_sent', 'resume_sent_confirmed', 'resume_attachment_sent'].includes(
-            event.summary,
-          )
-        ? '已发送'
-        : '';
+  const { target } = resumeRule(event.summary);
   if (!target) {
     result.applicationStatus = 'no_effect';
     result.reason = 'observation_only';
@@ -745,14 +732,9 @@ function applyResumeStatus(data, result, event, stamp) {
     result.reason = 'manual_resume_state';
     return;
   }
-  const allowed =
-    target === '已发送'
-      ? ['未知', '被索要'].includes(opportunity.resumeState)
-      : ['未知', '被索要', '已发送'].includes(opportunity.resumeState);
-  const alreadySupported =
-    opportunity.resumeState === target ||
-    (target === '已发送' && opportunity.resumeState === '对方已接收');
-  if (!allowed && !alreadySupported) {
+  const transition = resumeTransition(opportunity.resumeState, event.summary);
+  const allowed = transition.outcome === 'advance';
+  if (transition.outcome === 'protected') {
     result.applicationStatus = 'protected';
     result.reason = 'resume_state_no_regression';
     return;
@@ -1442,17 +1424,7 @@ export function latestPlatformObservation(data, opportunityId) {
 
 export function platformObservationLabel(event) {
   if (!event) return '';
-  if (event.eventType === 'resume_observed')
-    return (
-      {
-        resume_sent_candidate: '简历卡片（发送方向）',
-        resume_request_sent: '附件简历请求已发送',
-        resume_sent_confirmed: '简历已发送（对方已同意）',
-        resume_attachment_sent: '附件简历已发送给 Boss',
-        resume_viewed_confirmed: '对方已查看附件简历',
-        resume_card_other: '简历卡片（平台观察）',
-      }[event.summary] || '简历观察'
-    );
+  if (event.eventType === 'resume_observed') return resumeRule(event.summary).label;
   if (event.messageDirection === 'inbound' || event.receiptStatus === 'not_applicable')
     return '对方消息';
   return (

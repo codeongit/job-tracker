@@ -1,3 +1,4 @@
+import { RESUME_SUMMARIES, RESUME_STATE } from './resume-rules.js';
 import { DATA_VERSION } from './version.js';
 import { bossApplicationId, bossFactId, hasBossFactIdentity } from './source-identity.js';
 export const GROUPS = [
@@ -92,7 +93,7 @@ export function getOpportunityStatus({ stage, readState } = {}) {
 export function getResumeLinkedStatus(opportunity) {
   if (
     !/^boss(?:直聘)?$/i.test((opportunity.platform || '').replace(/\s/g, '')) ||
-    !['已发送', '对方已接收'].includes(opportunity.resumeState)
+    ![RESUME_STATE.SENT, RESUME_STATE.RECEIVED].includes(opportunity.resumeState)
   )
     return {};
   return {
@@ -101,7 +102,8 @@ export function getResumeLinkedStatus(opportunity) {
   };
 }
 export function getSentResumeStatus(opportunity) {
-  const resumeState = opportunity.resumeState === '对方已接收' ? '对方已接收' : '已发送';
+  const resumeState =
+    opportunity.resumeState === RESUME_STATE.RECEIVED ? RESUME_STATE.RECEIVED : RESUME_STATE.SENT;
   return { resumeState, ...getResumeLinkedStatus({ ...opportunity, resumeState }) };
 }
 export const emptyData = () => ({
@@ -421,14 +423,7 @@ function validateSourceEvent(item) {
     !['inbound', 'outbound'].includes(item.messageDirection) ||
     item.receiptStatus !== 'not_applicable' ||
     item.receiptSource ||
-    ![
-      'resume_sent_candidate',
-      'resume_card_other',
-      'resume_request_sent',
-      'resume_sent_confirmed',
-      'resume_attachment_sent',
-      'resume_viewed_confirmed',
-    ].includes(item.summary)
+    !RESUME_SUMMARIES.includes(item.summary)
   ) {
     throw new Error('来源简历观察结构无效。');
   }

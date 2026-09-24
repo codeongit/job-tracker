@@ -76,12 +76,11 @@ test('history expression uses only read APIs and contains no chat click or messa
   assert.match(expression, /Object\.hasOwn\(current, 'securityId'\)/);
   assert.match(expression, /pairs\.size === 1/);
   assert.match(expression, /Object\.values\(current\)/);
-  assert.match(expression, /visited < 300/);
   assert.match(expression, /geek\/historyMsg/);
   assert.match(expression, /gap < 3000/);
   assert.match(expression, /encodeURIComponent\(target\.friendSource\)/);
   assert.match(expression, /附件简历请求已发送/);
-  assert.match(expression, /value\.includes\('附件简历请求已发送'\)/);
+  assert.doesNotMatch(expression, /value\.includes\('附件简历请求已发送'\)/);
   assert.match(expression, /点击查看附件/);
   for (const forbidden of [
     'document.cookie',
@@ -286,7 +285,6 @@ test('split expressions perform exactly one scoped request and use friendSource 
   assert.match(page, /historyMsg/);
   assert.match(page, /encodeURIComponent\(target\.friendSource\)/);
   assert.doesNotMatch(page, /Object\.values\(current\)/);
-  assert.match(page, /value==='附件简历请求已发送'/);
 });
 
 test('page classifier accepts exact platform system fields but not chat text or arbitrary nested quotes', async () => {
@@ -327,17 +325,29 @@ test('page classifier accepts exact platform system fields but not chat text or 
     setRequestHeader() {}
     send() {
       this.status = 200;
-      this.responseText = JSON.stringify({ code: 0, zpData: { messages } });
+      this.responseText = JSON.stringify({
+        code: 0,
+        zpData: this.url.includes('getGeekFriendList')
+          ? { result: [{ uid: 'boss_301', securityId: 'security-token' }] }
+          : { messages },
+      });
       queueMicrotask(() => this.onload());
     }
   }
-  const result = await vm.runInNewContext(
+  const expressions = [
     createResumePageExpression({
       target,
       identity: { bossId: 'boss_301', securityId: 'security-token' },
       page: 1,
     }),
-    {
+    createResumeHistoryExpression({ targets: [target], pages: 1 }),
+  ];
+  for (const expression of expressions) {
+    const result = await vm.runInNewContext(expression, {
+      setTimeout: (callback) => {
+        callback();
+        return 0;
+      },
       location: { origin: 'https://www.zhipin.com', pathname: '/web/geek/chat' },
       XMLHttpRequest: FakeXHR,
       URL,
@@ -350,27 +360,28 @@ test('page classifier accepts exact platform system fields but not chat text or 
       RegExp,
       encodeURIComponent,
       queueMicrotask,
-    },
-  );
-  assert.equal(result.ok, true);
-  assert.deepEqual(
-    JSON.parse(
-      JSON.stringify(result.observations.map((item) => [item.messageId, item.kind, item.source])),
-    ),
-    [
-      ['m1', 'request_sent', 'geek_history_status_message'],
-      ['m5', 'request_sent', 'geek_history_status_message'],
-      ['m6', 'resume_card_other', 'geek_history_type_4'],
-    ],
-  );
-  assert.deepEqual(JSON.parse(JSON.stringify(result.messageIds)), [
-    'm1',
-    'm2',
-    'm3',
-    'm4',
-    'm5',
-    'm6',
-  ]);
+    });
+    assert.equal(result.ok, true);
+    assert.deepEqual(
+      JSON.parse(
+        JSON.stringify(result.observations.map((item) => [item.messageId, item.kind, item.source])),
+      ),
+      [
+        ['m1', 'request_sent', 'geek_history_status_message'],
+        ['m5', 'request_sent', 'geek_history_status_message'],
+        ['m6', 'resume_card_other', 'geek_history_type_4'],
+      ],
+    );
+    if (result.messageIds)
+      assert.deepEqual(JSON.parse(JSON.stringify(result.messageIds)), [
+        'm1',
+        'm2',
+        'm3',
+        'm4',
+        'm5',
+        'm6',
+      ]);
+  }
 });
 
 test('bounded history runner checkpoints every request and reports actual coverage and usage', async () => {

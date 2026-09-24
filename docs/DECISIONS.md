@@ -44,6 +44,7 @@
 | [D028](adr/0028-change-driven-history.md)                   | 历史采集默认变化驱动、手动保留公平回填     | 已实现；真实浏览器待验收            | 用户确认新旧模式并要求实施             |
 | [D029](adr/0029-resume-request-is-not-sent.md)              | 附件简历请求不等于简历已发送               | 已由 D030 替代                      | 曾误读平台文案                         |
 | [D030](adr/0030-reject-misattributed-resume-observation.md) | 恢复附件简历发送映射，否决误归属观察       | 有效；真实浏览器待验收              | 用户澄清平台文案与目标聊天内容         |
+| [D031](adr/0031-explicit-resume-semantics.md)               | 简历观察、含义和应用条件显式分层           | 有效；真实浏览器待验收              | 用户同意通过建模与枚举减少语义误判     |
 
 ## D001：面向个人使用的独立网页
 
@@ -165,10 +166,14 @@
 
 完整记录见 [ADR-0030](adr/0030-reject-misattributed-resume-observation.md)。
 
+## D031：简历观察、含义和应用条件显式分层
+
+完整记录见 [ADR-0031](adr/0031-explicit-resume-semantics.md)。
+
 ## 新决策模板
 
 ```markdown
-## D031：一句话说明决定
+## D032：一句话说明决定
 
 - **记录日期 / 状态：** YYYY-MM-DD / 待定或有效。
 - **来源：** 用户明确要求、实现选择，或所替代的决策编号。

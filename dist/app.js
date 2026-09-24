@@ -1,3 +1,4 @@
+import { RESUME_STATES } from './resume-rules.js';
 import { createDraftManager } from './drafts.js';
 import { createDiskBackup } from './disk-backup.js';
 import { createBackupUI } from './backup-ui.js';
@@ -647,7 +648,7 @@ function openEditor(id = '', source) {
       )
       .join(
         '',
-      )}<label>招聘阶段<select name="stage">${options(STAGES, o.stage)}</select></label><label>关注程度<select name="priority">${options(['普通', '重点', '暂缓'], o.priority)}</select></label><label>消息状态<select name="readState">${bossReadStateOption}${options(READ_STATES, o.readState)}</select></label><label>简历状态<select name="resumeState">${options(['未知', '被索要', '已发送', '对方已接收'], o.resumeState)}</select></label><p class="span-2 note-summary" data-resume-linked-note hidden>BOSS 简历已发送或已接收时，消息联动为已读，已触达推进为沟通中；面试及后续阶段保留，保存后生效。</p><label>首次联系<input type="date" name="appliedAt" value="${esc(o.appliedAt)}"></label><label>结束原因<select name="endReason"><option value="">未结束 / 未填写</option>${options(['不匹配/拒绝', '职位关闭', '主动放弃', '已入职', '其他'], o.endReason)}</select></label>${[
+      )}<label>招聘阶段<select name="stage">${options(STAGES, o.stage)}</select></label><label>关注程度<select name="priority">${options(['普通', '重点', '暂缓'], o.priority)}</select></label><label>消息状态<select name="readState">${bossReadStateOption}${options(READ_STATES, o.readState)}</select></label><label>简历状态<select name="resumeState">${options(RESUME_STATES, o.resumeState)}</select></label><p class="span-2 note-summary" data-resume-linked-note hidden>BOSS 简历已发送或已接收时，消息联动为已读，已触达推进为沟通中；面试及后续阶段保留，保存后生效。</p><label>首次联系<input type="date" name="appliedAt" value="${esc(o.appliedAt)}"></label><label>结束原因<select name="endReason"><option value="">未结束 / 未填写</option>${options(['不匹配/拒绝', '职位关闭', '主动放弃', '已入职', '其他'], o.endReason)}</select></label>${[
       ['platform', '平台'],
       ['source', '来源类型（如猎头、内推）'],
       ['contact', '联系人'],

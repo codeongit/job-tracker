@@ -1,3 +1,4 @@
+import { RESUME_SUMMARIES } from '../dist/resume-rules.js';
 import {
   chmod,
   link,
@@ -243,14 +244,7 @@ function validateEvent(
     (!['inbound', 'outbound'].includes(value.messageDirection) ||
       value.receiptStatus !== 'not_applicable' ||
       value.receiptSource !== '' ||
-      ![
-        'resume_sent_candidate',
-        'resume_card_other',
-        'resume_request_sent',
-        'resume_sent_confirmed',
-        'resume_attachment_sent',
-        'resume_viewed_confirmed',
-      ].includes(value.summary) ||
+      !RESUME_SUMMARIES.includes(value.summary) ||
       value.timeLabel !== '')
   )
     fail(`${path} 的简历观察结构无效。`);

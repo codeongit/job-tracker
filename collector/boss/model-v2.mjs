@@ -1,3 +1,4 @@
+import { RESUME_KINDS, RESUME_STATUS_KINDS } from '../../dist/resume-rules.js';
 import { createHash } from 'node:crypto';
 
 export const V2_SCOPE = 'loaded-chat-list';
@@ -494,23 +495,11 @@ function validateEnvelopeVersion(input, allowedVersions) {
     )
       fail(`${path}.platformIdentity is inconsistent`);
     string(record.messageId, `${path}.messageId`, { max: 128 });
-    const statusKind = [
-      'request_sent',
-      'sent_confirmed',
-      'viewed_confirmed',
-      'attachment_sent',
-    ].includes(record.kind);
+    const statusKind = RESUME_STATUS_KINDS.includes(record.kind);
     if (
       !['inbound', 'outbound', 'system'].includes(record.direction) ||
       (!statusKind && record.messageType !== 4) ||
-      ![
-        'sent_candidate',
-        'resume_card_other',
-        'request_sent',
-        'sent_confirmed',
-        'viewed_confirmed',
-        'attachment_sent',
-      ].includes(record.kind) ||
+      !RESUME_KINDS.includes(record.kind) ||
       (!statusKind && (record.direction === 'outbound') !== (record.kind === 'sent_candidate')) ||
       (statusKind && record.direction !== 'system')
     )
