@@ -1,3 +1,4 @@
+import { validateAttributionEvidence } from '../../dist/boss-attribution.js';
 import {
   RESUME_RULES,
   RESUME_KINDS,
@@ -9,9 +10,9 @@ import { createHash } from 'node:crypto';
 import { expectedUrl } from './guard.mjs';
 import {
   conversationKeyV2,
-  upgradeEnvelopeToV3,
-  validateEnvelopeV2OrV3,
-  validateEnvelopeV3,
+  upgradeEnvelope,
+  validateEnvelope,
+  validateCurrentEnvelope,
 } from './model-v2.mjs';
 
 const ID = /^[A-Za-z0-9_-]{1,300}$/;
@@ -97,7 +98,6 @@ export function createResumeFriendExpression({ target, timeoutMs = 15_000 }) {
     };
     const uniqueIdentityPair = root => {
       const directBossId = normalizeId(root?.uid, 128), directSecurityId = normalizeSecurity(root?.securityId);
-      if (directBossId && directSecurityId) return {bossId:directBossId,securityId:directSecurityId};
       const inspect = [root], pairs = new Map(); let visited = 0;
       while (inspect.length && visited < 100) {
         const current = inspect.shift(); visited += 1;
@@ -160,6 +160,10 @@ export function createResumePageExpression({ target, identity, page, timeoutMs =
     const messages=response.ok && response.value?.code===0?
       (response.value?.zpData?.messages ?? response.value?.zpData?.historyMsgList):null;
     if (!Array.isArray(messages)) return {ok:false,url,reason:response.reason ?? 'HISTORY_UNAVAILABLE'};
+    const attribution = message => ({version:1,source:'history',accountNamespace:null,
+      conversationKey:target.conversationKey,messageId:messageId(message),requestedBossId:identity.bossId,
+      responseFriendId:null,responseFriendSource:null,responseBossId:identity.bossId,selfId:null,
+      senderId:normalizeId(message.from?.uid,128),recipientId:normalizeId(message.to?.uid,128),messageJobId:jobId(message)});
     const observations=[],unresolved=[],messageIds=[];
     for (const message of messages) {
       const id=messageId(message),platformTime=isoTime(message.time ?? message.msgTime ?? message.timestamp);
@@ -169,7 +173,7 @@ export function createResumePageExpression({ target, identity, page, timeoutMs =
         if (!id || !platformTime) { unresolved.push({conversationKey:target.conversationKey,reason:'RESUME_STATUS_IDENTITY_INCOMPLETE'});continue; }
         observations.push({conversationKey:target.conversationKey,friendId:target.friendId,
           friendSource:target.friendSource,messageId:id,direction:'system',messageType:Number(message?.type)||5,
-          kind:status,platformTime,externalJobId:jobId(message),source:${JSON.stringify(STATUS_SOURCE)}});continue;
+          kind:status,platformTime,externalJobId:jobId(message),attribution:attribution(message),source:${JSON.stringify(STATUS_SOURCE)}});continue;
       }
       if (Number(message?.type)!==4) continue;
       const fromUid=normalizeId(message.from?.uid,128);
@@ -180,7 +184,7 @@ export function createResumePageExpression({ target, identity, page, timeoutMs =
       observations.push({conversationKey:target.conversationKey,friendId:target.friendId,
         friendSource:target.friendSource,messageId:id,direction,messageType:4,
         kind:direction==='outbound'?'sent_candidate':'resume_card_other',platformTime,
-        externalJobId:jobId(message),source:${JSON.stringify(SOURCE)}});
+        externalJobId:jobId(message),attribution:attribution(message),source:${JSON.stringify(SOURCE)}});
     }
     return {ok:true,url,target,page,messageCount:messages.length,exhausted:messages.length<20,
       messageIds:[...new Set(messageIds)],observations,unresolved};
@@ -280,7 +284,7 @@ export async function runResumeHistoryRequests({
   if (initialHead && startConversationKey) heads.set(startConversationKey, initialHead);
   const checkpoint = async (nextConversationKey, nextPage, metadata = {}) =>
     onCheckpoint({
-      version: 1,
+      version: 2,
       capturedAt: now(),
       nextConversationKey,
       nextPage,
@@ -468,150 +472,52 @@ export async function runResumeHistoryRequests({
   };
 }
 
+// Compatibility entry point composes exactly the same request expressions as the paged runner.
 export function createResumeHistoryExpression({ targets, pages = 2 }) {
   if (
     !Array.isArray(targets) ||
     !targets.length ||
     targets.length > 100 ||
-    !Number.isSafeInteger(pages) ||
+    !Number.isInteger(pages) ||
     pages < 1 ||
     pages > 20 ||
     targets.length * (pages + 1) > 20
-  ) {
+  )
     throw new TypeError('RESUME_SCAN_INPUT_INVALID');
-  }
-  const safeTargets = targets.map((target) => {
-    const friendId = clean(target.friendId, 128);
-    const friendSource = clean(target.friendSource, 128);
-    const conversationKey = clean(target.conversationKey, 128);
-    if (
-      !/^\d+$/.test(friendId ?? '') ||
-      !/^\d+$/.test(friendSource ?? '') ||
-      !/^[a-f0-9]{64}$/.test(conversationKey ?? '')
-    )
-      throw new TypeError('RESUME_SCAN_INPUT_INVALID');
-    return { friendId, friendSource, conversationKey };
+  const tasks = targets.map(normalizeTarget).map((target) => {
+    const reads = Array.from({ length: pages }, (_, offset) => {
+      const expression = createResumePageExpression({
+        target,
+        identity: { bossId: 'runtime_boss', securityId: 'runtime_security' },
+        page: offset + 1,
+      });
+      return `async () => ${expression.replace(JSON.stringify({ bossId: 'runtime_boss', securityId: 'runtime_security' }), 'friend.identity')}`;
+    });
+    return `async () => {
+      const friend = await read(async () => ${createResumeFriendExpression({ target })});
+      if (!friend.ok || !friend.identity) { unresolved.push({conversationKey:${JSON.stringify(target.conversationKey)},reason:friend.reason || 'HISTORY_IDENTITY_MISSING'});return; }
+      resolved += 1;
+      for (const page of [${reads.join(',')}]) {
+        const result = await read(page);
+        if (!result.ok) { unresolved.push({conversationKey:${JSON.stringify(target.conversationKey)},reason:result.reason || 'HISTORY_UNAVAILABLE'});break; }
+        observations.push(...result.observations);unresolved.push(...result.unresolved);
+        if (result.exhausted) break;
+      }
+    }`;
   });
   return `(async () => {
-    const expected = ${JSON.stringify(expectedUrl)};
     const url = location.origin + location.pathname;
-    if (url !== expected) return {ok:false,url,reason:'WRONG_PAGE'};
-    const targets = ${JSON.stringify(safeTargets)};
-    const pages = ${pages};
-    let lastRequestAt = 0;
-    const request = async (method, requestUrl, body = null) => {
-      const gap = Date.now() - lastRequestAt;
-      if (lastRequestAt && gap < 3000) await new Promise(resolve => setTimeout(resolve, 3000-gap));
-      lastRequestAt = Date.now();
-      return new Promise(resolve => {
-        const xhr = new XMLHttpRequest();
-        xhr.open(method, requestUrl, true); xhr.withCredentials = true; xhr.timeout = 15000;
-        xhr.setRequestHeader('Accept', 'application/json');
-        if (method === 'POST') xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
-        xhr.onload = () => { try { resolve({ok:true,value:JSON.parse(xhr.responseText)}); }
-          catch { resolve({ok:false,reason:'RESPONSE_NOT_JSON'}); } };
-        xhr.onerror = () => resolve({ok:false,reason:'NETWORK_ERROR'});
-        xhr.ontimeout = () => resolve({ok:false,reason:'REQUEST_TIMEOUT'});
-        xhr.send(body);
-      });
-    };
-    const normalizeId = (value, max = 300) => {
-      if (!['string','number'].includes(typeof value)) return null;
-      const output = String(value).normalize('NFC').trim();
-      return output && output.length <= max && /^[A-Za-z0-9_-]+$/.test(output) ? output : null;
-    };
-    const normalizeSecurity = value => {
-      if (typeof value !== 'string') return null;
-      const output = value.normalize('NFC').trim();
-      return output && output.length <= 500 && !/[\\s\\u0000-\\u001f\\u007f]/.test(output) ? output : null;
-    };
-    const uniqueIdentityPair = root => {
-      const directBossId = normalizeId(root?.uid, 128), directSecurityId = normalizeSecurity(root?.securityId);
-      if (directBossId && directSecurityId) return {bossId:directBossId,securityId:directSecurityId};
-      const inspect = [root], pairs = new Map();
-      let visited = 0;
-      while (inspect.length && visited < 100) {
-        const current = inspect.shift(); visited += 1;
-        if (!current || typeof current !== 'object') continue;
-        if (!Array.isArray(current) && Object.hasOwn(current, 'uid') && Object.hasOwn(current, 'securityId')) {
-          const bossId = normalizeId(current.uid, 128), securityId = normalizeSecurity(current.securityId);
-          if (bossId && securityId) pairs.set(JSON.stringify([bossId,securityId]),{bossId,securityId});
-        }
-        inspect.push(...(Array.isArray(current) ? current.slice(0,50) : Object.values(current).slice(0,50)));
-      }
-      return pairs.size === 1 ? [...pairs.values()][0] : null;
-    };
-    const messageId = message => normalizeId(
-      message.mid ?? message.msgId ?? message.messageId ?? message.id ?? message.body?.mid ?? message.body?.msgId, 128);
-    const jobId = message => normalizeId(
-      message.encryptJobId ?? message.jobId ?? message.body?.encryptJobId ?? message.body?.jobId ??
-      message.body?.job?.encryptJobId ?? message.body?.job?.jobId, 300);
-    const statusKind = (message, bossId) => (${classifyResumeMessage.toString()})(
-      message, bossId, ${JSON.stringify(RESUME_RULES)}, (${classifyResumeText.toString()}));
-    const isoTime = value => {
-      const number = Number(value);
-      const millis = Number.isFinite(number) ? (number > 0 && number < 100000000000 ? number * 1000 : number) : NaN;
-      const date = new Date(millis);
-      return Number.isFinite(date.getTime()) ? date.toISOString() : null;
-    };
-    const friendByConversation = new Map();
-    for (const target of targets) {
-      const response = await request('POST', 'https://www.zhipin.com/wapi/zprelation/friend/getGeekFriendList.json',
-        'friendIds=' + target.friendId);
-      const rows = response.ok && response.value?.code === 0 ? response.value?.zpData?.result : null;
-      if (!Array.isArray(rows)) return {ok:false,url,reason:'FRIEND_INFO_UNAVAILABLE'};
-      if (rows.length === 1) friendByConversation.set(target.conversationKey, rows[0]);
-    }
-    const observations = [], unresolved = [];
-    for (const target of targets) {
-      const friend = friendByConversation.get(target.conversationKey);
-      if (!friend) { unresolved.push({conversationKey:target.conversationKey,reason:'FRIEND_IDENTITY_AMBIGUOUS'}); continue; }
-      const identity = uniqueIdentityPair(friend);
-      const bossId = identity?.bossId, securityId = identity?.securityId;
-      if (!bossId || !securityId) { unresolved.push({conversationKey:target.conversationKey,reason:'HISTORY_IDENTITY_MISSING'}); continue; }
-      let exhausted = false;
-      for (let page = 1; page <= pages && !exhausted; page += 1) {
-        const endpoint = 'https://www.zhipin.com/wapi/zpchat/geek/historyMsg?bossId=' + encodeURIComponent(bossId) +
-          '&securityId=' + encodeURIComponent(securityId) + '&page=' + page + '&c=20&src=' + encodeURIComponent(target.friendSource);
-        const response = await request('GET', endpoint);
-        const messages = response.ok && response.value?.code === 0
-          ? (response.value?.zpData?.messages ?? response.value?.zpData?.historyMsgList) : null;
-        if (!Array.isArray(messages)) { unresolved.push({conversationKey:target.conversationKey,reason:'HISTORY_UNAVAILABLE'}); break; }
-        exhausted = messages.length < 20;
-        for (const message of messages) {
-          const id = messageId(message), platformTime = isoTime(message.time ?? message.msgTime ?? message.timestamp);
-          const status = statusKind(message, identity.bossId);
-          if (status) {
-            if (!id || !platformTime) {
-              unresolved.push({conversationKey:target.conversationKey,reason:'RESUME_STATUS_IDENTITY_INCOMPLETE'}); continue;
-            }
-            observations.push({conversationKey:target.conversationKey,friendId:target.friendId,
-              friendSource:target.friendSource,messageId:id,direction:'system',messageType:Number(message?.type) || 5,
-              kind:status,platformTime,externalJobId:jobId(message),source:${JSON.stringify(STATUS_SOURCE)}});
-            continue;
-          }
-          if (Number(message?.type) !== 4) continue;
-          const fromUid = normalizeId(message.from?.uid, 128);
-          const direction = fromUid ? (fromUid === bossId ? 'inbound' : 'outbound') : 'unknown';
-          if (!id || !platformTime || direction === 'unknown') {
-            unresolved.push({conversationKey:target.conversationKey,reason:'RESUME_MESSAGE_IDENTITY_INCOMPLETE'}); continue;
-          }
-          observations.push({conversationKey:target.conversationKey,friendId:target.friendId,
-            friendSource:target.friendSource,messageId:id,direction,messageType:4,
-            kind:direction === 'outbound' ? 'sent_candidate' : 'resume_card_other',
-            platformTime,externalJobId:jobId(message),source:${JSON.stringify(SOURCE)}});
-        }
-      }
-    }
+    if (url !== ${JSON.stringify(expectedUrl)}) return {ok:false,url,reason:'WRONG_PAGE'};
+    const observations=[],unresolved=[];let resolved=0,requests=0;
+    const read=async operation=>{if(requests++) await new Promise(resolve=>setTimeout(resolve,3000));return operation();};
+    for (const task of [${tasks.join(',')}]) await task();
     return {ok:true,url,capturedAt:new Date().toISOString(),observations,unresolved,
-      coverage:{requestedConversations:targets.length,resolvedConversations:targets.length -
-        new Set(unresolved.filter(item => item.reason === 'HISTORY_IDENTITY_MISSING').map(item => item.conversationKey)).size,
-        pagesPerConversation:pages}};
+      coverage:{requestedConversations:${targets.length},resolvedConversations:resolved,pagesPerConversation:${pages}}};
   })()`;
 }
 
 export function toResumeHistoryResult(payload, envelope) {
-  const checked = validateEnvelopeV2OrV3(envelope);
+  const checked = validateEnvelope(envelope);
   if (
     !payload?.ok ||
     payload.url !== expectedUrl ||
@@ -656,6 +562,12 @@ export function toResumeHistoryResult(payload, envelope) {
       throw new Error(`RESUME_HISTORY_DIRECTION_INVALID_${index}`);
     }
     const facts = {
+      attribution: value.attribution
+        ? validateAttributionEvidence({
+            ...value.attribution,
+            accountNamespace: checked.accountNamespace,
+          })
+        : null,
       conversationKey: value.conversationKey,
       platformIdentity: { ...conversation.platformIdentity },
       messageId: value.messageId,
@@ -729,7 +641,7 @@ export function toResumeHistoryResult(payload, envelope) {
 }
 
 export function applyResumeHistoryV2(inputEnvelope, result) {
-  const envelope = upgradeEnvelopeToV3(inputEnvelope);
+  const envelope = upgradeEnvelope(inputEnvelope);
   if (
     !result ||
     !Array.isArray(result.observations) ||
@@ -760,10 +672,20 @@ export function applyResumeHistoryV2(inputEnvelope, result) {
     prior.set(key, observation);
   }
   envelope.resume.observations = [...prior.values()];
-  let added = 0;
+  let added = 0,
+    enriched = false;
   for (const observation of result.observations) {
     const key = eventKey(observation);
-    if (prior.has(key)) continue;
+    if (prior.has(key)) {
+      if (
+        observation.attribution &&
+        JSON.stringify(prior.get(key).attribution) !== JSON.stringify(observation.attribution)
+      ) {
+        prior.get(key).attribution = structuredClone(observation.attribution);
+        enriched = true;
+      }
+      continue;
+    }
     envelope.resume.observations.push(structuredClone(observation));
     prior.set(key, observation);
     added += 1;
@@ -772,14 +694,14 @@ export function applyResumeHistoryV2(inputEnvelope, result) {
   envelope.resume.lastScanAt = result.capturedAt;
   envelope.resume.lastCoverage = structuredClone(result.coverage);
   envelope.resume.lastUnresolved = structuredClone(result.unresolved);
-  if (added || deduplicated) envelope.updatedAt = result.capturedAt;
+  if (added || deduplicated || enriched) envelope.updatedAt = result.capturedAt;
   const unresolvedByReason = Object.fromEntries(
     [...new Set(result.unresolved.map((item) => item.reason))]
       .sort()
       .map((reason) => [reason, result.unresolved.filter((item) => item.reason === reason).length]),
   );
   return {
-    envelope: validateEnvelopeV3(envelope),
+    envelope: validateCurrentEnvelope(envelope),
     report: {
       counts: {
         observed: result.observations.length,

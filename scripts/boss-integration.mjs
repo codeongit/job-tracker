@@ -1,11 +1,33 @@
-import { bossBatchDigestInput } from '../dist/boss-batch.js';
+import { BossIntegrationError, integrationFail } from './boss-integration-error.mjs';
+export { BossIntegrationError } from './boss-integration-error.mjs';
 import {
-  RESUME_KINDS,
-  RESUME_STATUS_KINDS,
-  RESUME_RULES,
-  resumeRule,
-  classifyResumeText,
-} from '../dist/resume-rules.js';
+  stableHash,
+  shanghaiDay,
+  createIncrementalBatch,
+  createResumeBatch,
+} from './boss-conversion.mjs';
+export {
+  stableHash,
+  createBatch,
+  createEvents,
+  createResumeEvents,
+  createResumeStatusEvents,
+  createResumeBatch,
+} from './boss-conversion.mjs';
+import {
+  APPROVED_INITIAL,
+  assertInitialScope,
+  previewInitialEnvelope,
+  createInitialBatch,
+  createDatedYesterdayBatch,
+} from './boss-legacy-import.mjs';
+export {
+  previewInitialEnvelope,
+  createInitialBatch,
+  createDatedYesterdayBatch,
+} from './boss-legacy-import.mjs';
+import { validateAttributionEvidence } from '../dist/boss-attribution.js';
+import { RESUME_KINDS, RESUME_STATUS_KINDS } from '../dist/resume-rules.js';
 import { createHash, randomBytes } from 'node:crypto';
 import { execFile as execFileCallback } from 'node:child_process';
 import { lstat, open, readFile, readdir, unlink } from 'node:fs/promises';
@@ -13,7 +35,6 @@ import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
-  BOSS_BATCH_FORMAT,
   BOSS_CONTROL_MAX_ATTEMPTS,
   BOSS_CONTROL_FORMAT,
   BOSS_INCIDENT_FORMAT,
@@ -34,16 +55,7 @@ const defaultTrackerRoot = join(projectRoot, 'collector', 'boss');
 const defaultTrackerDataRoot = join(projectRoot, '.local', 'boss-collector');
 const SNAPSHOT_FILE = /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z_[a-f0-9-]{36}\.json$/;
 const ACCOUNT_NAMESPACE = /^boss-geek:[a-f0-9]{64}$/;
-const HH_MM = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
-const INITIAL_POLICY = 'boss-initial-2026-09-18-v1';
-const INITIAL_SNAPSHOT_NAME = '2026-09-18T14-49-59-473Z_ae82d08d-b89d-46a4-b8ec-cb855214bd5a.json';
-const INITIAL_SNAPSHOT_SHA256 = '697f1d35c3c9f0920709ce8be86535b9581877b2aaf435fc0bb1eb0a160a6f65';
-const INCREMENTAL_POLICY = 'boss-manual-check-v1';
-const RESUME_POLICY = 'boss-resume-observation-v3';
-const RESUME_STATUS_WORKFLOW = 'resume-status-linked-v2';
-const INITIAL_DATE = '2026-09-18';
-const TIMEZONE = 'Asia/Shanghai';
-const YESTERDAY_LABEL = '昨天';
+
 // Manual checks only read the page state that is already loaded.  Keep a
 // short duplicate-click guard here; platform-request budgets are accounted
 // for by the runtime/collector at the action that actually sends them.
@@ -51,21 +63,6 @@ const MIN_CHECK_INTERVAL_MS = 10 * 1_000;
 const MAX_SNAPSHOT_BYTES = 25_000_000;
 const MAX_TRACKER_OUTPUT_BYTES = 1_000_000;
 const PRODUCER_LOCK = '.producer.lock';
-
-export class BossIntegrationError extends Error {
-  constructor(code, message = code, { status = 1, fatal = false, nextAllowedAt = '', usage } = {}) {
-    super(message);
-    this.code = code;
-    this.status = status;
-    this.fatal = fatal;
-    this.nextAllowedAt = nextAllowedAt;
-    if (usage) this.usage = usage;
-  }
-}
-
-function integrationFail(code, options) {
-  throw new BossIntegrationError(code, code, options);
-}
 
 function plain(value, code = 'BOSS_SNAPSHOT_STRUCTURE_INVALID') {
   if (!value || typeof value !== 'object' || Array.isArray(value))
@@ -99,41 +96,6 @@ function isIso(value) {
     /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value) &&
     Number.isFinite(Date.parse(value))
   );
-}
-
-function canonical(value) {
-  if (Array.isArray(value)) return value.map(canonical);
-  if (value && typeof value === 'object')
-    return Object.fromEntries(
-      Object.keys(value)
-        .filter((key) => value[key] !== undefined)
-        .sort()
-        .map((key) => [key, canonical(value[key])]),
-    );
-  return value;
-}
-
-export function stableHash(value) {
-  return createHash('sha256')
-    .update(JSON.stringify(canonical(value)))
-    .digest('hex');
-}
-
-function uniqueEventsById(events) {
-  const unique = new Map();
-  for (const event of events) {
-    const existing = unique.get(event.eventId);
-    if (!existing) {
-      unique.set(event.eventId, event);
-      continue;
-    }
-    const { observedAt: existingObservedAt, ...existingIdentity } = existing;
-    const { observedAt, ...eventIdentity } = event;
-    if (stableHash(existingIdentity) !== stableHash(eventIdentity))
-      integrationFail('BOSS_EVENT_ID_COLLISION', { fatal: true });
-    if (observedAt.localeCompare(existingObservedAt) < 0) unique.set(event.eventId, event);
-  }
-  return [...unique.values()];
 }
 
 function bytesHash(bytes) {
@@ -549,7 +511,7 @@ export function validateTrackerEnvelope(input) {
     'resume',
   ]);
   if (
-    ![2, 3].includes(value.version) ||
+    ![2, 3, 4].includes(value.version) ||
     value.scope !== 'loaded-chat-list' ||
     !requiredString(value.accountNamespace, { max: 75, pattern: ACCOUNT_NAMESPACE }) ||
     !isIso(value.createdAt) ||
@@ -597,7 +559,9 @@ export function validateTrackerEnvelope(input) {
       'observedAt',
       'source',
       'status',
+      ...(value.version >= 4 ? ['attribution'] : []),
     ]);
+    if (value.version >= 4) validateAttributionEvidence(observation.attribution);
     const record = conversations.get(observation.conversationKey);
     const statusKind = RESUME_STATUS_KINDS.includes(observation.kind);
     if (
@@ -695,470 +659,6 @@ function initialSnapshotPath(config) {
   return join(snapshotDirectory(config), config.initialSnapshot);
 }
 
-function resolveJobRows(envelope) {
-  const rank = new Map([
-    ['loaded_jobName', 3],
-    ['detail_page_title', 2],
-    ['legacy_named_job', 1],
-  ]);
-  const currentByConversation = new Map(
-    envelope.jobs.associations
-      .filter((item) => item.status === 'current')
-      .map((item) => [item.conversationKey, item]),
-  );
-  return envelope.snapshot.records.map((record) => {
-    const association = currentByConversation.get(record.key) ?? null;
-    const evidence = association
-      ? envelope.jobs.evidence
-          .filter(
-            (item) => item.jobId === association.jobId && item.detailUrl === association.detailUrl,
-          )
-          .sort(
-            (a, b) =>
-              (rank.get(b.source) ?? 0) - (rank.get(a.source) ?? 0) ||
-              Date.parse(b.observedAt) - Date.parse(a.observedAt),
-          )
-      : [];
-    // A job id can have evidence collected from several conversations. A title
-    // observed under another company is only a candidate, never an auto-fill.
-    const company = record.company.trim();
-    const nameConflict = evidence.some(
-      (item) => item.company.trim() && item.company.trim() !== company,
-    );
-    const selected =
-      evidence.find((item) => !item.company.trim() || item.company.trim() === company) ?? null;
-    const confirmed = association
-      ? envelope.jobs.confirmations.some(
-          (item) =>
-            item.conversationKey === record.key &&
-            item.jobId === association.jobId &&
-            item.detailUrl === association.detailUrl &&
-            item.status === 'confirmed_user',
-        )
-      : false;
-    return {
-      record,
-      externalJobId: association?.jobId ?? '',
-      canonicalUrl: association?.detailUrl ?? '',
-      jobName: selected?.name ?? record.observedJobName ?? '',
-      nameSource: selected?.source ?? (record.observedJobName ? 'loaded_jobName' : ''),
-      nameConflict,
-      linkConfirmation: confirmed ? 'confirmed_user' : 'unverified',
-    };
-  });
-}
-
-function eventFacts(row, accountNamespace) {
-  const record = row.record;
-  const receiptKnown =
-    Boolean(record.latestMessageId) &&
-    ['read', 'delivered'].includes(record.outgoingReceipt.status);
-  const messageDirection = receiptKnown ? 'outbound' : 'unknown';
-  const receiptStatus = receiptKnown ? record.outgoingReceipt.status : 'unknown';
-  const receiptSource = receiptKnown ? record.outgoingReceipt.source : '';
-  const complete = Boolean(
-    row.externalJobId && row.canonicalUrl && row.jobName && record.company && !row.nameConflict,
-  );
-  return {
-    platform: 'boss',
-    accountNamespace,
-    conversationKey: record.key,
-    friendId: record.platformIdentity.friendId,
-    friendSource: record.platformIdentity.friendSource,
-    uniqueId: record.platformIdentity.uniqueId,
-    externalJobId: row.externalJobId,
-    canonicalUrl: row.canonicalUrl,
-    jobName: row.jobName,
-    company: record.company,
-    contact: record.contact,
-    summary: record.preview,
-    messageId: record.latestMessageId ?? '',
-    messageDirection,
-    receiptStatus,
-    receiptSource,
-    nameSource: row.nameSource,
-    linkConfirmation: row.linkConfirmation,
-    intent: complete ? 'create_or_link' : 'review',
-  };
-}
-
-export function createEvents(
-  envelope,
-  { sourceSequence, evidenceDate = '', appliedAtForNew = '' },
-) {
-  const rows = resolveJobRows(envelope);
-  return rows.map((row) => {
-    const facts = eventFacts(row, envelope.accountNamespace);
-    return {
-      eventId: `boss-event-${stableHash(facts)}`,
-      conversationKey: facts.conversationKey,
-      friendId: facts.friendId,
-      friendSource: facts.friendSource,
-      uniqueId: facts.uniqueId,
-      externalJobId: facts.externalJobId,
-      canonicalUrl: facts.canonicalUrl,
-      jobName: facts.jobName,
-      company: facts.company,
-      contact: facts.contact,
-      summary: facts.summary,
-      timeLabel: row.record.timeLabel,
-      messageId: facts.messageId,
-      messageDirection: facts.messageDirection,
-      receiptStatus: facts.receiptStatus,
-      receiptSource: facts.receiptSource,
-      observedAt: envelope.snapshot.capturedAt,
-      evidenceDate,
-      nameSource: facts.nameSource,
-      linkConfirmation: facts.linkConfirmation,
-      intent: facts.intent,
-      appliedAtForNew,
-      sourceSequence,
-    };
-  });
-}
-
-export function createResumeEvents(envelope, { sourceSequence, evidenceDate = '' }) {
-  const rows = new Map(resolveJobRows(envelope).map((row) => [row.record.key, row]));
-  const associatedJobs = new Map();
-  for (const association of envelope.jobs.associations) {
-    if (!associatedJobs.has(association.conversationKey))
-      associatedJobs.set(association.conversationKey, new Set());
-    associatedJobs.get(association.conversationKey).add(association.jobId);
-  }
-  const events = envelope.resume.observations
-    .filter(
-      (observation) =>
-        !evidenceDate || shanghaiDay(new Date(observation.platformTime)) === evidenceDate,
-    )
-    .map((observation) => {
-      const row = rows.get(observation.conversationKey);
-      const candidates = [...(associatedJobs.get(observation.conversationKey) ?? [])];
-      const resolvedJobId =
-        observation.externalJobId ?? (candidates.length === 1 ? candidates[0] : '');
-      const matchingJob = row && resolvedJobId && row.externalJobId === resolvedJobId;
-      const facts = {
-        platform: 'boss',
-        eventType: 'resume_observed',
-        accountNamespace: envelope.accountNamespace,
-        conversationKey: observation.conversationKey,
-        friendId: observation.platformIdentity.friendId,
-        friendSource: observation.platformIdentity.friendSource,
-        uniqueId: observation.platformIdentity.uniqueId,
-        externalJobId: resolvedJobId,
-        canonicalUrl: resolvedJobId
-          ? `https://www.zhipin.com/job_detail/${resolvedJobId}.html`
-          : '',
-        jobName: matchingJob ? row.jobName : '',
-        company: matchingJob ? row.record.company : '',
-        contact: row?.record.contact ?? '',
-        summary: resumeRule(observation.kind).summary,
-        messageId: observation.messageId,
-        messageDirection: observation.direction === 'system' ? 'outbound' : observation.direction,
-        receiptStatus: 'not_applicable',
-        receiptSource: '',
-        nameSource: matchingJob ? row.nameSource : '',
-        linkConfirmation: matchingJob ? row.linkConfirmation : 'unverified',
-        intent: 'observe_only',
-      };
-      return {
-        eventId: `boss-event-${stableHash({
-          ...facts,
-          ...(observation.kind === 'resume_card_other' || observation.kind === 'sent_candidate'
-            ? {}
-            : { workflow: RESUME_STATUS_WORKFLOW }),
-        })}`,
-        eventType: facts.eventType,
-        conversationKey: facts.conversationKey,
-        friendId: facts.friendId,
-        friendSource: facts.friendSource,
-        uniqueId: facts.uniqueId,
-        externalJobId: facts.externalJobId,
-        canonicalUrl: facts.canonicalUrl,
-        jobName: facts.jobName,
-        company: facts.company,
-        contact: facts.contact,
-        summary: facts.summary,
-        timeLabel: '',
-        messageId: facts.messageId,
-        messageDirection: facts.messageDirection,
-        receiptStatus: facts.receiptStatus,
-        receiptSource: facts.receiptSource,
-        observedAt: observation.platformTime,
-        evidenceDate,
-        nameSource: facts.nameSource,
-        linkConfirmation: facts.linkConfirmation,
-        intent: facts.intent,
-        appliedAtForNew: '',
-        sourceSequence,
-      };
-    });
-  return uniqueEventsById(events);
-}
-
-function resumeStatusSummary(preview) {
-  const kind = classifyResumeText(preview, RESUME_RULES);
-  return kind ? resumeRule(kind).summary : '';
-}
-
-export function createResumeStatusEvents(envelope, { sourceSequence, evidenceDate }) {
-  return resolveJobRows(envelope)
-    .filter(
-      (row) =>
-        row.record.timeLabel === YESTERDAY_LABEL &&
-        resumeStatusSummary(row.record.preview) &&
-        row.record.latestMessageId &&
-        row.externalJobId &&
-        row.canonicalUrl,
-    )
-    .map((row) => {
-      const record = row.record;
-      const facts = {
-        platform: 'boss',
-        eventType: 'resume_observed',
-        accountNamespace: envelope.accountNamespace,
-        conversationKey: record.key,
-        friendId: record.platformIdentity.friendId,
-        friendSource: record.platformIdentity.friendSource,
-        uniqueId: record.platformIdentity.uniqueId,
-        externalJobId: row.externalJobId,
-        canonicalUrl: row.canonicalUrl,
-        jobName: row.jobName,
-        company: record.company,
-        contact: record.contact,
-        summary: resumeStatusSummary(record.preview),
-        messageId: record.latestMessageId,
-        messageDirection: 'outbound',
-        receiptStatus: 'not_applicable',
-        receiptSource: '',
-        nameSource: row.nameSource,
-        linkConfirmation: row.linkConfirmation,
-        intent: 'observe_only',
-      };
-      return {
-        eventId: `boss-event-${stableHash({ ...facts, workflow: RESUME_STATUS_WORKFLOW })}`,
-        eventType: facts.eventType,
-        conversationKey: facts.conversationKey,
-        friendId: facts.friendId,
-        friendSource: facts.friendSource,
-        uniqueId: facts.uniqueId,
-        externalJobId: facts.externalJobId,
-        canonicalUrl: facts.canonicalUrl,
-        jobName: facts.jobName,
-        company: facts.company,
-        contact: facts.contact,
-        summary: facts.summary,
-        timeLabel: '',
-        messageId: facts.messageId,
-        messageDirection: facts.messageDirection,
-        receiptStatus: facts.receiptStatus,
-        receiptSource: facts.receiptSource,
-        observedAt: envelope.snapshot.capturedAt,
-        evidenceDate,
-        nameSource: facts.nameSource,
-        linkConfirmation: facts.linkConfirmation,
-        intent: facts.intent,
-        appliedAtForNew: '',
-        sourceSequence,
-      };
-    });
-}
-
-function classifyTimeLabel(label) {
-  if (HH_MM.test(label)) return 'explicitTime';
-  if (label === '昨天') return 'yesterday';
-  if (label === '') return 'unknownTime';
-  return 'otherTime';
-}
-
-export function previewInitialEnvelope(envelope) {
-  const rows = resolveJobRows(envelope);
-  const counts = {
-    total: rows.length,
-    included: 0,
-    excludedYesterday: 0,
-    unknownTime: 0,
-    otherTime: 0,
-    complete: 0,
-    review: 0,
-  };
-  for (const row of rows) {
-    const category = classifyTimeLabel(row.record.timeLabel);
-    if (category === 'explicitTime') counts.included += 1;
-    else if (category === 'yesterday') counts.excludedYesterday += 1;
-    else counts[category] += 1;
-    if (category === 'explicitTime') {
-      const facts = eventFacts(row, envelope.accountNamespace);
-      if (facts.intent === 'create_or_link' && facts.messageId) counts.complete += 1;
-      else counts.review += 1;
-    }
-  }
-  return counts;
-}
-
-function coverageOf(envelope) {
-  const source = envelope.snapshot.coverage;
-  return {
-    loadedRows: source.loadedRows,
-    loadedDataRows: source.loadedDataRows,
-    renderedRows: source.renderedRows,
-    offscreenRows: source.offscreenRows,
-    unresolvedRows: source.unresolvedRows,
-    truncated: source.truncated,
-  };
-}
-
-function batchIdFor(batch) {
-  return `boss-batch-${stableHash(bossBatchDigestInput(batch))}`;
-}
-
-export function createBatch({
-  envelope,
-  snapshotName,
-  snapshotSha256,
-  sourceSequence,
-  policy,
-  events,
-}) {
-  const batch = {
-    format: BOSS_BATCH_FORMAT,
-    version: BOSS_INTEGRATION_VERSION,
-    batchId: '',
-    platform: 'boss',
-    accountNamespace: envelope.accountNamespace,
-    sourceSequence,
-    policy: structuredClone(policy),
-    source: {
-      snapshotName,
-      snapshotSha256,
-      capturedAt: envelope.snapshot.capturedAt,
-    },
-    coverage: coverageOf(envelope),
-    events: events.map((event) =>
-      event.eventType === 'resume_observed'
-        ? { ...structuredClone(event), attribution: event.attribution ?? null }
-        : structuredClone(event),
-    ),
-  };
-  batch.batchId = batchIdFor(batch);
-  return validateBossBatch(batch);
-}
-
-export function createInitialBatch(snapshot, sourceSequence) {
-  const policy = {
-    id: INITIAL_POLICY,
-    mode: 'initial',
-    timezone: TIMEZONE,
-    appliedAtForNew: INITIAL_DATE,
-    autoCreateComplete: true,
-  };
-  const events = createEvents(snapshot.envelope, {
-    sourceSequence,
-    evidenceDate: INITIAL_DATE,
-    appliedAtForNew: INITIAL_DATE,
-  }).filter((event) => HH_MM.test(event.timeLabel));
-  return createBatch({
-    envelope: snapshot.envelope,
-    snapshotName: basename(snapshot.path),
-    snapshotSha256: snapshot.sha256,
-    sourceSequence,
-    policy,
-    events,
-  });
-}
-
-export function createDatedYesterdayBatch(snapshot, sourceSequence, evidenceDate) {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(evidenceDate)) integrationFail('BOSS_EVIDENCE_DATE_INVALID');
-  const parsed = new Date(`${evidenceDate}T12:00:00.000Z`);
-  if (!Number.isFinite(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== evidenceDate)
-    integrationFail('BOSS_EVIDENCE_DATE_INVALID');
-  const policy = {
-    id: `boss-user-dated-label-${evidenceDate}-v1`,
-    mode: 'dated',
-    timezone: TIMEZONE,
-    appliedAtForNew: evidenceDate,
-    autoCreateComplete: true,
-  };
-  const events = createEvents(snapshot.envelope, {
-    sourceSequence,
-    evidenceDate,
-    appliedAtForNew: evidenceDate,
-  }).filter((event) => event.timeLabel === YESTERDAY_LABEL);
-  if (!events.length) integrationFail('BOSS_DATED_LABEL_EMPTY');
-  return createBatch({
-    envelope: snapshot.envelope,
-    snapshotName: basename(snapshot.path),
-    snapshotSha256: snapshot.sha256,
-    sourceSequence,
-    policy,
-    events,
-  });
-}
-
-export function createResumeBatch(snapshot, sourceSequence, evidenceDate = '') {
-  if (evidenceDate && !/^\d{4}-\d{2}-\d{2}$/.test(evidenceDate))
-    integrationFail('BOSS_EVIDENCE_DATE_INVALID');
-  const policy = {
-    id: evidenceDate ? `boss-resume-observation-date-${evidenceDate}-v3` : RESUME_POLICY,
-    mode: 'resume',
-    timezone: TIMEZONE,
-    appliedAtForNew: '',
-    autoCreateComplete: false,
-  };
-  const candidates = [
-    ...createResumeEvents(snapshot.envelope, { sourceSequence, evidenceDate }),
-    ...(evidenceDate
-      ? createResumeStatusEvents(snapshot.envelope, { sourceSequence, evidenceDate })
-      : []),
-  ];
-  const events = uniqueEventsById(candidates);
-  if (!events.length) integrationFail('BOSS_RESUME_OBSERVATIONS_EMPTY');
-  return createBatch({
-    envelope: snapshot.envelope,
-    snapshotName: basename(snapshot.path),
-    snapshotSha256: snapshot.sha256,
-    sourceSequence,
-    policy,
-    events,
-  });
-}
-
-function createIncrementalBatch(previous, current, sourceSequence, { afterInitial = false } = {}) {
-  const eventsFor = (snapshot) => {
-    const captureDay = shanghaiDay(new Date(snapshot.envelope.snapshot.capturedAt));
-    return createEvents(snapshot.envelope, { sourceSequence }).map((event) =>
-      HH_MM.test(event.timeLabel)
-        ? { ...event, evidenceDate: captureDay, appliedAtForNew: captureDay }
-        : event,
-    );
-  };
-  const previousIds = new Set(
-    [
-      ...eventsFor(previous).filter((event) => !afterInitial || HH_MM.test(event.timeLabel)),
-      ...createResumeEvents(previous.envelope, { sourceSequence }),
-    ].map((event) => event.eventId),
-  );
-  const events = uniqueEventsById([
-    ...eventsFor(current),
-    ...createResumeEvents(current.envelope, { sourceSequence }),
-  ]).filter((event) => !previousIds.has(event.eventId));
-  if (!events.length) return null;
-  const policy = {
-    id: INCREMENTAL_POLICY,
-    mode: 'incremental',
-    timezone: TIMEZONE,
-    appliedAtForNew: '',
-    autoCreateComplete: true,
-  };
-  return createBatch({
-    envelope: current.envelope,
-    snapshotName: basename(current.path),
-    snapshotSha256: current.sha256,
-    sourceSequence,
-    policy,
-    events,
-  });
-}
-
 export function emptyControl() {
   return {
     format: BOSS_CONTROL_FORMAT,
@@ -1181,17 +681,6 @@ function checkpoint(snapshot, sourceSequence) {
     capturedAt: snapshot.envelope.snapshot.capturedAt,
     sourceSequence,
   };
-}
-
-function shanghaiDay(date) {
-  const parts = new Intl.DateTimeFormat('en-CA', {
-    timeZone: TIMEZONE,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).formatToParts(date);
-  const get = (type) => parts.find((part) => part.type === type)?.value;
-  return `${get('year')}-${get('month')}-${get('day')}`;
 }
 
 export function reserveCheckAttempt(inputControl, date) {
@@ -1619,24 +1108,11 @@ function assertInitialSnapshot(config, snapshot, expected) {
     integrationFail('BOSS_INITIAL_SNAPSHOT_CHANGED', { fatal: true });
 }
 
-const APPROVED_INITIAL = Object.freeze({
-  name: INITIAL_SNAPSHOT_NAME,
-  sha256: INITIAL_SNAPSHOT_SHA256,
-});
-
 export async function previewCommand(config, expected = APPROVED_INITIAL) {
   const snapshot = await readTrackerSnapshot(initialSnapshotPath(config));
   assertInitialSnapshot(config, snapshot, expected);
   const counts = previewInitialEnvelope(snapshot.envelope);
-  if (
-    counts.included !== 30 ||
-    counts.excludedYesterday !== 10 ||
-    counts.unknownTime !== 60 ||
-    counts.otherTime !== 0 ||
-    counts.complete !== 30 ||
-    counts.review !== 0
-  )
-    integrationFail('BOSS_INITIAL_SCOPE_MISMATCH', { fatal: true });
+  assertInitialScope(counts);
   return {
     counts,
     snapshotName: basename(snapshot.path),
@@ -1655,15 +1131,7 @@ export async function enqueueCommand(
   const snapshot = await readTrackerSnapshot(initialSnapshotPath(config));
   assertInitialSnapshot(config, snapshot, expected);
   const preview = previewInitialEnvelope(snapshot.envelope);
-  if (
-    preview.included !== 30 ||
-    preview.excludedYesterday !== 10 ||
-    preview.unknownTime !== 60 ||
-    preview.otherTime !== 0 ||
-    preview.complete !== 30 ||
-    preview.review !== 0
-  )
-    integrationFail('BOSS_INITIAL_SCOPE_MISMATCH', { fatal: true });
+  assertInitialScope(preview);
   let control = (await inbox.readControl()) ?? emptyControl();
   await ensureAccount(control, snapshot);
   if (control.checkpoint && !checkpointMatches(control, snapshot))

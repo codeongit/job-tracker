@@ -1,3 +1,4 @@
+import { validateAttributionEvidence } from '../../dist/boss-attribution.js';
 import { RESUME_KINDS, RESUME_STATUS_KINDS } from '../../dist/resume-rules.js';
 import { createHash } from 'node:crypto';
 
@@ -268,7 +269,7 @@ function associationId(conversationKey, jobId) {
 
 function emptyEnvelope(snapshot) {
   return {
-    version: 3,
+    version: 4,
     scope: V2_SCOPE,
     accountNamespace: snapshot.accountNamespace,
     createdAt: snapshot.capturedAt,
@@ -382,7 +383,9 @@ function validateEvidence(record, kind, path) {
     string(record.expectedCompany, `${path}.expectedCompany`, { empty: true, max: 500 });
   }
   if (record.legacyKey !== undefined) string(record.legacyKey, `${path}.legacyKey`, { max: 200 });
-  const facts = Object.fromEntries(Object.entries(record).filter(([key]) => key !== 'id'));
+  const facts = Object.fromEntries(
+    Object.entries(record).filter(([key]) => !['id', 'attribution'].includes(key)),
+  );
   if (record.id !== evidenceId(kind, facts)) fail(`${path}.id does not match its evidence facts`);
 }
 
@@ -397,7 +400,9 @@ function validateConfirmation(record, path) {
   timestamp(record.confirmedAt, `${path}.confirmedAt`);
   string(record.source, `${path}.source`, { max: 100 });
   if (record.legacyKey !== undefined) string(record.legacyKey, `${path}.legacyKey`, { max: 200 });
-  const facts = Object.fromEntries(Object.entries(record).filter(([key]) => key !== 'id'));
+  const facts = Object.fromEntries(
+    Object.entries(record).filter(([key]) => !['id', 'attribution'].includes(key)),
+  );
   if (record.id !== evidenceId('confirmation', facts))
     fail(`${path}.id does not match its confirmation facts`);
 }
@@ -405,6 +410,25 @@ function validateConfirmation(record, path) {
 function validateEnvelopeVersion(input, allowedVersions) {
   const envelope = jsonClone(input, 'envelope');
   object(envelope, 'envelope');
+  if (
+    Object.keys(envelope).some(
+      (key) =>
+        ![
+          'version',
+          'scope',
+          'accountNamespace',
+          'createdAt',
+          'updatedAt',
+          'snapshot',
+          'state',
+          'report',
+          'jobs',
+          'migration',
+          'resume',
+        ].includes(key),
+    )
+  )
+    fail('envelope contains unknown fields');
   if (!allowedVersions.includes(envelope.version) || envelope.scope !== V2_SCOPE) {
     fail('envelope has an unsupported version or scope');
   }
@@ -476,6 +500,29 @@ function validateEnvelopeVersion(input, allowedVersions) {
   for (const [index, record] of envelope.resume.observations.entries()) {
     const path = `envelope.resume.observations[${index}]`;
     object(record, path);
+    if (
+      Object.keys(record).some(
+        (key) =>
+          ![
+            'id',
+            'conversationKey',
+            'platformIdentity',
+            'messageId',
+            'direction',
+            'messageType',
+            'kind',
+            'platformTime',
+            'externalJobId',
+            'observedAt',
+            'source',
+            'status',
+            ...(envelope.version >= 4 ? ['attribution'] : []),
+          ].includes(key),
+      )
+    )
+      fail('observation contains unknown fields');
+    if (envelope.version >= 4) validateAttributionEvidence(record.attribution);
+    else if (Object.hasOwn(record, 'attribution')) fail('legacy observation contains attribution');
     string(record.id, `${path}.id`, { max: 100 });
     const conversationKey = string(record.conversationKey, `${path}.conversationKey`, { max: 100 });
     const conversation = envelope.state.records.find((item) => item.key === conversationKey);
@@ -521,7 +568,9 @@ function validateEnvelopeVersion(input, allowedVersions) {
     ) {
       fail(`${path} evidence status is invalid`);
     }
-    const facts = Object.fromEntries(Object.entries(record).filter(([key]) => key !== 'id'));
+    const facts = Object.fromEntries(
+      Object.entries(record).filter(([key]) => !['id', 'attribution'].includes(key)),
+    );
     const stableId = digest([
       'boss-v2-evidence',
       'resume_observation',
@@ -623,21 +672,22 @@ export function validateEnvelopeV2(input) {
   return validateEnvelopeVersion(input, [2]);
 }
 
-/** Validate the current v3 envelope format. */
-export function validateEnvelopeV3(input) {
-  return validateEnvelopeVersion(input, [3]);
+/** Validate the current v4 envelope format. */
+export function validateCurrentEnvelope(input) {
+  return validateEnvelopeVersion(input, [4]);
 }
 
-/** Read either supported stable format without upgrading a read-only operation. */
-export function validateEnvelopeV2OrV3(input) {
-  return validateEnvelopeVersion(input, [2, 3]);
+/** Read supported versions without upgrading a read-only operation. */
+export function validateEnvelope(input) {
+  return validateEnvelopeVersion(input, [2, 3, 4]);
 }
 
 /** Explicit, shape-preserving adapter used before every mutation or new commit. */
-export function upgradeEnvelopeToV3(input) {
-  const envelope = validateEnvelopeV2OrV3(input);
-  envelope.version = 3;
-  return validateEnvelopeV3(envelope);
+export function upgradeEnvelope(input) {
+  const envelope = validateEnvelope(input);
+  envelope.version = 4;
+  for (const observation of envelope.resume.observations) observation.attribution ??= null;
+  return validateCurrentEnvelope(envelope);
 }
 
 function addUnique(array, item) {
@@ -718,7 +768,7 @@ function sortedEnvelope(envelope) {
 export function compareLoadedSnapshotsV2(previousEnvelope, inputSnapshot) {
   const snapshot = validateLoadedSnapshotV2(inputSnapshot);
   const envelope =
-    previousEnvelope === null ? emptyEnvelope(snapshot) : upgradeEnvelopeToV3(previousEnvelope);
+    previousEnvelope === null ? emptyEnvelope(snapshot) : upgradeEnvelope(previousEnvelope);
   if (envelope.accountNamespace !== snapshot.accountNamespace)
     fail('snapshot belongs to another account namespace');
   if (Date.parse(snapshot.capturedAt) < Date.parse(envelope.state.lastCapturedAt))
@@ -1004,7 +1054,7 @@ function importConfirmation(envelope, mapping, legacy, row, job, importedAt) {
  * sides and a compatible known job ID. Ambiguities are quarantined, never guessed.
  */
 export function importLegacyV1ToV2(inputEnvelope, { v1Envelope, enrichedJobs, importedAt }) {
-  const envelope = upgradeEnvelopeToV3(inputEnvelope);
+  const envelope = upgradeEnvelope(inputEnvelope);
   timestamp(importedAt, 'importedAt');
   if (Date.parse(importedAt) < Date.parse(envelope.updatedAt))
     fail('importedAt precedes the v2 capture');
@@ -1160,7 +1210,7 @@ export function createEnvelopeV2(snapshot) {
 
 /** Resolve a stable, privacy-minimal export/status view without mutating input. */
 export function resolveJobRowsV2(inputEnvelope) {
-  const envelope = validateEnvelopeV2OrV3(inputEnvelope);
+  const envelope = validateEnvelope(inputEnvelope);
   const sourceRank = new Map([
     ['loaded_jobName', 3],
     ['detail_page_title', 2],
@@ -1233,7 +1283,7 @@ export function resolveJobRowsV2(inputEnvelope) {
 
 /** List exact saved associations for the separate, bounded detail-page helper. */
 export function listEnrichmentTargetsV2(inputEnvelope) {
-  const envelope = validateEnvelopeV2OrV3(inputEnvelope);
+  const envelope = validateEnvelope(inputEnvelope);
   const conversations = new Map(envelope.state.records.map((record) => [record.key, record]));
   const targets = envelope.jobs.associations
     .map((association) => {
@@ -1315,7 +1365,7 @@ function detailInput(value, path) {
  * accepted evidence. Exact association identity is required for every result.
  */
 export function applyDetailEvidenceV2(inputEnvelope, result, appliedAt) {
-  const envelope = upgradeEnvelopeToV3(inputEnvelope);
+  const envelope = upgradeEnvelope(inputEnvelope);
   object(result, 'result');
   if (!Array.isArray(result.observations) || !Array.isArray(result.candidates)) {
     fail('result.observations and result.candidates must be arrays');
@@ -1428,3 +1478,12 @@ export function applyDetailEvidenceV2(inputEnvelope, result, appliedAt) {
     },
   };
 }
+
+// Read-only legacy API aliases; new writes always use the current adapter.
+export const validateEnvelopeV2OrV3 = (input) => validateEnvelopeVersion(input, [2, 3]);
+export const validateEnvelopeV3 = (input) => validateEnvelopeVersion(input, [3]);
+export const upgradeEnvelopeToV3 = (input) => {
+  const value = validateEnvelopeV2OrV3(input);
+  value.version = 3;
+  return validateEnvelopeV3(value);
+};

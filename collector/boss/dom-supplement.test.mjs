@@ -12,7 +12,11 @@ import {
   domSupplementTasks,
   normalizeDomSupplementPolicy,
 } from './dom-supplement.mjs';
-import { compareLoadedSnapshotsV2, conversationKeyV2, validateEnvelopeV3 } from './model-v2.mjs';
+import {
+  compareLoadedSnapshotsV2,
+  conversationKeyV2,
+  validateCurrentEnvelope,
+} from './model-v2.mjs';
 
 const namespace = 'boss-geek:' + 'a'.repeat(64);
 const capturedAt = '2026-09-21T10:00:00.000Z';
@@ -54,7 +58,7 @@ function envelope(friendIds = ['101']) {
     conversationKey: item.key,
     reason: 'HISTORY_UNAVAILABLE',
   }));
-  return validateEnvelopeV3(value);
+  return validateCurrentEnvelope(value);
 }
 
 function policy(enabled = true) {

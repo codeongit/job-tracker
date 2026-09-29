@@ -452,9 +452,28 @@ export function completeRun(
 }
 
 function normalizeCheckpoint(value) {
+  const keys = [
+    'version',
+    'capturedAt',
+    'nextConversationKey',
+    'nextPage',
+    'observations',
+    'unresolved',
+    'coverage',
+    'usage',
+    'partial',
+    'error',
+    'completedConversationKey',
+    'head',
+    'truncated',
+    'targetFingerprint',
+  ];
+  if (value && Object.keys(value).some((key) => !keys.includes(key)))
+    throw new Error('RESUME_CHECKPOINT_INVALID');
+
   if (
     !value ||
-    value.version !== 1 ||
+    ![1, 2].includes(value.version) ||
     !iso(value.capturedAt) ||
     (value.nextConversationKey !== null &&
       !/^[a-f0-9]{64}$/.test(value.nextConversationKey ?? '')) ||

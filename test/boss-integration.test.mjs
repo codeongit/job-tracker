@@ -169,10 +169,11 @@ function attachDurableState(envelope, records = envelope.snapshot.records) {
   return envelope;
 }
 
-test('采集快照 v3 使用既有安全结构，旧 v2 仍可读取', () => {
+test('采集快照 v4 携带归属依据，旧 v2/v3 仍可读取', () => {
   assert.equal(validateTrackerEnvelope(fixture({ rows: 1 })).version, 2);
   assert.equal(validateTrackerEnvelope({ ...fixture({ rows: 1 }), version: 3 }).version, 3);
-  assert.throws(() => validateTrackerEnvelope({ ...fixture({ rows: 1 }), version: 4 }));
+  assert.equal(validateTrackerEnvelope({ ...fixture({ rows: 1 }), version: 4 }).version, 4);
+  assert.throws(() => validateTrackerEnvelope({ ...fixture({ rows: 1 }), version: 5 }));
 });
 
 test('v3 接受经私有策略验收的 DOM 状态证据，但拒绝未知来源', () => {
@@ -951,4 +952,47 @@ test('CLI preview, resume and config failures each preserve a private run and in
     assert.ok(/^[A-Z][A-Z0-9_]+$/.test(incident.errorCode));
     assert.equal(JSON.stringify(output).includes('摘要'), false);
   }
+});
+
+test('归属材料补充独立于事件 ID，增量与补录共用转换结果', async () => {
+  const { createIncrementalBatch } = await import('../scripts/boss-conversion.mjs');
+  const envelope = fixture({ rows: 1 });
+  envelope.version = 4;
+  const observation = { ...resumeObservation(envelope), attribution: null };
+  envelope.resume = {
+    observations: [observation],
+    lastScanAt: null,
+    lastCoverage: null,
+    lastUnresolved: [],
+  };
+  const prior = { envelope: structuredClone(envelope), path: FIRST_NAME, sha256: '1'.repeat(64) };
+  observation.attribution = {
+    version: 1,
+    source: 'history',
+    accountNamespace: ACCOUNT,
+    conversationKey: observation.conversationKey,
+    messageId: observation.messageId,
+    requestedBossId: 'boss-1',
+    responseFriendId: null,
+    responseFriendSource: null,
+    responseBossId: 'boss-1',
+    selfId: null,
+    senderId: 'boss-1',
+    recipientId: null,
+    messageJobId: observation.externalJobId,
+  };
+  const current = {
+    envelope: validateTrackerEnvelope(envelope),
+    path: SECOND_NAME,
+    sha256: '2'.repeat(64),
+  };
+  const incremental = createIncrementalBatch(prior, current, 2);
+  const backfill = createResumeBatch(current, 2);
+  assert.deepEqual(incremental.events, backfill.events);
+  assert.equal(
+    incremental.events[0].eventId,
+    createResumeEvents(prior.envelope, { sourceSequence: 2 })[0].eventId,
+  );
+  assert.equal(incremental.events[0].attribution.responseFriendId, null);
+  assert.equal(createIncrementalBatch(current, current, 3), null);
 });

@@ -4,7 +4,7 @@ import { mkdir, open, readFile, rename, unlink, lstat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { expectedUrl } from './guard.mjs';
 import { applyResumeHistoryV2, toResumeHistoryResult } from './resume-history.mjs';
-import { validateEnvelopeV2OrV3, validateEnvelopeV3 } from './model-v2.mjs';
+import { validateEnvelope, validateCurrentEnvelope } from './model-v2.mjs';
 
 export const DOM_STATUS_SOURCE = 'dom_chat_status_message_v1';
 export const DOM_RULE_ID = 'boss_dom_status_v1';
@@ -221,7 +221,7 @@ export function domSupplementTasks(
   inputEnvelope,
   { policy, state = emptyState(), checkpoint = null } = {},
 ) {
-  const envelope = validateEnvelopeV2OrV3(inputEnvelope);
+  const envelope = validateEnvelope(inputEnvelope);
   const safeState = normalizeState(state);
   const unresolved = unresolvedKeys(envelope),
     completed = new Set(safeState.completed.map((item) => item.taskId));
@@ -263,7 +263,7 @@ export async function domSupplementStatus(
   inputEnvelope,
   { now = () => new Date() } = {},
 ) {
-  const envelope = validateEnvelopeV2OrV3(inputEnvelope);
+  const envelope = validateEnvelope(inputEnvelope);
   const [policyResult, state, checkpoint] = await Promise.all([
     loadDomSupplementPolicy(directory, envelope.accountNamespace),
     readState(directory),
@@ -423,7 +423,7 @@ function applyDomPayload(payload, envelope, target) {
   applied.envelope.resume.lastScanAt = previous.lastScanAt;
   applied.envelope.resume.lastCoverage = structuredClone(previous.lastCoverage);
   applied.envelope.resume.lastUnresolved = structuredClone(previous.lastUnresolved);
-  applied.envelope = validateEnvelopeV3(applied.envelope);
+  applied.envelope = validateCurrentEnvelope(applied.envelope);
   return applied;
 }
 
@@ -436,7 +436,7 @@ export async function collectDomSupplement({
   now = () => new Date(),
   minimumIntervalMs = 30_000,
 } = {}) {
-  const checked = validateEnvelopeV2OrV3(envelope);
+  const checked = validateEnvelope(envelope);
   if (
     typeof directory !== 'string' ||
     !directory ||

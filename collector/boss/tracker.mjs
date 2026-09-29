@@ -26,8 +26,8 @@ import {
   resolveJobRowsV2,
   listEnrichmentTargetsV2,
   applyDetailEvidenceV2,
-  upgradeEnvelopeToV3,
-  validateEnvelopeV2OrV3,
+  upgradeEnvelope,
+  validateEnvelope,
 } from './model-v2.mjs';
 import {
   collectDetailTitleEvidence,
@@ -275,7 +275,7 @@ export function summarizeEnvelope(envelope) {
       jobs: jobSummary(envelope),
     };
   }
-  const checked = validateEnvelopeV2OrV3(envelope);
+  const checked = validateEnvelope(envelope);
   return {
     version: checked.version,
     capturedAt: checked.snapshot.capturedAt,
@@ -366,7 +366,7 @@ export function detailInputs(envelope, timeLabel = null) {
 }
 
 async function saveEnvelope(directory, envelope) {
-  const current = upgradeEnvelopeToV3(envelope);
+  const current = upgradeEnvelope(envelope);
   const file = await commit(directory, current);
   let jobsFile;
   try {
@@ -383,7 +383,7 @@ export function fairResumeTargets(
   envelope,
   { cursor = null, limit = 10, timeLabel = null, jobId = null, resumeFrom = null } = {},
 ) {
-  const checked = validateEnvelopeV2OrV3(envelope);
+  const checked = validateEnvelope(envelope);
   let eligible =
     timeLabel === null
       ? checked.snapshot.records
@@ -429,7 +429,7 @@ export function fairDetailInputs(
     now = new Date().toISOString(),
   } = {},
 ) {
-  const checked = validateEnvelopeV2OrV3(envelope);
+  const checked = validateEnvelope(envelope);
   const input = detailInputs(checked, timeLabel);
   const reviewKeys = new Set(
     checked.jobs.candidates.map((item) =>

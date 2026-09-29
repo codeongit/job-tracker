@@ -100,7 +100,7 @@ test('CLI keeps compatibility while exposing persistent connection and bounded e
   }
 });
 
-test('status summary for v3 reports coverage and job counts without chat content', () => {
+test('status summary for v4 reports coverage and job counts without chat content', () => {
   const namespace = 'boss-geek:' + 'a'.repeat(64);
   const snapshot = {
     capturedAt: '2026-09-18T12:00:00.000Z',
@@ -136,7 +136,7 @@ test('status summary for v3 reports coverage and job counts without chat content
   };
   const envelope = compareLoadedSnapshotsV2(null, snapshot).envelope;
   const summary = summarizeEnvelope(envelope);
-  assert.equal(summary.version, 3);
+  assert.equal(summary.version, 4);
   assert.equal(summary.trackedRecords, 1);
   assert.equal(summary.jobs.named, 1);
   assert.equal(summary.jobs.linked, 1);

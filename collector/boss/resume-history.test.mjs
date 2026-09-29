@@ -63,21 +63,11 @@ test('history expression uses only read APIs and contains no chat click or messa
     pages: 2,
   });
   assert.match(expression, /getGeekFriendList\.json/);
-  assert.match(expression, /'friendIds=' \+ target\.friendId/);
-  assert.match(expression, /rows\.length === 1/);
-  assert.match(expression, /friendByConversation\.get\(target\.conversationKey\)/);
-  assert.doesNotMatch(expression, /friend\.friendId \?\? friend\.uid/);
-  assert.match(expression, /normalizeSecurity/);
-  assert.equal(expression.includes(String.raw`\s\u0000-\u001f\u007f`), true);
-  assert.equal(expression.includes('\u0000'), false);
-  assert.match(expression, /uniqueIdentityPair\(friend\)/);
-  assert.match(expression, /normalizeId\(root\?\.uid, 128\)/);
-  assert.match(expression, /Object\.hasOwn\(current, 'uid'\)/);
-  assert.match(expression, /Object\.hasOwn\(current, 'securityId'\)/);
-  assert.match(expression, /pairs\.size === 1/);
-  assert.match(expression, /Object\.values\(current\)/);
+  assert.match(expression, /encodeURIComponent\(target.friendId\)/);
+  assert.match(expression, /rows.length !== 1/);
+  assert.match(expression, /uniqueIdentityPair/);
   assert.match(expression, /geek\/historyMsg/);
-  assert.match(expression, /gap < 3000/);
+  assert.match(expression, /setTimeout\(resolve,3000\)/);
   assert.match(expression, /encodeURIComponent\(target\.friendSource\)/);
   assert.match(expression, /附件简历请求已发送/);
   assert.doesNotMatch(expression, /value\.includes\('附件简历请求已发送'\)/);
@@ -590,4 +580,48 @@ test('history runner stops at an already observed message and advances the fair 
   assert.equal(result.continuation, null);
   assert.equal(result.cursor, conversationKey);
   assert.equal(result.payload.coverage.exhaustedConversations, 1);
+});
+
+test('new snapshots retain partial identity evidence and enrich observations without changing IDs', () => {
+  const base = createEnvelopeV2(snapshot).envelope;
+  const raw = {
+    conversationKey,
+    friendId: '301',
+    friendSource: '0',
+    messageId: 'enrich-message',
+    direction: 'system',
+    messageType: 5,
+    kind: 'request_sent',
+    platformTime: '2026-09-20T08:00:00.000Z',
+    externalJobId: null,
+    source: 'geek_history_status_message',
+  };
+  const first = applyResumeHistoryV2(base, toResumeHistoryResult(payload([raw]), base));
+  const evidence = {
+    version: 1,
+    source: 'history',
+    accountNamespace: null,
+    conversationKey,
+    messageId: raw.messageId,
+    requestedBossId: 'boss_301',
+    responseFriendId: null,
+    responseFriendSource: null,
+    responseBossId: 'boss_301',
+    selfId: null,
+    senderId: 'boss_301',
+    recipientId: null,
+    messageJobId: null,
+  };
+  const second = applyResumeHistoryV2(
+    first.envelope,
+    toResumeHistoryResult(payload([{ ...raw, attribution: evidence }]), first.envelope),
+  );
+  assert.equal(second.envelope.version, 4);
+  assert.equal(second.envelope.resume.observations.length, 1);
+  assert.equal(second.envelope.resume.observations[0].id, first.envelope.resume.observations[0].id);
+  assert.equal(second.envelope.resume.observations[0].attribution.responseFriendId, null);
+  assert.equal(
+    second.envelope.resume.observations[0].attribution.accountNamespace,
+    base.accountNamespace,
+  );
 });

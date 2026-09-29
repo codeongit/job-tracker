@@ -9,9 +9,9 @@ import {
   listEnrichmentTargetsV2,
   migrateV1ToV2,
   resolveJobRowsV2,
-  upgradeEnvelopeToV3,
+  upgradeEnvelope,
   validateEnvelopeV2,
-  validateEnvelopeV3,
+  validateCurrentEnvelope,
   validateLoadedSnapshotV2,
 } from './model-v2.mjs';
 
@@ -122,18 +122,18 @@ test('comparison retains missing history and display-name changes do not create 
     renamed.envelope.state.records.find((item) => item.key === row('a').key).firstObservedAt,
     at(0),
   );
-  assert.deepEqual(first.envelope, validateEnvelopeV3(first.envelope));
+  assert.deepEqual(first.envelope, validateCurrentEnvelope(first.envelope));
 });
 
 test('legacy v2 envelopes upgrade explicitly and without changing their safe shape', () => {
   const current = compareLoadedSnapshotsV2(null, snapshot([row('a')], 0)).envelope;
   const legacy = { ...structuredClone(current), version: 2 };
   assert.equal(validateEnvelopeV2(legacy).version, 2);
-  const upgraded = upgradeEnvelopeToV3(legacy);
-  assert.equal(upgraded.version, 3);
+  const upgraded = upgradeEnvelope(legacy);
+  assert.equal(upgraded.version, 4);
   assert.deepEqual({ ...upgraded, version: 2 }, legacy);
   const next = compareLoadedSnapshotsV2(legacy, snapshot([row('a')], 1)).envelope;
-  assert.equal(next.version, 3);
+  assert.equal(next.version, 4);
   assert.equal(legacy.version, 2);
 });
 
