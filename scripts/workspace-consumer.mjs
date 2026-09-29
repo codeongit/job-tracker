@@ -1,3 +1,5 @@
+import { bossAttributionSummary } from '../dist/boss-attribution.js';
+import { recordAttributionDiagnostic } from './boss-attribution-diagnostics.mjs';
 import { readdir } from 'node:fs/promises';
 import { applyBossBatch, bossReceiptGap } from '../dist/boss-integration.js';
 import { validateData, mergeData, equal } from '../dist/model.js';
@@ -164,6 +166,9 @@ export function createWorkspaceInboxConsumer({
           blockedAccounts.add(batch.accountNamespace);
           continue;
         }
+        for (const event of batch.events)
+          if (event.eventType === 'resume_observed')
+            await recordAttributionDiagnostic(inbox.root, batch.accountNamespace, event, 'consume');
         const replaying = receipt?.status === 'processed';
         const commandId = replaying
             ? `boss-replay:${batch.batchId}:${current.revision}`
@@ -293,7 +298,12 @@ export function createWorkspaceInboxConsumer({
         if (missing) restoreReview.push(gapSummary(batch, missing));
       }
     }
-    return { workspaceId: current.workspaceId, revision: current.revision, restoreReview };
+    return {
+      workspaceId: current.workspaceId,
+      revision: current.revision,
+      restoreReview,
+      attribution: bossAttributionSummary(current.workspace?.data),
+    };
   }
   async function replay(batchId, expectedRevision) {
     if (
@@ -319,6 +329,9 @@ export function createWorkspaceInboxConsumer({
     const receipt = await inbox.readReceipt(batchId, current.workspaceId);
     if (receipt?.status !== 'processed' || !bossReceiptGap(current.workspace.data, batch))
       throw new WorkspaceStoreError('REPLAY_NOT_REQUIRED', '此批次没有待确认的恢复缺口。');
+    for (const event of batch.events)
+      if (event.eventType === 'resume_observed')
+        await recordAttributionDiagnostic(inbox.root, batch.accountNamespace, event, 'consume');
     const stamp = now();
     const applied = applyBossBatch(current.workspace.data, batch, {
       workspaceSourceId: current.workspaceId,

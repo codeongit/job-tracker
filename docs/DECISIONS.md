@@ -46,6 +46,7 @@
 | [D030](adr/0030-reject-misattributed-resume-observation.md) | 恢复附件简历发送映射，否决误归属观察               | 有效；真实浏览器待验收                           | 用户澄清平台文案与目标聊天内容         |
 | [D031](adr/0031-explicit-resume-semantics.md)               | 简历观察、含义和应用条件显式分层                   | 有效；真实浏览器待验收                           | 用户同意通过建模与枚举减少语义误判     |
 | [D032](adr/0032-attribution-review-boundaries.md)           | 归属证据不足时停止自动更新，人工状态与证据确认分开 | 设计已确认；由 D033 收敛，未实施                 | 用户确认严格关卡及 Q1–Q9 均选 A        |
+| [D033](adr/0033-boss-import-convergence.md)                 | BOSS 导入统一归属判断与处理链路                    | 已实现；真实平台及浏览器待人工验收               | 用户确认整体收敛计划并要求实施         |
 
 ## D001：面向个人使用的独立网页
 

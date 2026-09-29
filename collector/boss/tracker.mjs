@@ -800,7 +800,7 @@ async function settleResumeCheckpoint(directory, scanned) {
     return;
   }
   await saveResumeCheckpoint(directory, {
-    version: 1,
+    version: 2,
     capturedAt: new Date().toISOString(),
     nextConversationKey: scanned.continuation.conversationKey,
     nextPage: scanned.continuation.page,
@@ -870,7 +870,7 @@ export async function main(argv = process.argv.slice(2)) {
         loadRuntimeState(directory),
       ]);
       const dom =
-        saved && [2, 3].includes(saved.envelope.version)
+        saved && [2, 3, 4].includes(saved.envelope.version)
           ? await domSupplementStatus(directory, saved.envelope)
           : null;
       console.log(
@@ -888,7 +888,7 @@ export async function main(argv = process.argv.slice(2)) {
             cdpRetry: runtime.cdpRetry,
             detailEnrichment: detailRuntimeSummary(runtime, {
               pending:
-                saved && [2, 3].includes(saved.envelope.version)
+                saved && [2, 3, 4].includes(saved.envelope.version)
                   ? fairDetailInputs(saved.envelope, {
                       limit: 1,
                       runtime,
@@ -913,7 +913,7 @@ export async function main(argv = process.argv.slice(2)) {
       await saveRuntimeState(directory, sharedRuntime);
       const current = await latest(directory);
       const pending =
-        current && [2, 3].includes(current.envelope.version)
+        current && [2, 3, 4].includes(current.envelope.version)
           ? fairDetailInputs(current.envelope, {
               limit: 1,
               runtime: sharedRuntime,
@@ -1079,7 +1079,7 @@ export async function main(argv = process.argv.slice(2)) {
     const commandStartedAt = runStartedAt ?? new Date().toISOString();
 
     if (mode === 'enrich') {
-      if (![2, 3].includes(saved.envelope.version)) throw new Error('V2_CHECK_REQUIRED');
+      if (![2, 3, 4].includes(saved.envelope.version)) throw new Error('V2_CHECK_REQUIRED');
       const identityCheck = await retryReport(() =>
         resumeBrowser(activeConnection, identityOptions),
       );
@@ -1207,7 +1207,7 @@ export async function main(argv = process.argv.slice(2)) {
     }
 
     if (mode === 'resume-scan') {
-      if (![2, 3].includes(saved.envelope.version)) throw new Error('V2_CHECK_REQUIRED');
+      if (![2, 3, 4].includes(saved.envelope.version)) throw new Error('V2_CHECK_REQUIRED');
       const scanned = await collectResume({
         directory,
         connection: activeConnection,
@@ -1395,7 +1395,7 @@ export async function main(argv = process.argv.slice(2)) {
         error: null,
         cursor: runtime.cursors.resume,
       };
-      if ([2, 3].includes(envelope.version) && historyRequests > 0)
+      if ([2, 3, 4].includes(envelope.version) && historyRequests > 0)
         history =
           historyMode === 'backfill'
             ? await collectResume({
@@ -1443,7 +1443,7 @@ export async function main(argv = process.argv.slice(2)) {
         checkpointPending: false,
         nextAllowedAt: null,
       };
-      if (!history.partial && [2, 3].includes(envelope.version) && domLimit > 0) {
+      if (!history.partial && [2, 3, 4].includes(envelope.version) && domLimit > 0) {
         dom = await collectDomSupplement({
           directory,
           envelope,
@@ -1493,7 +1493,7 @@ export async function main(argv = process.argv.slice(2)) {
       if (
         !history.partial &&
         !dom.partial &&
-        [2, 3].includes(envelope.version) &&
+        [2, 3, 4].includes(envelope.version) &&
         detailLimit > 0
       ) {
         const detailAt = new Date().toISOString();
@@ -1559,7 +1559,7 @@ export async function main(argv = process.argv.slice(2)) {
       const finalDetailSummary =
         detailCollected.detailEnrichment ??
         detailRuntimeSummary(runtime, {
-          pending: [2, 3].includes(envelope.version)
+          pending: [2, 3, 4].includes(envelope.version)
             ? fairDetailInputs(envelope, { limit: 1, runtime, now: finishedAt }).pendingJobs
             : 0,
           now: finishedAt,

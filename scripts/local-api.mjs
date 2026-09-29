@@ -145,7 +145,9 @@ export async function handleLocalApi(
               sourceId ? { workspaceSourceId: sourceId.toLowerCase() } : {},
             ),
             ...(inboxConsumer ? { recovery: await inboxConsumer.inspect() } : {}),
-            tracking: bossController?.status() ?? null,
+            tracking: bossController?.inspectStatus
+              ? await bossController.inspectStatus()
+              : (bossController?.status() ?? null),
           });
         } else {
           if (parts.length !== 4 || !BATCH_ID.test(parts[3]))

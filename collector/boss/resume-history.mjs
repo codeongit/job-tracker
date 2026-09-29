@@ -529,7 +529,7 @@ export function toResumeHistoryResult(payload, envelope) {
     throw new Error('RESUME_HISTORY_SCHEMA_INVALID');
   const conversations = new Map(checked.state.records.map((record) => [record.key, record]));
   const observations = [],
-    ids = new Set();
+    ids = new Map();
   for (const [index, value] of payload.observations.entries()) {
     const conversation = conversations.get(value?.conversationKey);
     const statusKind = RESUME_STATUS_KINDS.includes(value?.kind);
@@ -595,9 +595,20 @@ export function toResumeHistoryResult(payload, envelope) {
       facts.externalJobId,
       facts.source,
     ]);
-    if (ids.has(id)) continue;
-    ids.add(id);
-    observations.push({ id, ...facts });
+    if (ids.has(id)) {
+      const prior = ids.get(id);
+      if (
+        prior.attribution &&
+        facts.attribution &&
+        digest(prior.attribution) !== digest(facts.attribution)
+      )
+        throw new Error('RESUME_ATTRIBUTION_EVIDENCE_CONFLICT');
+      if (facts.attribution) prior.attribution = facts.attribution;
+      continue;
+    }
+    const observation = { id, ...facts };
+    ids.set(id, observation);
+    observations.push(observation);
   }
   const unresolved = payload.unresolved.map((item) => ({
     conversationKey: clean(item?.conversationKey, 128),

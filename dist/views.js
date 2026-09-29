@@ -134,6 +134,8 @@ export function createViews(context, pendingTasks) {
       sourceReviews = live(effectiveSourceFacts(state.data)).filter(
         (event) =>
           event.status === 'review' &&
+          !sourceApplicationForEvent(state.data, event)?.reason?.startsWith('attribution_') &&
+          !(event.eventType === 'resume_observed' && !event.messageId) &&
           (!sourceApplicationForEvent(state.data, event) ||
             sourceApplicationForEvent(state.data, event).status === 'review') &&
           !(event.eventType === 'resume_observed' && event.summary === 'resume_card_other') &&

@@ -1,3 +1,5 @@
+import { bossAttributionSummary } from '../dist/boss-attribution.js';
+import { latest as latestCollectorSnapshot } from '../collector/boss/storage.mjs';
 import { execFile as execFileCallback } from 'node:child_process';
 import { lstat } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
@@ -291,6 +293,33 @@ export function createBossController({
         diagnostics.producer.error = safeCode(error?.code, 'BOSS_CONTROL_INVALID');
       }
       return { status: this.status(), diagnostics };
+    },
+    async inspectStatus() {
+      const current = await workspaceStore.read();
+      const attribution = bossAttributionSummary(current.workspace?.data);
+      const snapshot = await latestCollectorSnapshot(join(trackerDataRoot, config.account));
+      const seen = new Set();
+      for (const item of snapshot?.envelope?.resume?.lastUnresolved || []) {
+        if (
+          !['RESUME_STATUS_IDENTITY_INCOMPLETE', 'RESUME_MESSAGE_IDENTITY_INCOMPLETE'].includes(
+            item.reason,
+          )
+        )
+          continue;
+        const id = `${item.conversationKey}:${item.reason}`;
+        if (seen.has(id)) continue;
+        seen.add(id);
+        attribution.collection++;
+        attribution.items.push({
+          id,
+          category: 'collection',
+          reason: item.reason,
+          label: '最近采集缺少稳定消息身份或时间',
+          candidate: '',
+          candidateCompany: '',
+        });
+      }
+      return { ...this.status(), attribution };
     },
     status() {
       return {

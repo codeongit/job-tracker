@@ -42,6 +42,12 @@ function uniqueEventsById(events) {
       ...existingIdentity
     } = existing;
     const { observedAt, attribution, ...eventIdentity } = event;
+    if (
+      existingAttribution &&
+      attribution &&
+      stableHash(existingAttribution) !== stableHash(attribution)
+    )
+      integrationFail('BOSS_ATTRIBUTION_EVIDENCE_CONFLICT', { fatal: true });
     if (stableHash(existingIdentity) !== stableHash(eventIdentity))
       integrationFail('BOSS_EVENT_ID_COLLISION', { fatal: true });
     if (
@@ -202,6 +208,7 @@ export function createResumeEvents(envelope, { sourceSequence, evidenceDate = ''
     .map((observation) => {
       const row = rows.get(observation.conversationKey);
       const candidates = [...(associatedJobs.get(observation.conversationKey) ?? [])];
+      // Retained only for legacy event identity/candidate display. assessBossAttribution owns authority.
       const resolvedJobId =
         observation.externalJobId ?? (candidates.length === 1 ? candidates[0] : '');
       const matchingJob = row && resolvedJobId && row.externalJobId === resolvedJobId;

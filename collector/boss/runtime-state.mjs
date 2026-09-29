@@ -1,3 +1,4 @@
+import { recordCollectorDiagnostics } from '../../scripts/boss-attribution-diagnostics.mjs';
 import { mkdir, open, readFile, rename, unlink, lstat } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
@@ -502,6 +503,11 @@ function normalizeCheckpoint(value) {
 }
 
 export async function saveResumeCheckpoint(directory, value) {
+  normalizeCheckpoint(value);
+  await recordCollectorDiagnostics(directory, value.observations, {
+    stage: 'checkpoint',
+    unresolved: value.unresolved,
+  });
   return writePrivateJson(directory, checkpointName, normalizeCheckpoint(value));
 }
 
@@ -526,6 +532,11 @@ export async function removeResumeCheckpoint(directory) {
 }
 
 export async function saveChangeCheckpoint(directory, value) {
+  normalizeCheckpoint(value);
+  await recordCollectorDiagnostics(directory, value.observations, {
+    stage: 'checkpoint',
+    unresolved: value.unresolved,
+  });
   return writePrivateJson(directory, changeCheckpointName, normalizeCheckpoint(value));
 }
 

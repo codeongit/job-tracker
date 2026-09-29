@@ -92,3 +92,53 @@ export function assessBossAttribution(accountNamespace, event) {
     return result('insufficient', 'attribution_job_missing');
   return result('verified', 'attribution_verified');
 }
+
+// Query current decisions, never historical diagnostic-file counts.
+export function bossAttributionSummary(data) {
+  const result = { insufficient: 0, conflict: 0, collection: 0, items: [] };
+  const seen = new Set();
+  for (const application of data?.sourceApplications || []) {
+    if (
+      application.deletedAt ||
+      !['waiting', 'review'].includes(application.status) ||
+      !Object.hasOwn(ATTRIBUTION_REASONS, application.reason) ||
+      seen.has(application.factId)
+    )
+      continue;
+    seen.add(application.factId);
+    const event = (data.sourceEvents || []).find(
+      (event) => !event.deletedAt && event.factId === application.factId,
+    );
+    const category = application.status === 'review' ? 'conflict' : 'insufficient';
+    result[category]++;
+    result.items.push({
+      id: application.factId,
+      category,
+      reason: application.reason,
+      label: ATTRIBUTION_REASONS[application.reason],
+      candidate: event?.jobName || '',
+      candidateCompany: event?.company || '',
+    });
+  }
+  for (const event of data?.sourceEvents || []) {
+    if (
+      event.deletedAt ||
+      event.eventType !== 'resume_observed' ||
+      event.messageId ||
+      seen.has(event.id)
+    )
+      continue;
+    seen.add(event.id);
+    result.collection++;
+    result.items.push({
+      id: event.id,
+      category: 'collection',
+      reason: 'missing_message_identity',
+      label: '缺少稳定消息身份',
+      candidate: '',
+      candidateCompany: '',
+    });
+  }
+  result.items.sort((a, b) => a.id.localeCompare(b.id));
+  return result;
+}

@@ -53,7 +53,9 @@ export function effectiveSourceEvents(data) {
     if (!application) return event;
     return {
       ...event,
-      opportunityId: application.opportunityId || event.opportunityId,
+      opportunityId: application.reason.startsWith('attribution_')
+        ? ''
+        : application.opportunityId || event.opportunityId,
       status:
         ['applied', 'no_effect', 'protected'].includes(application.status) &&
         application.opportunityId

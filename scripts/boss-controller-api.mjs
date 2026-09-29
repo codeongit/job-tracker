@@ -37,7 +37,12 @@ export async function handleBossControllerApi(req, res, { controller }) {
         200,
         view === 'doctor'
           ? { protocolVersion: 1, doctor: await controller.doctor() }
-          : { protocolVersion: 1, status: controller.status() },
+          : {
+              protocolVersion: 1,
+              status: controller.inspectStatus
+                ? await controller.inspectStatus()
+                : controller.status(),
+            },
       );
       return true;
     }

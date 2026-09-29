@@ -1,7 +1,7 @@
 import { validateBossBatch, bossEventDigestInput, bossBatchDigestInput } from './boss-batch.js';
 export { validateBossBatch } from './boss-batch.js';
-import { assessBossAttribution } from './boss-attribution.js';
-import { RESUME_SUMMARIES, resumeRule, resumeTransition } from './resume-rules.js';
+import { assessBossAttribution, bossAttributionSummary } from './boss-attribution.js';
+import { resumeRule, resumeTransition } from './resume-rules.js';
 import {
   clone,
   equal,
@@ -19,27 +19,15 @@ import {
 import { bossApplicationId, bossFactId, hasBossFactIdentity } from './source-identity.js';
 
 const BATCH_ID = /^boss-batch-[a-f0-9]{64}$/;
-const EVENT_ID = /^boss-event-[a-f0-9]{64}$/;
 const ACCOUNT_NAMESPACE = /^boss-geek:[a-f0-9]{64}$/;
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
 const SOURCE_ID_KEY = 'job-tracker-boss-source-v1';
 const AUTO_FIELDS = SOURCE_AUTO_FIELDS;
-const SNAPSHOT_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,199}\.json$/;
-const HH_MM = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
 
 function integrationError(message, code) {
   const error = new Error(message);
   error.code = code;
   return error;
-}
-
-function hasOnly(value, fields) {
-  return (
-    value &&
-    typeof value === 'object' &&
-    !Array.isArray(value) &&
-    Object.keys(value).every((field) => fields.includes(field))
-  );
 }
 
 function text(value, field, max = 10000, { required = false } = {}) {
@@ -53,18 +41,6 @@ function text(value, field, max = 10000, { required = false } = {}) {
   return value;
 }
 
-function exactDate(value, field, { empty = true } = {}) {
-  text(value, field, 10);
-  if (!empty || value) {
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(value))
-      throw integrationError(`BOSS 批次日期 ${field} 无效。`, 'BATCH_INVALID');
-    const parsed = new Date(`${value}T12:00:00.000Z`);
-    if (!Number.isFinite(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== value)
-      throw integrationError(`BOSS 批次日期 ${field} 无效。`, 'BATCH_INVALID');
-  }
-  return value;
-}
-
 function canonicalIso(value, field) {
   text(value, field, 24, { required: true });
   if (
@@ -74,17 +50,6 @@ function canonicalIso(value, field) {
   )
     throw integrationError(`BOSS 批次时间 ${field} 无效。`, 'BATCH_INVALID');
   return value;
-}
-
-function shanghaiDay(value) {
-  const parts = new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'Asia/Shanghai',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).formatToParts(new Date(value));
-  const get = (type) => parts.find((part) => part.type === type)?.value;
-  return `${get('year')}-${get('month')}-${get('day')}`;
 }
 
 function normalize(value) {
@@ -1005,6 +970,10 @@ export function createBossQueueConsumer({
       // A browser is an observer/editor and must never replay applications.
       publish({
         serverManaged: true,
+        attribution:
+          index.tracking?.attribution ??
+          index.recovery?.attribution ??
+          bossAttributionSummary(initialState.data),
         blocked: index.recovery?.restoreReview?.length
           ? '当前正式工作区缺少已回执的来源证据，请核对后明确重放。'
           : '',

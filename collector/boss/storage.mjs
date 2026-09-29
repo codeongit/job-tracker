@@ -1,3 +1,4 @@
+import { recordCollectorDiagnostics } from '../../scripts/boss-attribution-diagnostics.mjs';
 import { mkdir, readdir, readFile, open, rename, unlink, rmdir, lstat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -174,6 +175,11 @@ export async function lock(directory) {
 
 // One immutable file commits the snapshot, diff, and next state together.
 export async function commit(directory, envelope) {
+  await recordCollectorDiagnostics(directory, envelope.resume?.observations, {
+    accountNamespace: envelope.accountNamespace,
+    associations: envelope.jobs?.associations,
+    unresolved: envelope.resume?.lastUnresolved,
+  });
   const suffix = randomUUID();
   const name = new Date().toISOString().replace(/[:.]/g, '-') + '_' + suffix + '.json';
   const path = join(directory, name);

@@ -996,3 +996,20 @@ test('归属材料补充独立于事件 ID，增量与补录共用转换结果',
   assert.equal(incremental.events[0].attribution.responseFriendId, null);
   assert.equal(createIncrementalBatch(current, current, 3), null);
 });
+
+test('诊断写入失败不能产生队列批次或推进消费', async (t) => {
+  const envelope = fixture({ rows: 1 });
+  envelope.resume = {
+    observations: [resumeObservation(envelope)],
+    lastScanAt: null,
+    lastCoverage: null,
+    lastUnresolved: [],
+  };
+  const { data, inbox } = await tempProject(t, envelope);
+  await inbox.initialize();
+  await writeFile(join(inbox.root, 'attribution-diagnostics'), 'blocked', { mode: 0o600 });
+  const snapshot = await readTrackerSnapshot(join(data, FIRST_NAME));
+  await assert.rejects(inbox.enqueue(createResumeBatch(snapshot, 1)), /DIAGNOSTIC_PATH_INVALID/);
+  assert.equal((await inbox.list()).length, 0);
+  assert.equal(await inbox.readControl(), null);
+});

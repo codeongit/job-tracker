@@ -17,6 +17,19 @@ export function bossIntegrationView(status) {
       `<div class="integration-stats"><span><strong>${Number(counts.waiting || 0)}</strong> 等待自动补齐</span><span><strong>${Number(counts.review || 0)}</strong> 需要人工判断</span><span><strong>${Number(counts.protected || 0)}</strong> 人工字段已保护</span>`,
     );
   }
+  if (status?.attribution) {
+    const summary = status.attribution;
+    const items = (summary.items || [])
+      .map(
+        (item) =>
+          `<li>${esc(item.label)}${item.candidate ? ` · 候选岗位：${esc(item.candidateCompany)} / ${esc(item.candidate)}` : ' · 岗位归属未确认'}</li>`,
+      )
+      .join('');
+    view = view.replace(
+      '<div class="source-bindings section-gap">',
+      `<div class="section-gap"><strong>未应用的平台观察</strong><div class="integration-stats"><span><strong>${Number(summary.insufficient || 0)}</strong> 证据不足</span><span><strong>${Number(summary.conflict || 0)}</strong> 归属冲突</span><span><strong>${Number(summary.collection || 0)}</strong> 采集问题</span></div><p>这些观察未用于更新岗位。可在核对聊天后自行编辑岗位；编辑不会确认观察归属。</p>${items ? `<details><summary>查看原因</summary><ul>${items}</ul></details>` : '<p>暂无归属异常。</p>'}</div><div class="source-bindings section-gap">`,
+    );
+  }
   const detail = status?.tracking?.detailEnrichment;
   const history = status?.tracking?.history;
   if (history) {

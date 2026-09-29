@@ -697,3 +697,40 @@ test('completed-page checkpoint replays locally after progress write fails', asy
     await rm(directory, { recursive: true });
   }
 });
+
+test('v4 本地状态命令仍计算详情待处理和 DOM 状态，不访问浏览器', async (t) => {
+  const { mkdir } = await import('node:fs/promises');
+  const { execFile } = await import('node:child_process');
+  const { promisify } = await import('node:util');
+  const { commit } = await import('./storage.mjs');
+  const root = await mkdtemp(join(tmpdir(), 'boss-v4-status-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const directory = join(root, 'main');
+  await mkdir(directory);
+  const namespace = `boss-geek:${'a'.repeat(64)}`;
+  const { envelope } = compareLoadedSnapshotsV2(null, {
+    capturedAt: '2026-09-29T00:00:00.000Z',
+    scope: 'loaded-chat-list',
+    accountNamespace: namespace,
+    records: [],
+    coverage: {
+      loadedRows: 0,
+      loadedDataRows: 0,
+      renderedRows: 0,
+      offscreenRows: 0,
+      unresolvedRows: 0,
+      truncated: false,
+    },
+  });
+  await commit(directory, envelope);
+  const { stdout } = await promisify(execFile)(
+    process.execPath,
+    [new URL('./tracker.mjs', import.meta.url).pathname, 'status', '--account', 'main'],
+    { env: { ...process.env, JOB_TRACKER_BOSS_DATA_ROOT: root } },
+  );
+  const status = JSON.parse(stdout);
+  assert.equal(status.version, 4);
+  assert.equal(status.connectionSaved, false);
+  assert.equal(status.detailEnrichment.pending, 0);
+  assert.notEqual(status.dom, null);
+});

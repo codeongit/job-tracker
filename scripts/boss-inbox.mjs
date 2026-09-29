@@ -1,9 +1,9 @@
+import { recordAttributionDiagnostic } from './boss-attribution-diagnostics.mjs';
 import {
   validateBossBatch as validateBatchStructure,
   bossEventDigestInput,
   bossBatchDigestInput,
 } from '../dist/boss-batch.js';
-import { RESUME_SUMMARIES } from '../dist/resume-rules.js';
 import {
   chmod,
   link,
@@ -29,18 +29,14 @@ const SUPPORTED_QUEUE_VERSIONS = new Set([1, 2, BOSS_INTEGRATION_VERSION]);
 
 const MAX_BATCH_BYTES = 5_000_000;
 const MAX_CONTROL_BYTES = 128_000;
-const MAX_EVENTS = 1_000;
 const BATCH_ID = /^boss-batch-[a-f0-9]{64}$/;
-const EVENT_ID = /^boss-event-[a-f0-9]{64}$/;
 const RUN_ID = /^boss-run-[a-f0-9]{32}$/;
-const ACCOUNT_NAMESPACE = /^boss-geek:[a-f0-9]{64}$/;
 const WORKSPACE_SOURCE_ID =
   /^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
 const SHA256 = /^[a-f0-9]{64}$/;
 const SAFE_ERROR = /^(?:[A-Z][A-Z0-9_]{2,100})?$/;
 const SNAPSHOT_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,199}\.json$/;
 const DAY = /^(?:\d{4})-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])$/;
-const HH_MM = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
 
 export class BossInboxError extends Error {
   constructor(message, status = 400, code = 'BOSS_INBOX_INVALID') {
@@ -112,17 +108,6 @@ function day(value, label, { empty = true } = {}) {
 
 function clone(value) {
   return structuredClone(value);
-}
-
-function shanghaiDay(value) {
-  const parts = new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'Asia/Shanghai',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).formatToParts(new Date(value));
-  const get = (type) => parts.find((part) => part.type === type)?.value;
-  return `${get('year')}-${get('month')}-${get('day')}`;
 }
 
 function stableDigest(value) {
@@ -484,6 +469,9 @@ export class BossInbox {
     const batch = validateBossBatch(input);
     return this.exclusive(async () => {
       await this.initialize();
+      for (const event of batch.events)
+        if (event.eventType === 'resume_observed')
+          await recordAttributionDiagnostic(this.root, batch.accountNamespace, event, 'queue');
       await this.beforeCommit('batch', batch);
       const filename = batchFilename(batch.batchId);
       const created = await writeNewJson(this.inbox, filename, batch);

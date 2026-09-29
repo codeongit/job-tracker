@@ -476,3 +476,34 @@ test('doctor 只读核验工作区、采集器和生产者状态，不触发采�
     await f.cleanup();
   }
 });
+
+test('读取未应用摘要只读取本机快照，不调用采集器或启动跟踪', async () => {
+  const f = await setup();
+  try {
+    const directory = join(f.root, 'collector-data', 'main');
+    await mkdir(directory, { recursive: true });
+    await writeFile(
+      join(directory, '2026-09-29T00-00-00-000Z_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa.json'),
+      JSON.stringify({
+        version: 4,
+        state: {},
+        snapshot: {},
+        report: {},
+        resume: {
+          lastUnresolved: [
+            { conversationKey: 'a'.repeat(64), reason: 'RESUME_MESSAGE_IDENTITY_INCOMPLETE' },
+            { conversationKey: 'a'.repeat(64), reason: 'RESUME_MESSAGE_IDENTITY_INCOMPLETE' },
+          ],
+        },
+      }),
+    );
+    const status = await f.controller.inspectStatus();
+    assert.equal(status.attribution.collection, 1);
+    assert.equal(status.attribution.items.length, 1);
+    assert.equal(f.calls.length, 0);
+    assert.equal(status.lifecycle, 'stopped');
+  } finally {
+    await f.controller.stop();
+    await f.cleanup();
+  }
+});
