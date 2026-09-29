@@ -1,3 +1,4 @@
+import { bossBatchDigestInput } from '../dist/boss-batch.js';
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
 import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
@@ -537,12 +538,7 @@ test('inbound and unknown do not become delivered or read receipts; invalid date
     intent: event.intent,
   };
   event.eventId = `boss-event-${stableHash(facts)}`;
-  batch.batchId = `boss-batch-${stableHash({
-    policy: batch.policy.id,
-    snapshotSha256: batch.source.snapshotSha256,
-    accountNamespace: batch.accountNamespace,
-    eventIds: [event.eventId],
-  })}`;
+  batch.batchId = `boss-batch-${stableHash(bossBatchDigestInput(batch))}`;
   assert.equal(validateBossBatch(batch).events[0].receiptStatus, 'not_applicable');
   const bad = structuredClone(batch);
   bad.events[0].receiptStatus = 'delivered';
@@ -558,10 +554,9 @@ test('inbox is immutable, private, and does not chmod a shared parent', async (t
   const beforeMode = (await lstat(root)).mode & 0o777;
   const snapshot = await readTrackerSnapshot(join(data, FIRST_NAME));
   const batch = createInitialBatch(snapshot, 1);
-  assert.equal(batch.version, 2);
-  // A v1 batch with the same deterministic identity is the same immutable
-  // input, not a conflicting second batch after the protocol upgrade.
-  const first = await inbox.enqueue({ ...batch, version: 1 });
+  assert.equal(batch.version, 3);
+  // Queue v3 binds attribution material in its batch digest. Repeated writes remain immutable.
+  const first = await inbox.enqueue(batch);
   const second = await inbox.enqueue(batch);
   assert.equal(first.created, true);
   assert.equal(second.created, false);

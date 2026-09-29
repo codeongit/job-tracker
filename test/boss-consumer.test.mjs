@@ -1,3 +1,4 @@
+import { bossEventDigestInput, bossBatchDigestInput } from '../dist/boss-batch.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -165,6 +166,34 @@ function resumeBatch(events, { sequence = 2, version = 1 } = {}) {
   };
 }
 
+// Explicit synthetic contract: real collectors do not yet supply this complete identity chain.
+function verifiedResumeBatch(events, options) {
+  const input = resumeBatch(events, options);
+  input.version = 3;
+  input.events = events.map((event) => ({
+    ...event,
+    attribution: {
+      version: 1,
+      source: 'history',
+      accountNamespace: input.accountNamespace,
+      conversationKey: event.conversationKey,
+      messageId: event.messageId,
+      requestedBossId: 'boss-1',
+      responseFriendId: event.friendId,
+      responseFriendSource: event.friendSource,
+      responseBossId: 'boss-1',
+      selfId: 'self-1',
+      senderId: 'boss-1',
+      recipientId: 'self-1',
+      messageJobId: event.externalJobId || null,
+    },
+  }));
+  for (const event of input.events)
+    event.eventId = `boss-event-${stableHash(bossEventDigestInput(input, event))}`;
+  input.batchId = `boss-batch-${stableHash(bossBatchDigestInput(input))}`;
+  return input;
+}
+
 function boundData(account = ACCOUNT) {
   return bindBossAccount(emptyData(), account, SOURCE_ID, STAMP);
 }
@@ -206,7 +235,7 @@ test('浏览器在事务写入前独立核对事件和批次摘要，并严格�
   assert.deepEqual(validateQueuedBossBatch(incrementalV2), incrementalV2);
   assert.deepEqual(await verifyBossBatch(incrementalV2), incrementalV2);
   const legacyIncremental = { ...incrementalV2, version: 1 };
-  assert.throws(() => validateQueuedBossBatch(legacyIncremental), /事件事实不一致/);
+  assert.throws(() => validateQueuedBossBatch(legacyIncremental), /事件.*事实不一致/);
   await assert.rejects(verifyBossBatch(legacyIncremental), /身份校验失败/);
   await assert.rejects(
     verifyBossBatch({
@@ -292,7 +321,7 @@ test('增量具体时分使用快照采集日建档且来源可审计', async ()
     { ...sameDayEvent, timeLabel: '', appliedAtForNew: '' },
   ]) {
     const invalidBatch = { ...sameDayBatch, events: [invalid] };
-    assert.throws(() => validateQueuedBossBatch(invalidBatch), /日期策略不一致/);
+    assert.throws(() => validateQueuedBossBatch(invalidBatch), /日期.*策略不一致/);
     await assert.rejects(verifyBossBatch(invalidBatch), /日期与批次策略不一致/);
   }
 
@@ -314,7 +343,7 @@ test('简历平台观察只关联既有岗位，不修改人工简历、已读�
   opportunity.stage = '面试中';
   opportunity.resumeState = '已索要';
   opportunity.readState = '未读';
-  const observed = applyBossBatch(created.data, resumeBatch([resumeEvent()]), {
+  const observed = applyBossBatch(created.data, verifiedResumeBatch([resumeEvent()]), {
     workspaceSourceId: SOURCE_ID,
     stamp: '2026-09-20T08:02:00.000Z',
   });
@@ -335,7 +364,7 @@ test('简历平台观察只关联既有岗位，不修改人工简历、已读�
     'conversation_observed',
   );
 
-  const replay = applyBossBatch(observed.data, resumeBatch([resumeEvent()]), {
+  const replay = applyBossBatch(observed.data, verifiedResumeBatch([resumeEvent()]), {
     workspaceSourceId: SOURCE_ID,
     stamp: '2026-09-20T08:03:00.000Z',
   });
@@ -343,7 +372,7 @@ test('简历平台观察只关联既有岗位，不修改人工简历、已读�
 
   const unresolved = applyBossBatch(
     observed.data,
-    resumeBatch([resumeEvent({ externalJobId: '', messageId: 'resume-message-2' })]),
+    verifiedResumeBatch([resumeEvent({ externalJobId: '', messageId: 'resume-message-2' })]),
     { workspaceSourceId: SOURCE_ID, stamp: '2026-09-20T08:04:00.000Z' },
   );
   assert.equal(unresolved.counts.reviewed, 1);
@@ -355,7 +384,7 @@ test('同一历史简历事实的元数据变化不重复应用或创建岗位',
     workspaceSourceId: SOURCE_ID,
     stamp: STAMP,
   });
-  const first = applyBossBatch(created.data, resumeBatch([resumeEvent()]), {
+  const first = applyBossBatch(created.data, verifiedResumeBatch([resumeEvent()]), {
     workspaceSourceId: SOURCE_ID,
     stamp: '2026-09-20T08:02:00.000Z',
   });
@@ -370,7 +399,7 @@ test('同一历史简历事实的元数据变化不重复应用或创建岗位',
     nameSource: '',
   });
   assert.notEqual(historical.eventId, resumeEvent().eventId);
-  const replayed = applyBossBatch(first.data, resumeBatch([historical], { sequence: 3 }), {
+  const replayed = applyBossBatch(first.data, verifiedResumeBatch([historical], { sequence: 3 }), {
     workspaceSourceId: SOURCE_ID,
     stamp: '2026-09-21T08:02:00.000Z',
   });
@@ -390,7 +419,7 @@ test('平台明确的附件简历状态单向推进，并联动 BOSS 消息已�
   opportunity.stage = '已触达';
   const sent = applyBossBatch(
     created.data,
-    resumeBatch([resumeEvent({ summary: 'resume_attachment_sent' })]),
+    verifiedResumeBatch([resumeEvent({ summary: 'resume_attachment_sent' })]),
     { workspaceSourceId: SOURCE_ID, stamp: '2026-09-20T08:05:00.000Z' },
   );
   assert.equal(sent.data.opportunities[0].resumeState, '已发送');
@@ -401,7 +430,7 @@ test('平台明确的附件简历状态单向推进，并联动 BOSS 消息已�
   sent.data.opportunities[0].readState = '未读';
   const viewed = applyBossBatch(
     sent.data,
-    resumeBatch([
+    verifiedResumeBatch([
       resumeEvent({
         eventId: `boss-event-${'c'.repeat(64)}`,
         messageId: 'resume-message-viewed',
@@ -418,7 +447,7 @@ test('平台明确的附件简历状态单向推进，并联动 BOSS 消息已�
   viewed.data.opportunities[0].readState = '未读';
   const sameState = applyBossBatch(
     viewed.data,
-    resumeBatch([
+    verifiedResumeBatch([
       resumeEvent({
         eventId: `boss-event-${'d'.repeat(64)}`,
         messageId: 'resume-message-viewed-again',
@@ -447,7 +476,7 @@ test('用户否决误归属的请求卡片只撤销目标岗位，不改变另�
     workspaceSourceId: SOURCE_ID,
     stamp: STAMP,
   });
-  const observations = resumeBatch(
+  const observations = verifiedResumeBatch(
     [
       resumeEvent({
         linked: true,
@@ -935,7 +964,7 @@ test('已回执事件的墓碑识别为恢复缺口；仅经明确 replay 才重
 });
 
 test('等待关联的事实在岗位补齐后重评，原观察不改写且重复应用幂等', () => {
-  const input = resumeBatch([resumeEvent({ summary: 'resume_request_sent' })]);
+  const input = verifiedResumeBatch([resumeEvent({ summary: 'resume_request_sent' })]);
   const waiting = applyBossBatch(boundData(), input, {
     workspaceSourceId: SOURCE_ID,
     stamp: STAMP,
@@ -970,7 +999,7 @@ test('人工主动清空及同值确认会释放自动所有权，来源状态�
   opportunity.resumeState = '';
   const applied = applyBossBatch(
     created.data,
-    resumeBatch([resumeEvent({ summary: 'resume_viewed_confirmed' })]),
+    verifiedResumeBatch([resumeEvent({ summary: 'resume_viewed_confirmed' })]),
     { workspaceSourceId: SOURCE_ID, stamp: STAMP },
   );
   assert.equal(applied.data.opportunities[0].resumeState, '');
@@ -1147,4 +1176,50 @@ test('本机恢复缺口由服务显式重放，页面不执行业务变换', as
   assert.equal(edits, 0);
   assert.equal(commits, 1);
   assert.equal(consumer.getStatus().restoreReview.length, 0);
+});
+
+test('归属关卡拒绝旧队列、缺字段与同公司不同岗位，补证才允许应用', async () => {
+  const created = applyBossBatch(boundData(), batch([event()]), {
+    workspaceSourceId: SOURCE_ID,
+    stamp: STAMP,
+  });
+  const raw = resumeBatch([resumeEvent({ summary: 'resume_request_sent' })]);
+  const waiting = applyBossBatch(created.data, raw, { workspaceSourceId: SOURCE_ID, stamp: STAMP });
+  assert.deepEqual(waiting.data.opportunities, created.data.opportunities);
+  assert.equal(waiting.data.sourceApplications.at(-1).reason, 'attribution_evidence_missing');
+  assert.equal(waiting.data.sourceEvents.at(-1).opportunityId, '');
+  for (const [field, value, reason] of [
+    ['responseFriendId', 'other-contact', 'attribution_contact_conflict'],
+    ['senderId', 'other-person', 'attribution_participant_conflict'],
+    ['messageJobId', 'same-company-other-job', 'attribution_job_conflict'],
+    ['responseFriendId', null, 'attribution_conversation_missing'],
+    ['messageJobId', null, 'attribution_job_missing'],
+    ['selfId', null, 'attribution_participants_missing'],
+  ]) {
+    const input = verifiedResumeBatch([resumeEvent({ summary: 'resume_request_sent' })]);
+    input.events[0].attribution[field] = value;
+    input.batchId = `boss-batch-${stableHash(bossBatchDigestInput(input))}`;
+    validateQueuedBossBatch(input);
+    await verifyBossBatch(input);
+    const result = applyBossBatch(created.data, input, {
+      workspaceSourceId: SOURCE_ID,
+      stamp: STAMP,
+    });
+    assert.deepEqual(result.data.opportunities, created.data.opportunities, field);
+    assert.equal(result.data.sourceApplications.at(-1).reason, reason, field);
+  }
+  const complete = verifiedResumeBatch([resumeEvent({ summary: 'resume_request_sent' })]);
+  const applied = applyBossBatch(waiting.data, complete, {
+    workspaceSourceId: SOURCE_ID,
+    stamp: STAMP,
+  });
+  assert.equal(applied.data.opportunities[0].resumeState, '已发送');
+  assert.equal(applied.data.sourceApplications.at(-1).status, 'applied');
+  const replay = applyBossBatch(applied.data, raw, { workspaceSourceId: SOURCE_ID, stamp: STAMP });
+  assert.deepEqual(replay.data.opportunities, applied.data.opportunities);
+  assert.deepEqual(replay.data.sourceApplications, applied.data.sourceApplications);
+  const tampered = structuredClone(complete);
+  tampered.events[0].attribution.messageJobId = 'changed';
+  assert.throws(() => validateQueuedBossBatch(tampered));
+  await assert.rejects(verifyBossBatch(tampered));
 });

@@ -1,3 +1,8 @@
+import {
+  validateBossBatch as validateBatchStructure,
+  bossEventDigestInput,
+  bossBatchDigestInput,
+} from '../dist/boss-batch.js';
 import { RESUME_SUMMARIES } from '../dist/resume-rules.js';
 import {
   chmod,
@@ -18,9 +23,9 @@ export const BOSS_RECEIPT_FORMAT = 'job-tracker-boss-receipt';
 export const BOSS_CONTROL_FORMAT = 'job-tracker-boss-control';
 export const BOSS_RUN_FORMAT = 'job-tracker-boss-run';
 export const BOSS_INCIDENT_FORMAT = 'job-tracker-boss-incident';
-export const BOSS_INTEGRATION_VERSION = 2;
+export const BOSS_INTEGRATION_VERSION = 3;
 export const BOSS_CONTROL_MAX_ATTEMPTS = 128;
-const SUPPORTED_QUEUE_VERSIONS = new Set([1, BOSS_INTEGRATION_VERSION]);
+const SUPPORTED_QUEUE_VERSIONS = new Set([1, 2, BOSS_INTEGRATION_VERSION]);
 
 const MAX_BATCH_BYTES = 5_000_000;
 const MAX_CONTROL_BYTES = 128_000;
@@ -137,280 +142,21 @@ function stableDigest(value) {
     .digest('hex');
 }
 
-const EVENT_KEYS = [
-  'eventId',
-  'conversationKey',
-  'friendId',
-  'friendSource',
-  'uniqueId',
-  'externalJobId',
-  'canonicalUrl',
-  'jobName',
-  'company',
-  'contact',
-  'summary',
-  'timeLabel',
-  'messageId',
-  'messageDirection',
-  'receiptStatus',
-  'receiptSource',
-  'observedAt',
-  'evidenceDate',
-  'nameSource',
-  'linkConfirmation',
-  'intent',
-  'appliedAtForNew',
-  'sourceSequence',
-];
-const RESUME_EVENT_KEYS = [...EVENT_KEYS, 'eventType'];
-
-function resumeStatusWorkflow(version, policyId, eventType, summary) {
-  if (
-    eventType !== 'resume_observed' ||
-    ['resume_sent_candidate', 'resume_card_other'].includes(summary)
-  )
-    return '';
-  // Queue v2 made actionable resume facts policy-independent so the same
-  // platform fact keeps one identity in resume-only and incremental batches.
-  if (version >= 2) return 'resume-status-linked-v2';
-  // Preserve validation for immutable queue-v1 batches already on disk.
-  if (!policyId.startsWith('boss-resume-observation')) return '';
-  if (policyId.endsWith('-v3')) return 'resume-status-linked-v2';
-  if (policyId.endsWith('-v2')) return 'resume-status-linked-v1';
-  return '';
-}
-
-function validateEvent(
-  value,
-  accountNamespace,
-  sequence,
-  index,
-  policy,
-  sourceCapturedAt,
-  version,
-) {
-  const path = `events[${index}]`;
-  const policyId = policy.id;
-  const eventType = value.eventType ?? 'conversation_observed';
-  exactKeys(value, eventType === 'resume_observed' ? RESUME_EVENT_KEYS : EVENT_KEYS, path);
-  if (!['conversation_observed', 'resume_observed'].includes(eventType))
-    fail(`${path}.eventType 格式无效。`);
-  string(value.eventId, `${path}.eventId`, { max: 75, empty: false, pattern: EVENT_ID });
-  string(value.conversationKey, `${path}.conversationKey`, {
-    max: 128,
-    empty: false,
-    pattern: /^[a-f0-9]{64}$/,
-  });
-  string(value.friendId, `${path}.friendId`, { max: 128, empty: false });
-  string(value.friendSource, `${path}.friendSource`, { max: 128, empty: false });
-  string(value.uniqueId, `${path}.uniqueId`, { max: 256 });
-  string(value.externalJobId, `${path}.externalJobId`, {
-    max: 300,
-    pattern: /^(?:|[A-Za-z0-9_-]+)$/,
-  });
-  string(value.canonicalUrl, `${path}.canonicalUrl`, { max: 600 });
-  if (
-    Boolean(value.externalJobId) !== Boolean(value.canonicalUrl) ||
-    (value.externalJobId &&
-      value.canonicalUrl !== `https://www.zhipin.com/job_detail/${value.externalJobId}.html`)
-  )
-    fail(`${path}.canonicalUrl 不是规范岗位链接。`);
-  string(value.jobName, `${path}.jobName`, { max: 300 });
-  string(value.company, `${path}.company`, { max: 300 });
-  string(value.contact, `${path}.contact`, { max: 300 });
-  string(value.summary, `${path}.summary`, { max: 2_000 });
-  string(value.timeLabel, `${path}.timeLabel`, { max: 100 });
-  string(value.messageId, `${path}.messageId`, { max: 128 });
-  oneOf(value.messageDirection, ['inbound', 'outbound', 'unknown'], `${path}.messageDirection`);
-  oneOf(
-    value.receiptStatus,
-    ['read', 'delivered', 'unknown', 'not_applicable'],
-    `${path}.receiptStatus`,
-  );
-  string(value.receiptSource, `${path}.receiptSource`, { max: 100 });
-  const knownReceipt = ['read', 'delivered'].includes(value.receiptStatus);
-  if (
-    eventType === 'conversation_observed' &&
-    ((knownReceipt &&
-      (value.messageDirection !== 'outbound' || value.receiptSource !== 'list_receipt_label')) ||
-      (value.receiptStatus === 'not_applicable' &&
-        (value.messageDirection !== 'inbound' || value.receiptSource !== '')) ||
-      (value.receiptStatus === 'unknown' &&
-        (value.messageDirection !== 'unknown' || value.receiptSource !== '')))
-  )
-    fail(`${path} 的消息方向与回执不相容。`);
-  if (
-    eventType === 'resume_observed' &&
-    (!['inbound', 'outbound'].includes(value.messageDirection) ||
-      value.receiptStatus !== 'not_applicable' ||
-      value.receiptSource !== '' ||
-      !RESUME_SUMMARIES.includes(value.summary) ||
-      value.timeLabel !== '')
-  )
-    fail(`${path} 的简历观察结构无效。`);
-  iso(value.observedAt, `${path}.observedAt`);
-  day(value.evidenceDate, `${path}.evidenceDate`);
-  string(value.nameSource, `${path}.nameSource`, { max: 100 });
-  oneOf(value.linkConfirmation, ['confirmed_user', 'unverified'], `${path}.linkConfirmation`);
-  oneOf(value.intent, ['create_or_link', 'review', 'observe_only'], `${path}.intent`);
-  day(value.appliedAtForNew, `${path}.appliedAtForNew`);
-  const incrementalSameDay =
-    version >= 2 && policy.mode === 'incremental' && HH_MM.test(value.timeLabel);
-  const legacyIncremental = version === 1 && policy.mode === 'incremental';
-  if (
-    (['initial', 'dated'].includes(policy.mode) &&
-      value.appliedAtForNew !== policy.appliedAtForNew) ||
-    (policy.mode === 'resume' && value.appliedAtForNew !== '') ||
-    (incrementalSameDay &&
-      (value.evidenceDate !== shanghaiDay(sourceCapturedAt) ||
-        value.appliedAtForNew !== value.evidenceDate)) ||
-    (version >= 2 &&
-      policy.mode === 'incremental' &&
-      !incrementalSameDay &&
-      (value.evidenceDate !== '' || value.appliedAtForNew !== '')) ||
-    (legacyIncremental && (value.evidenceDate !== '' || value.appliedAtForNew !== ''))
-  )
-    fail(`${path}.appliedAtForNew 与批次日期策略不一致。`);
-  integer(value.sourceSequence, `${path}.sourceSequence`, { min: 1 });
-  if (value.sourceSequence !== sequence) fail(`${path}.sourceSequence 与批次不一致。`);
-  if (
-    value.intent === 'create_or_link' &&
-    (!value.externalJobId || !value.canonicalUrl || !value.jobName || !value.company)
-  )
-    fail(`${path} 缺少自动建档所需字段。`);
-  const facts = {
-    platform: 'boss',
-    ...(eventType === 'resume_observed' ? { eventType } : {}),
-    accountNamespace,
-    conversationKey: value.conversationKey,
-    friendId: value.friendId,
-    friendSource: value.friendSource,
-    uniqueId: value.uniqueId,
-    externalJobId: value.externalJobId,
-    canonicalUrl: value.canonicalUrl,
-    jobName: value.jobName,
-    company: value.company,
-    contact: value.contact,
-    summary: value.summary,
-    messageId: value.messageId,
-    messageDirection: value.messageDirection,
-    receiptStatus: value.receiptStatus,
-    receiptSource: value.receiptSource,
-    nameSource: value.nameSource,
-    linkConfirmation: value.linkConfirmation,
-    intent: value.intent,
-  };
-  const workflow = resumeStatusWorkflow(version, policyId, eventType, value.summary);
-  const statusWorkflow = workflow ? { ...facts, workflow } : facts;
-  if (value.eventId !== `boss-event-${stableDigest(statusWorkflow)}`)
-    fail(`${path}.eventId 与事件事实不一致。`);
-  return value;
-}
-
 export function validateBossBatch(input) {
-  const value = clone(input);
-  exactKeys(
-    value,
-    [
-      'format',
-      'version',
-      'batchId',
-      'platform',
-      'accountNamespace',
-      'sourceSequence',
-      'policy',
-      'source',
-      'coverage',
-      'events',
-    ],
-    '批次',
-  );
-  if (value.format !== BOSS_BATCH_FORMAT || !SUPPORTED_QUEUE_VERSIONS.has(value.version))
+  if (!SUPPORTED_QUEUE_VERSIONS.has(input?.version))
     fail('批次版本不受支持。', 409, 'BOSS_BATCH_VERSION_UNSUPPORTED');
-  string(value.batchId, 'batchId', { max: 75, empty: false, pattern: BATCH_ID });
-  if (value.platform !== 'boss') fail('批次平台无效。');
-  string(value.accountNamespace, 'accountNamespace', {
-    max: 75,
-    empty: false,
-    pattern: ACCOUNT_NAMESPACE,
-  });
-  integer(value.sourceSequence, 'sourceSequence', { min: 1 });
-  exactKeys(
-    value.policy,
-    ['id', 'mode', 'timezone', 'appliedAtForNew', 'autoCreateComplete'],
-    'policy',
-  );
-  string(value.policy.id, 'policy.id', {
-    max: 100,
-    empty: false,
-    pattern: /^[a-z0-9][a-z0-9_.-]+$/,
-  });
-  oneOf(value.policy.mode, ['initial', 'incremental', 'dated', 'resume'], 'policy.mode');
-  if (
-    value.policy.timezone !== 'Asia/Shanghai' ||
-    value.policy.autoCreateComplete !== (value.policy.mode !== 'resume')
-  )
-    fail('批次策略无效。');
-  day(value.policy.appliedAtForNew, 'policy.appliedAtForNew');
-  if (
-    (['initial', 'dated'].includes(value.policy.mode) && value.policy.appliedAtForNew === '') ||
-    (['incremental', 'resume'].includes(value.policy.mode) && value.policy.appliedAtForNew !== '')
-  )
-    fail('批次日期策略无效。');
-  exactKeys(value.source, ['snapshotName', 'snapshotSha256', 'capturedAt'], 'source');
-  string(value.source.snapshotName, 'source.snapshotName', {
-    max: 205,
-    empty: false,
-    pattern: SNAPSHOT_NAME,
-  });
-  string(value.source.snapshotSha256, 'source.snapshotSha256', {
-    max: 64,
-    empty: false,
-    pattern: SHA256,
-  });
-  iso(value.source.capturedAt, 'source.capturedAt');
-  exactKeys(
-    value.coverage,
-    [
-      'loadedRows',
-      'loadedDataRows',
-      'renderedRows',
-      'offscreenRows',
-      'unresolvedRows',
-      'truncated',
-    ],
-    'coverage',
-  );
-  for (const key of [
-    'loadedRows',
-    'loadedDataRows',
-    'renderedRows',
-    'offscreenRows',
-    'unresolvedRows',
-  ])
-    integer(value.coverage[key], `coverage.${key}`, { max: 100_000 });
-  if (typeof value.coverage.truncated !== 'boolean') fail('coverage.truncated 格式无效。');
-  if (!Array.isArray(value.events) || value.events.length > MAX_EVENTS) fail('批次事件数量无效。');
-  value.events.forEach((event, index) =>
-    validateEvent(
-      event,
-      value.accountNamespace,
-      value.sourceSequence,
-      index,
-      value.policy,
-      value.source.capturedAt,
-      value.version,
-    ),
-  );
-  if (new Set(value.events.map((event) => event.eventId)).size !== value.events.length)
-    fail('批次包含重复事件。');
-  const expectedBatchId = `boss-batch-${stableDigest({
-    policy: value.policy.id,
-    snapshotSha256: value.source.snapshotSha256,
-    accountNamespace: value.accountNamespace,
-    eventIds: value.events.map((event) => event.eventId).sort(),
-  })}`;
-  if (value.batchId !== expectedBatchId) fail('batchId 与批次内容不一致。');
+  let value;
+  try {
+    value = validateBatchStructure(input);
+  } catch (error) {
+    fail(error.message);
+  }
+  for (const event of value.events) {
+    if (event.eventId !== `boss-event-${stableDigest(bossEventDigestInput(value, event))}`)
+      fail('事件 ID 与事实不一致。');
+  }
+  if (value.batchId !== `boss-batch-${stableDigest(bossBatchDigestInput(value))}`)
+    fail('batchId 与批次内容不一致。');
   return value;
 }
 

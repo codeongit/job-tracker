@@ -1,3 +1,6 @@
+import { validateBossBatch, bossEventDigestInput, bossBatchDigestInput } from './boss-batch.js';
+export { validateBossBatch } from './boss-batch.js';
+import { assessBossAttribution } from './boss-attribution.js';
 import { RESUME_SUMMARIES, resumeRule, resumeTransition } from './resume-rules.js';
 import {
   clone,
@@ -107,228 +110,6 @@ function isBossPlatform(value) {
   return !value || /^boss(?:直聘)?$/i.test(value.replace(/\s/g, ''));
 }
 
-function validateEvent(event, batch) {
-  const baseFields = [
-    'eventId',
-    'conversationKey',
-    'friendId',
-    'friendSource',
-    'uniqueId',
-    'externalJobId',
-    'canonicalUrl',
-    'jobName',
-    'company',
-    'contact',
-    'summary',
-    'timeLabel',
-    'messageId',
-    'messageDirection',
-    'receiptStatus',
-    'receiptSource',
-    'observedAt',
-    'evidenceDate',
-    'nameSource',
-    'linkConfirmation',
-    'intent',
-    'appliedAtForNew',
-    'sourceSequence',
-  ];
-  const eventType = event.eventType || 'conversation_observed';
-  const fields = eventType === 'resume_observed' ? [...baseFields, 'eventType'] : baseFields;
-  if (!hasOnly(event, fields) || fields.some((field) => !(field in event)))
-    throw integrationError('BOSS 批次事件结构无效。', 'BATCH_INVALID');
-  if (!EVENT_ID.test(event.eventId))
-    throw integrationError('BOSS 批次事件 ID 无效。', 'BATCH_INVALID');
-  const limits = {
-    eventId: 75,
-    conversationKey: 128,
-    friendId: 128,
-    friendSource: 128,
-    uniqueId: 256,
-    externalJobId: 300,
-    canonicalUrl: 600,
-    jobName: 300,
-    company: 300,
-    contact: 300,
-    summary: 2000,
-    timeLabel: 100,
-    messageId: 128,
-    receiptSource: 100,
-    nameSource: 100,
-  };
-  for (const field of fields.filter((field) => !['sourceSequence', 'eventType'].includes(field)))
-    text(event[field], `events.${field}`, limits[field] || 1000);
-  if (!['conversation_observed', 'resume_observed'].includes(eventType))
-    throw integrationError('BOSS 批次事件类型无效。', 'BATCH_INVALID');
-  if (
-    !/^[a-f0-9]{64}$/.test(event.conversationKey) ||
-    !event.friendId ||
-    !event.friendSource ||
-    !Number.isSafeInteger(event.sourceSequence) ||
-    event.sourceSequence !== batch.sourceSequence
-  )
-    throw integrationError('BOSS 批次事件序号无效。', 'BATCH_INVALID');
-  if (!['create_or_link', 'review', 'observe_only'].includes(event.intent))
-    throw integrationError('BOSS 批次事件意图无效。', 'BATCH_INVALID');
-  if (!['inbound', 'outbound', 'unknown'].includes(event.messageDirection))
-    throw integrationError('BOSS 批次消息方向无效。', 'BATCH_INVALID');
-  if (!['read', 'delivered', 'unknown', 'not_applicable'].includes(event.receiptStatus))
-    throw integrationError('BOSS 批次回执无效。', 'BATCH_INVALID');
-  if (
-    eventType === 'conversation_observed' &&
-    ((event.messageDirection === 'inbound' && event.receiptStatus !== 'not_applicable') ||
-      (event.messageDirection === 'unknown' && event.receiptStatus !== 'unknown') ||
-      (['read', 'delivered'].includes(event.receiptStatus) &&
-        event.messageDirection !== 'outbound') ||
-      (event.receiptStatus === 'unknown' && event.messageDirection !== 'unknown'))
-  )
-    throw integrationError('BOSS 消息方向与回执不相容。', 'BATCH_INVALID');
-  if (
-    eventType === 'resume_observed' &&
-    (!['inbound', 'outbound'].includes(event.messageDirection) ||
-      event.receiptStatus !== 'not_applicable' ||
-      event.receiptSource !== '' ||
-      !RESUME_SUMMARIES.includes(event.summary) ||
-      event.intent !== 'observe_only')
-  )
-    throw integrationError('BOSS 简历观察结构无效。', 'BATCH_INVALID');
-  if (
-    (['read', 'delivered'].includes(event.receiptStatus) &&
-      event.receiptSource !== 'list_receipt_label') ||
-    (['unknown', 'not_applicable'].includes(event.receiptStatus) && event.receiptSource)
-  )
-    throw integrationError('BOSS 回执证据来源无效。', 'BATCH_INVALID');
-  if (!['confirmed_user', 'unverified'].includes(event.linkConfirmation))
-    throw integrationError('BOSS 岗位链接确认状态无效。', 'BATCH_INVALID');
-  if (Boolean(event.externalJobId) !== Boolean(event.canonicalUrl))
-    throw integrationError('BOSS 岗位 ID 与链接必须同时存在。', 'BATCH_INVALID');
-  if (event.externalJobId) {
-    if (!/^[A-Za-z0-9_-]{1,300}$/.test(event.externalJobId))
-      throw integrationError('BOSS 岗位 ID 无效。', 'BATCH_INVALID');
-    const expectedUrl = new URL(`/job_detail/${event.externalJobId}.html`, 'https://www.zhipin.com')
-      .href;
-    if (event.canonicalUrl !== expectedUrl)
-      throw integrationError('BOSS 岗位链接与岗位 ID 不一致。', 'BATCH_INVALID');
-  }
-  if (
-    event.intent === 'create_or_link' &&
-    (!event.externalJobId || !event.canonicalUrl || !event.jobName.trim() || !event.company.trim())
-  )
-    throw integrationError('BOSS 自动建档事件缺少必要字段。', 'BATCH_INVALID');
-  exactDate(event.evidenceDate, 'events.evidenceDate');
-  exactDate(event.appliedAtForNew, 'events.appliedAtForNew');
-  const incrementalSameDay =
-    batch.version >= 2 && batch.policy.mode === 'incremental' && HH_MM.test(event.timeLabel);
-  const legacyIncremental = batch.version === 1 && batch.policy.mode === 'incremental';
-  if (
-    (['initial', 'dated'].includes(batch.policy.mode) &&
-      event.appliedAtForNew !== batch.policy.appliedAtForNew) ||
-    (batch.policy.mode === 'resume' && event.appliedAtForNew !== '') ||
-    (incrementalSameDay &&
-      (event.evidenceDate !== shanghaiDay(batch.source.capturedAt) ||
-        event.appliedAtForNew !== event.evidenceDate)) ||
-    (batch.version >= 2 &&
-      batch.policy.mode === 'incremental' &&
-      !incrementalSameDay &&
-      (event.evidenceDate !== '' || event.appliedAtForNew !== '')) ||
-    (legacyIncremental && (event.evidenceDate !== '' || event.appliedAtForNew !== ''))
-  )
-    throw integrationError('BOSS 事件首次联系日期与批次策略不一致。', 'BATCH_INVALID');
-  canonicalIso(event.observedAt, 'events.observedAt');
-  return event;
-}
-
-export function validateBossBatch(input) {
-  const fields = [
-    'format',
-    'version',
-    'batchId',
-    'platform',
-    'accountNamespace',
-    'sourceSequence',
-    'policy',
-    'source',
-    'coverage',
-    'events',
-  ];
-  if (!hasOnly(input, fields) || fields.some((field) => !(field in input)))
-    throw integrationError('BOSS 队列批次结构无效。', 'BATCH_INVALID');
-  if (
-    input.format !== 'job-tracker-boss-batch' ||
-    ![1, 2].includes(input.version) ||
-    !BATCH_ID.test(input.batchId) ||
-    input.platform !== 'boss' ||
-    !ACCOUNT_NAMESPACE.test(input.accountNamespace) ||
-    !Number.isSafeInteger(input.sourceSequence) ||
-    input.sourceSequence < 1
-  )
-    throw integrationError('BOSS 队列批次身份无效。', 'BATCH_INVALID');
-  const policyFields = ['id', 'mode', 'timezone', 'appliedAtForNew', 'autoCreateComplete'];
-  if (
-    !hasOnly(input.policy, policyFields) ||
-    policyFields.some((field) => !(field in input.policy))
-  )
-    throw integrationError('BOSS 批次策略无效。', 'BATCH_INVALID');
-  text(input.policy.id, 'policy.id', 100, { required: true });
-  if (!/^[a-z0-9][a-z0-9_.-]+$/.test(input.policy.id))
-    throw integrationError('BOSS 批次策略 ID 无效。', 'BATCH_INVALID');
-  if (!['initial', 'incremental', 'dated', 'resume'].includes(input.policy.mode))
-    throw integrationError('BOSS 批次模式无效。', 'BATCH_INVALID');
-  if (
-    input.policy.timezone !== 'Asia/Shanghai' ||
-    input.policy.autoCreateComplete !== (input.policy.mode !== 'resume')
-  )
-    throw integrationError('BOSS 批次策略超出工作台允许范围。', 'BATCH_INVALID');
-  exactDate(input.policy.appliedAtForNew, 'policy.appliedAtForNew');
-  if (['initial', 'dated'].includes(input.policy.mode) && !input.policy.appliedAtForNew)
-    throw integrationError('日期批次必须包含用户确认的首次联系日期。', 'BATCH_INVALID');
-  if (['incremental', 'resume'].includes(input.policy.mode) && input.policy.appliedAtForNew)
-    throw integrationError('后续检查不能推断首次联系日期。', 'BATCH_INVALID');
-  const sourceFields = ['snapshotName', 'snapshotSha256', 'capturedAt'];
-  if (
-    !hasOnly(input.source, sourceFields) ||
-    sourceFields.some((field) => !(field in input.source))
-  )
-    throw integrationError('BOSS 批次来源无效。', 'BATCH_INVALID');
-  text(input.source.snapshotName, 'source.snapshotName', 205, { required: true });
-  if (!SNAPSHOT_NAME.test(input.source.snapshotName))
-    throw integrationError('BOSS 快照名称无效。', 'BATCH_INVALID');
-  if (!/^[a-f0-9]{64}$/.test(input.source.snapshotSha256))
-    throw integrationError('BOSS 快照摘要无效。', 'BATCH_INVALID');
-  canonicalIso(input.source.capturedAt, 'source.capturedAt');
-  const coverageFields = [
-    'loadedRows',
-    'loadedDataRows',
-    'renderedRows',
-    'offscreenRows',
-    'unresolvedRows',
-    'truncated',
-  ];
-  if (
-    !hasOnly(input.coverage, coverageFields) ||
-    coverageFields.some((field) => !(field in input.coverage))
-  )
-    throw integrationError('BOSS 批次覆盖统计无效。', 'BATCH_INVALID');
-  for (const field of coverageFields.filter((field) => field !== 'truncated'))
-    if (
-      !Number.isSafeInteger(input.coverage[field]) ||
-      input.coverage[field] < 0 ||
-      input.coverage[field] > 100000
-    )
-      throw integrationError('BOSS 批次覆盖统计无效。', 'BATCH_INVALID');
-  if (typeof input.coverage.truncated !== 'boolean')
-    throw integrationError('BOSS 批次覆盖标记无效。', 'BATCH_INVALID');
-  if (!Array.isArray(input.events) || input.events.length > 1000)
-    throw integrationError('BOSS 批次事件数量无效。', 'BATCH_INVALID');
-  const ids = new Set();
-  for (const event of input.events) {
-    validateEvent(event, input);
-    if (ids.has(event.eventId)) throw integrationError('BOSS 批次包含重复事件。', 'BATCH_INVALID');
-    ids.add(event.eventId);
-  }
-  return clone(input);
-}
-
 function canonical(value) {
   if (Array.isArray(value)) return value.map(canonical);
   if (value && typeof value === 'object')
@@ -347,59 +128,16 @@ async function stableDigest(value) {
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
-function resumeStatusWorkflow(batch, event) {
-  if (
-    event.eventType !== 'resume_observed' ||
-    ['resume_sent_candidate', 'resume_card_other'].includes(event.summary)
-  )
-    return '';
-  // Queue v2 uses the current semantic identity in every batch mode. Queue
-  // v1 remains readable with the policy-specific identities it wrote before.
-  if (batch.version >= 2) return 'resume-status-linked-v2';
-  if (!batch.policy.id.startsWith('boss-resume-observation')) return '';
-  if (batch.policy.id.endsWith('-v3')) return 'resume-status-linked-v2';
-  if (batch.policy.id.endsWith('-v2')) return 'resume-status-linked-v1';
-  return '';
-}
-
 // The local service verifies these hashes on disk. Verify them again before an IndexedDB write,
 // since a stale page or malformed response must not bypass the producer's immutable identity.
 export async function verifyBossBatch(input) {
   const batch = validateBossBatch(input);
   for (const event of batch.events) {
-    const facts = {
-      platform: 'boss',
-      ...(event.eventType === 'resume_observed' ? { eventType: event.eventType } : {}),
-      accountNamespace: batch.accountNamespace,
-      conversationKey: event.conversationKey,
-      friendId: event.friendId,
-      friendSource: event.friendSource,
-      uniqueId: event.uniqueId,
-      externalJobId: event.externalJobId,
-      canonicalUrl: event.canonicalUrl,
-      jobName: event.jobName,
-      company: event.company,
-      contact: event.contact,
-      summary: event.summary,
-      messageId: event.messageId,
-      messageDirection: event.messageDirection,
-      receiptStatus: event.receiptStatus,
-      receiptSource: event.receiptSource,
-      nameSource: event.nameSource,
-      linkConfirmation: event.linkConfirmation,
-      intent: event.intent,
-    };
-    const workflow = resumeStatusWorkflow(batch, event);
-    const statusWorkflow = workflow ? { ...facts, workflow } : facts;
+    const statusWorkflow = bossEventDigestInput(batch, event);
     if (event.eventId !== `boss-event-${await stableDigest(statusWorkflow)}`)
       throw integrationError('BOSS 批次事件身份校验失败。', 'BATCH_INVALID');
   }
-  const expected = await stableDigest({
-    policy: batch.policy.id,
-    snapshotSha256: batch.source.snapshotSha256,
-    accountNamespace: batch.accountNamespace,
-    eventIds: batch.events.map((event) => event.eventId).sort(),
-  });
+  const expected = await stableDigest(bossBatchDigestInput(batch));
   if (batch.batchId !== `boss-batch-${expected}`)
     throw integrationError('BOSS 批次内容摘要校验失败。', 'BATCH_INVALID');
   return batch;
@@ -667,6 +405,14 @@ export function bossReceiptGap(data, batch) {
 }
 
 function resolveResumeEvent(data, batch, event) {
+  const attribution = assessBossAttribution(batch.accountNamespace, event);
+  if (attribution.status !== 'verified')
+    return {
+      status: 'review',
+      targetId: '',
+      applicationStatus: attribution.status === 'conflict' ? 'review' : 'waiting',
+      reason: attribution.reason,
+    };
   if (!event.externalJobId || !event.canonicalUrl)
     return {
       status: 'review',
@@ -954,6 +700,17 @@ export function applyBossBatch(
           'RESTORE_REVIEW_REQUIRED',
         );
       if (stored.deletedAt) data.sourceEvents.splice(storedIndex, 1);
+    }
+    if (
+      event.eventType === 'resume_observed' &&
+      application &&
+      !['waiting', 'review'].includes(application.status)
+    ) {
+      const evidence =
+        stored && !stored.deletedAt ? stored : sourceEvent(batch, event, '', 'review', stamp);
+      if (!stored || stored.deletedAt) data.sourceEvents.push(evidence);
+      counts.skipped++;
+      continue;
     }
     const blocked =
       data.sourceBindings.some(

@@ -1,3 +1,4 @@
+import { bossBatchDigestInput } from '../dist/boss-batch.js';
 import {
   RESUME_KINDS,
   RESUME_STATUS_KINDS,
@@ -1006,13 +1007,8 @@ function coverageOf(envelope) {
   };
 }
 
-function batchIdFor({ policy, source, accountNamespace, events }) {
-  return `boss-batch-${stableHash({
-    policy: policy.id,
-    snapshotSha256: source.snapshotSha256,
-    accountNamespace,
-    eventIds: events.map((event) => event.eventId).sort(),
-  })}`;
+function batchIdFor(batch) {
+  return `boss-batch-${stableHash(bossBatchDigestInput(batch))}`;
 }
 
 export function createBatch({
@@ -1037,7 +1033,11 @@ export function createBatch({
       capturedAt: envelope.snapshot.capturedAt,
     },
     coverage: coverageOf(envelope),
-    events: structuredClone(events),
+    events: events.map((event) =>
+      event.eventType === 'resume_observed'
+        ? { ...structuredClone(event), attribution: event.attribution ?? null }
+        : structuredClone(event),
+    ),
   };
   batch.batchId = batchIdFor(batch);
   return validateBossBatch(batch);
