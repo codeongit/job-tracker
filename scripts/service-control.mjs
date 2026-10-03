@@ -28,6 +28,9 @@ export async function serviceStatus(root = serviceRoot, fetcher = fetch) {
       port: runtime.port,
       tracking: health.tracking || 'stopped',
       protocolVersion: health.protocolVersion,
+      readyAt: runtime.startedAt ?? null,
+      processStartedAt: runtime.processStartedAt ?? null,
+      startupDurationMs: runtime.startupDurationMs ?? null,
     };
   } catch {
     return { running: false, code: 'SERVICE_UNAVAILABLE' };

@@ -794,3 +794,48 @@ test('运行期间外部替换HEAD时拒绝覆盖并保留最后已知正式提�
   assert.equal(JSON.parse(await readFile(path)).hash, head.hash);
   assert.equal((await readdir(store.commits)).length, 1);
 });
+
+test('历史幂等索引不常驻完整工作区，旧命令按需校验后返回原结果', async (t) => {
+  const { root, store } = await fixture(t);
+  const workspace = initialWorkspace();
+  workspace.data.opportunities = Array.from({ length: 24 }, (_, i) => ({
+    id: 'memory-job-' + i,
+    company: 'Synthetic company',
+    role: 'Synthetic role',
+    stage: '已触达',
+    notes: 'SYNTHETIC_MEMORY_PAYLOAD'.repeat(80),
+  }));
+  const firstCommand = imported(workspace),
+    first = await store.execute(firstCommand, { result: { applied: 24 } });
+  const second = await store.execute(changed(first, 'memory-edit-1'));
+  await store.execute(changed(second, 'memory-edit-2'));
+  assert.ok(
+    JSON.stringify([...store.commandIndex.values()]).length < 4096,
+    '幂等索引应只保留小型定位信息',
+  );
+  await store.close();
+  const reopened = new WorkspaceStore(join(root, 'workspace'));
+  t.after(() => reopened.close());
+  await reopened.initialize();
+  assert.ok(
+    JSON.stringify([...reopened.commandIndex.values()]).length < 4096,
+    '重启不应将历史快照装入索引',
+  );
+  const replay = await reopened.execute(firstCommand);
+  assert.equal(replay.revision, 1);
+  assert.equal(replay.replayed, true);
+  assert.deepEqual(replay.commandResult, { applied: 24 });
+  assert.equal(replay.workspace.data.opportunities.length, 24);
+  assert.deepEqual(await reopened.commandResult(firstCommand.commandId), {
+    revision: 1,
+    hash: first.hash,
+    result: { applied: 24 },
+  });
+  const files = await readdir(reopened.commits);
+  const file = files.find((f) => f.startsWith('000000000001-'));
+  const path = join(reopened.commits, file),
+    commit = JSON.parse(await readFile(path, 'utf8'));
+  commit.workspace.data.opportunities[0].notes = 'SYNTHETIC_TAMPER';
+  await writeFile(path, JSON.stringify(commit));
+  await assert.rejects(reopened.execute(firstCommand), { code: 'WORKSPACE_CORRUPT' });
+});

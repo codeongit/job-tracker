@@ -182,6 +182,8 @@ server.listen(port, '127.0.0.1', async () => {
     port,
     controlToken,
     startedAt: new Date().toISOString(),
+    processStartedAt: new Date(performance.timeOrigin).toISOString(),
+    startupDurationMs: Math.round(Date.now() - performance.timeOrigin),
   });
   const drain = () =>
     void inboxConsumer.run().catch(() => process.stderr.write('WORKSPACE_INBOX_DRAIN_FAILED\n'));

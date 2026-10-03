@@ -9,7 +9,6 @@ import {
 import { createHash } from 'node:crypto';
 import { expectedUrl } from './guard.mjs';
 import { accountExpression } from './extract.mjs';
-import { buildIdentitySample, pageIdentityContext } from './identity-sample.mjs';
 import {
   conversationKeyV2,
   upgradeEnvelope,
@@ -82,21 +81,12 @@ function requestPrelude(target, timeoutMs) {
     });`;
 }
 
-// Temporary field investigation. Remove after real identity sources are verified.
-function identitySamplePrelude(stage) {
-  return `const sampleContext = (${pageIdentityContext.toString()})(target);
-    const takeIdentitySample = (response, identity = null, page = 0) =>
-      (${buildIdentitySample.toString()})({stage:${JSON.stringify(stage)},target,identity,response,
-        ...sampleContext,page});`;
-}
-
 /** One expression performs exactly one platform request for the stable friend identity. */
 export function createResumeFriendExpression({ target, timeoutMs = 15_000 }) {
   const safeTarget = normalizeTarget(target);
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 15_000)
     throw new TypeError('RESUME_SCAN_TIMEOUT_INVALID');
   return `(async () => {${requestPrelude(safeTarget, timeoutMs)}
-    ${identitySamplePrelude('friend')}
     const normalizeId = (value, max = 300) => {
       if (!['string','number'].includes(typeof value)) return null;
       const output = String(value).normalize('NFC').trim();
@@ -128,10 +118,9 @@ export function createResumeFriendExpression({ target, timeoutMs = 15_000 }) {
     // These fields come from the response row, never the request or list candidate.
     const identity=selected ? {...selected,responseFriendId:normalizeId(rows[0].uid,128),
       responseFriendSource:normalizeId(rows[0].friendSource,128)} : null;
-    const identitySample=takeIdentitySample(response,identity);
-    if (!Array.isArray(rows)) return {ok:false,url,reason:response.reason ?? 'FRIEND_INFO_UNAVAILABLE',identitySample};
-    if (rows.length !== 1) return {ok:true,url,target,identity:null,reason:'FRIEND_IDENTITY_AMBIGUOUS',identitySample};
-    return identity ? {ok:true,url,target,identity,identitySample} : {ok:true,url,target,identity:null,reason:'HISTORY_IDENTITY_MISSING',identitySample};
+    if (!Array.isArray(rows)) return {ok:false,url,reason:response.reason ?? 'FRIEND_INFO_UNAVAILABLE'};
+    if (rows.length !== 1) return {ok:true,url,target,identity:null,reason:'FRIEND_IDENTITY_AMBIGUOUS'};
+    return identity ? {ok:true,url,target,identity} : {ok:true,url,target,identity:null,reason:'HISTORY_IDENTITY_MISSING'};
   })()`;
 }
 
@@ -153,7 +142,6 @@ export function createResumePageExpression({ target, identity, page, timeoutMs =
   )
     throw new TypeError('RESUME_SCAN_INPUT_INVALID');
   return `(async () => {${requestPrelude(safeTarget, timeoutMs)}
-    ${identitySamplePrelude('history')}
     const identity=${JSON.stringify({ bossId, securityId, responseFriendId: clean(identity?.responseFriendId, 128), responseFriendSource: clean(identity?.responseFriendSource, 128) })}, page=${page};
     const normalizeId = (value, max = 300) => {
       if (!['string','number'].includes(typeof value)) return null;
@@ -176,10 +164,9 @@ export function createResumePageExpression({ target, identity, page, timeoutMs =
     const endpoint='https://www.zhipin.com/wapi/zpchat/geek/historyMsg?bossId='+encodeURIComponent(identity.bossId)+
       '&securityId='+encodeURIComponent(identity.securityId)+'&page='+page+'&c=20&src='+encodeURIComponent(target.friendSource);
     const response=await request('GET',endpoint);
-    const identitySample=takeIdentitySample(response,identity,page);
     const messages=response.ok && response.value?.code===0?
       (response.value?.zpData?.messages ?? response.value?.zpData?.historyMsgList):null;
-    if (!Array.isArray(messages)) return {ok:false,url,reason:response.reason ?? 'HISTORY_UNAVAILABLE',identitySample};
+    if (!Array.isArray(messages)) return {ok:false,url,reason:response.reason ?? 'HISTORY_UNAVAILABLE'};
     const attribution = message => ({version:1,source:'history',accountNamespace:null,
       conversationKey:target.conversationKey,messageId:messageId(message),requestedBossId:identity.bossId,
       responseFriendId:normalizeId(identity.responseFriendId,128),
@@ -208,7 +195,7 @@ export function createResumePageExpression({ target, identity, page, timeoutMs =
         externalJobId:jobId(message),attribution:attribution(message),source:${JSON.stringify(SOURCE)}});
     }
     return {ok:true,url,target,page,messageCount:messages.length,exhausted:messages.length<20,
-      messageIds:[...new Set(messageIds)],observations,unresolved,identitySample};
+      messageIds:[...new Set(messageIds)],observations,unresolved};
   })()`;
 }
 
@@ -233,7 +220,6 @@ export async function runResumeHistoryRequests({
   knownMessageIds = [],
   execute,
   onCheckpoint = async () => {},
-  onIdentitySample = async () => null,
   wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
   now = () => new Date().toISOString(),
 } = {}) {
@@ -259,7 +245,6 @@ export async function runResumeHistoryRequests({
     requestDelayMs > 60_000 ||
     typeof execute !== 'function' ||
     typeof onCheckpoint !== 'function' ||
-    typeof onIdentitySample !== 'function' ||
     typeof wait !== 'function' ||
     typeof now !== 'function'
   ) {
@@ -331,25 +316,6 @@ export async function runResumeHistoryRequests({
       return { budget: true, failed: true };
     }
   };
-  const saveIdentitySample = async (result, target, stage, page = 0, previous = null) => {
-    // Outside the request catch: a failed disk write must not become a platform
-    // error that advances the checkpoint. Failed/missing responses contain no
-    // inspected fields; never manufacture evidence from normalized observations.
-    const sample = result.payload?.identitySample ?? buildIdentitySample({ stage, target, page });
-    try {
-      return await onIdentitySample(sample, {
-        conversationKey: target.conversationKey,
-        stage,
-        page,
-        previous,
-      });
-    } catch (caught) {
-      const code = /^BOSS_IDENTITY_SAMPLE_(INVALID|SAVE_FAILED)$/.test(caught?.code ?? '')
-        ? caught.code
-        : 'BOSS_IDENTITY_SAMPLE_SAVE_FAILED';
-      throw Object.assign(new Error(code), { code, usage: { historyRequests } });
-    }
-  };
   for (const [targetIndex, target] of safeTargets.entries()) {
     if (error) break;
     // A friend lookup without room for at least one history page cannot make
@@ -367,7 +333,6 @@ export async function runResumeHistoryRequests({
       budgetExhausted = true;
       break;
     }
-    const friendSample = await saveIdentitySample(friend, target, 'friend');
     if (friend.failed) {
       continuation = { conversationKey: target.conversationKey, page: firstPage };
       unresolved.push({ conversationKey: target.conversationKey, reason: error });
@@ -410,7 +375,6 @@ export async function runResumeHistoryRequests({
         budgetExhausted = true;
         break;
       }
-      await saveIdentitySample(pageResult, target, 'history', page, friendSample);
       if (pageResult.failed) {
         completed = false;
         continuation = { conversationKey: target.conversationKey, page };
@@ -539,12 +503,10 @@ export function createResumeHistoryExpression({ targets, pages = 2 }) {
     });
     return `async () => {
       const friend = await read(async () => ${createResumeFriendExpression({ target })});
-      if (friend.identitySample) identitySamples.push({conversationKey:${JSON.stringify(target.conversationKey)},sample:friend.identitySample});
       if (!friend.ok || !friend.identity) { unresolved.push({conversationKey:${JSON.stringify(target.conversationKey)},reason:friend.reason || 'HISTORY_IDENTITY_MISSING'});return; }
       resolved += 1;
       for (const page of [${reads.join(',')}]) {
         const result = await read(page);
-        if (result.identitySample) identitySamples.push({conversationKey:${JSON.stringify(target.conversationKey)},sample:result.identitySample});
         if (!result.ok) { unresolved.push({conversationKey:${JSON.stringify(target.conversationKey)},reason:result.reason || 'HISTORY_UNAVAILABLE'});break; }
         observations.push(...result.observations);unresolved.push(...result.unresolved);
         if (result.exhausted) break;
@@ -554,10 +516,10 @@ export function createResumeHistoryExpression({ targets, pages = 2 }) {
   return `(async () => {
     const url = location.origin + location.pathname;
     if (url !== ${JSON.stringify(expectedUrl)}) return {ok:false,url,reason:'WRONG_PAGE'};
-    const observations=[],unresolved=[],identitySamples=[];let resolved=0,requests=0;
+    const observations=[],unresolved=[];let resolved=0,requests=0;
     const read=async operation=>{if(requests++) await new Promise(resolve=>setTimeout(resolve,3000));return operation();};
     for (const task of [${tasks.join(',')}]) await task();
-    return {ok:true,url,capturedAt:new Date().toISOString(),observations,unresolved,identitySamples,
+    return {ok:true,url,capturedAt:new Date().toISOString(),observations,unresolved,
       coverage:{requestedConversations:${targets.length},resolvedConversations:resolved,pagesPerConversation:${pages}}};
   })()`;
 }

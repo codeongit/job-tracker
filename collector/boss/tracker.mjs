@@ -63,7 +63,6 @@ import { observeHistoryList, recordHistoryWatermark, historySummary } from './ch
 import { createHistoryCommit } from './history-commit.mjs';
 import { createHash, randomUUID } from 'node:crypto';
 import { accountDataDirectory } from './paths.mjs';
-import { saveBossIdentitySample } from '../../scripts/boss-identity-sample.mjs';
 
 const identityOptions = {
   identityExpression: accountExpression,
@@ -615,8 +614,6 @@ export async function collectResume({
       return payload;
     },
     onCheckpoint: (value) => saveResumeCheckpoint(directory, value),
-    onIdentitySample: (sample, metadata) =>
-      saveBossIdentitySample(directory, { ...metadata, sample }),
   });
   const result = toResumeHistoryResult(scan.payload, envelope);
   const applied = applyResumeHistoryV2(envelope, result);
@@ -749,13 +746,6 @@ export async function collectChangedResume({
         : [],
       execute: (expression, metadata) => evaluate(connection, expression, metadata),
       onCheckpoint: (value) => history.checkpointPage(value, task.fingerprint),
-      onIdentitySample: (sample, metadata) =>
-        saveBossIdentitySample(directory, { ...metadata, sample }),
-    }).catch((error) => {
-      // Include earlier conversations when a temporary diagnostic fails midway
-      // through this round. The controller must not erase requests already sent.
-      if (/^BOSS_IDENTITY_SAMPLE_/.test(error?.code ?? '')) error.usage.historyRequests += used;
-      throw error;
     });
     used += scan.usage.historyRequests;
     const committed = await history.commitScan(item, scan);
@@ -1677,18 +1667,11 @@ export async function main(argv = process.argv.slice(2)) {
       ),
     );
   } catch (error) {
-    if (
-      /^BOSS_IDENTITY_SAMPLE_/.test(error?.code ?? '') &&
-      Number.isSafeInteger(error.usage?.historyRequests) &&
-      error.usage.historyRequests >= 0 &&
-      error.usage.historyRequests <= historyRequests
-    )
-      failureUsage.historyRequests = error.usage.historyRequests;
     let runtimeSaved = false;
     if (mode === 'run' && runRuntime && runStartedAt && runId && !runFinalized) {
       try {
         // Earlier conversations may already have committed progress before a
-        // later sample write failed. Keep the durable state, not the run's start.
+        // later stage failed. Keep the durable state, not the run's start.
         const failed = completeRun(await loadRuntimeState(directory), {
           runId,
           startedAt: runStartedAt,

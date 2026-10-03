@@ -105,3 +105,29 @@ test('服务初始化超过三秒时start仍等待实际就绪，不误报未启
   assert.equal(status.running, true);
   assert.equal(status.tracking, 'stopped');
 });
+
+test('服务状态报告启动耗时，旧记录缺失指标不当作零', async (t) => {
+  const root = await fixture(t);
+  const fetcher = async () =>
+    Response.json({
+      serviceKind: 'job-tracker-local',
+      instanceId: INSTANCE,
+      workspaceId: WORKSPACE,
+    });
+  const old = await serviceStatus(root, fetcher);
+  assert.equal(old.processStartedAt, null);
+  assert.equal(old.startupDurationMs, null);
+  const runtime = await readServiceRuntime(root);
+  await saveServiceRuntime(root, {
+    ...runtime,
+    startedAt: '2026-10-03T14:09:49.883Z',
+    processStartedAt: '2026-10-03T14:06:24.000Z',
+    startupDurationMs: 205883,
+  });
+  const status = await serviceStatus(root, fetcher);
+  assert.equal(status.processStartedAt, '2026-10-03T14:06:24.000Z');
+  assert.equal(status.readyAt, '2026-10-03T14:09:49.883Z');
+  assert.equal(status.startupDurationMs, 205883);
+  await saveServiceRuntime(root, { ...runtime, processStartedAt: 'invalid', startupDurationMs: 0 });
+  await assert.rejects(readServiceRuntime(root), /SERVICE_RUNTIME_INVALID/);
+});

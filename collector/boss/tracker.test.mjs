@@ -16,7 +16,6 @@ import {
 import { applyDetailEvidenceV2, compareLoadedSnapshotsV2, conversationKeyV2 } from './model-v2.mjs';
 import { normalizeRuntimeState, recordDetailFailure } from './runtime-state.mjs';
 import { observeHistoryList, pendingHistory } from './change-history.mjs';
-import { buildIdentitySample } from './identity-sample.mjs';
 
 // macOS exposes /var as a symlink; private-writer fixtures use its real location.
 const privateTemporaryRoot = await realpath(tmpdir());
@@ -577,30 +576,10 @@ test('change-driven history saves an ordinary-message watermark and makes no rep
         },
         evaluate: async (_connection, _expression, metadata) => {
           requests += 1;
-          const sample = buildIdentitySample({
-            stage: metadata.kind === 'friend' ? 'friend' : 'history',
-            target: { friendId: '701', friendSource: '0' },
-            page: metadata.page ?? 0,
-            response: {
-              ok: true,
-              value: {
-                code: 0,
-                zpData:
-                  metadata.kind === 'friend'
-                    ? { result: [{ uid: 'boss701', friendId: '701' }] }
-                    : {
-                        messages: [
-                          { id: 'ordinary1', from: { uid: 'self701' }, to: { uid: 'boss701' } },
-                        ],
-                      },
-              },
-            },
-          });
           return metadata.kind === 'friend'
             ? {
                 ok: true,
                 identity: { bossId: 'boss701', securityId: 'security701' },
-                identitySample: sample,
               }
             : {
                 ok: true,
@@ -609,7 +588,6 @@ test('change-driven history saves an ordinary-message watermark and makes no rep
                 messageIds: ['ordinary1'],
                 exhausted: true,
                 page: metadata.page,
-                identitySample: sample,
               };
         },
       });
@@ -619,19 +597,9 @@ test('change-driven history saves an ordinary-message watermark and makes no rep
     assert.equal(commits, 1);
     assert.equal(history.conversations[0].watermark, 'ordinary1');
     assert.equal(pendingHistory(history).length, 0);
-    const samplesDirectory = join(directory, 'attribution-diagnostics', 'identity-check');
-    const names = await readdir(samplesDirectory);
-    assert.equal(names.length, 2);
-    const samples = await Promise.all(
-      names.map(async (name) => JSON.parse(await readFile(join(samplesDirectory, name)))),
-    );
-    const historySample = samples.find((item) => item.sample.stage === 'history');
-    assert.equal(historySample.sample.arrays[0].count, 1);
-    assert.ok(names.includes(historySample.previous));
     const second = await run();
     assert.equal(second.usage.historyRequests, 0);
     assert.equal(requests, 2);
-    assert.equal((await readdir(samplesDirectory)).length, 2);
   } finally {
     await rm(directory, { recursive: true });
   }

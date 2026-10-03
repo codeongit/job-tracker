@@ -354,7 +354,13 @@ export class WorkspaceStore {
       if (!this.head) this.head = commit;
       if (this.commandIndex.has(commit.command.commandId))
         fail('WORKSPACE_CORRUPT', '工作区命令重复提交。', 500);
-      this.commandIndex.set(commit.command.commandId, { digest: commit.command.digest, commit });
+      this.commandIndex.set(commit.command.commandId, {
+        digest: commit.command.digest,
+        file,
+        revision: commit.revision,
+        hash: commit.hash,
+        result: copy(commit.command.result ?? null),
+      });
       expectedRevision--;
       file = commit.previous?.file || '';
       expectedHash = commit.previous?.hash || '';
@@ -537,10 +543,11 @@ export class WorkspaceStore {
       if (previousCommand) {
         if (previousCommand.digest !== digest)
           fail('COMMAND_ID_CONFLICT', '相同命令 ID 已用于不同内容。');
+        const committed = await this.indexedCommit(command.commandId, previousCommand);
         return {
-          ...copy(this.envelope(previousCommand.commit)),
+          ...copy(this.envelope(committed)),
           commandId: command.commandId,
-          commandResult: copy(previousCommand.commit.command.result ?? null),
+          commandResult: copy(committed.command.result ?? null),
           replayed: true,
         };
       }
@@ -927,7 +934,13 @@ export class WorkspaceStore {
         } else throw error;
       }
       this.head = commit;
-      this.commandIndex.set(command.commandId, { digest, commit });
+      this.commandIndex.set(command.commandId, {
+        digest,
+        file: this.filename(commit),
+        revision: commit.revision,
+        hash: commit.hash,
+        result: copy(commit.command.result ?? null),
+      });
       if (consumedSyncTransaction) consumedSyncTransaction.state = 'consumed';
       await this.beforeCommit('after_head', commit);
       return {
@@ -943,15 +956,22 @@ export class WorkspaceStore {
   filename(commit) {
     return `${String(commit.revision).padStart(12, '0')}-${commit.hash}.json`;
   }
+  async indexedCommit(commandId, stored) {
+    const commit = await this.readCommit(stored.file);
+    if (
+      commit.revision !== stored.revision ||
+      commit.hash !== stored.hash ||
+      commit.command.commandId !== commandId ||
+      commit.command.digest !== stored.digest
+    )
+      fail('WORKSPACE_CORRUPT', '工作区幂等提交校验失败。', 500);
+    return commit;
+  }
   async commandResult(commandId) {
     await this.initialize();
     const stored = this.commandIndex.get(commandId);
     return stored
-      ? {
-          revision: stored.commit.revision,
-          hash: stored.commit.hash,
-          result: copy(stored.commit.command.result ?? null),
-        }
+      ? { revision: stored.revision, hash: stored.hash, result: copy(stored.result) }
       : null;
   }
   async recordImportDiagnostic(summary) {

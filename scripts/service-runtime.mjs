@@ -17,7 +17,14 @@ export async function readServiceRuntime(root) {
       !Number.isSafeInteger(value.port) ||
       value.port < 1024 ||
       value.port > 65535 ||
-      !/^[a-f0-9]{64}$/.test(value.controlToken)
+      !/^[a-f0-9]{64}$/.test(value.controlToken) ||
+      Object.hasOwn(value, 'processStartedAt') !== Object.hasOwn(value, 'startupDurationMs') ||
+      (Object.hasOwn(value, 'startupDurationMs') &&
+        (typeof value.processStartedAt !== 'string' ||
+          !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value.processStartedAt) ||
+          !Number.isFinite(Date.parse(value.processStartedAt)) ||
+          !Number.isSafeInteger(value.startupDurationMs) ||
+          value.startupDurationMs < 0))
     )
       throw new Error('SERVICE_RUNTIME_INVALID');
     return value;
