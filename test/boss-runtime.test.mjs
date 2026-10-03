@@ -573,10 +573,12 @@ test('登录类错误立即暂停；恢复页只由显式动作调用', async ()
 });
 
 test('平台动作前先持久化保守预算，正常完成后替换为实际用量', async () => {
-  let release;
+  let release, started;
+  const entered = new Promise((resolve) => (started = resolve));
   const gate = new Promise((resolve) => (release = resolve)),
     f = await fixture({
       executeCycle: async () => {
+        started();
         await gate;
         return {
           usage: {
@@ -590,8 +592,14 @@ test('平台动作前先持久化保守预算，正常完成后替换为实际�
     });
   try {
     const cycle = f.runtime.requestCycle();
-    for (let attempt = 0; attempt < 20 && f.runtime.status().budget.historyUsed === 0; attempt++)
-      await new Promise((resolve) => setTimeout(resolve, 5));
+    // The executor can start only after reservation is durable. Synchronize on
+    // that boundary instead of assuming disk fsync finishes within 100 ms.
+    await Promise.race([
+      entered,
+      cycle.then(() => {
+        throw new Error('CYCLE_FINISHED_WITHOUT_EXECUTION');
+      }),
+    ]);
     const durable = await new BossRuntimeStateStore(join(f.root, 'runtime.json')).read();
     assert.equal(durable.actions.find((row) => row.kind === 'history')?.count, 20);
     assert.equal(
@@ -605,6 +613,7 @@ test('平台动作前先持久化保守预算，正常完成后替换为实际�
     assert.equal(f.runtime.status().budget.historyUsed, 2);
     assert.equal(f.runtime.status().budget.navigationUsed, 1);
   } finally {
+    release();
     await f.runtime.stop();
     await f.cleanup();
   }

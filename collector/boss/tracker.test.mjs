@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, realpath, readdir, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -16,6 +16,10 @@ import {
 import { applyDetailEvidenceV2, compareLoadedSnapshotsV2, conversationKeyV2 } from './model-v2.mjs';
 import { normalizeRuntimeState, recordDetailFailure } from './runtime-state.mjs';
 import { observeHistoryList, pendingHistory } from './change-history.mjs';
+import { buildIdentitySample } from './identity-sample.mjs';
+
+// macOS exposes /var as a symlink; private-writer fixtures use its real location.
+const privateTemporaryRoot = await realpath(tmpdir());
 
 test('CLI keeps compatibility while exposing persistent connection and bounded enrichment modes', () => {
   const base = {
@@ -449,7 +453,7 @@ test('resume target selection keeps the durable conversation first', () => {
 });
 
 test('unknown history request outcome is counted once and never replayed by a CDP reconnect wrapper', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'boss-history-single-attempt-'));
+  const directory = await mkdtemp(join(privateTemporaryRoot, 'boss-history-single-attempt-'));
   try {
     const namespace = 'boss-geek:' + 'e'.repeat(64),
       friendId = '501',
@@ -510,7 +514,7 @@ test('unknown history request outcome is counted once and never replayed by a CD
 });
 
 test('change-driven history saves an ordinary-message watermark and makes no repeat request', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'boss-history-change-'));
+  const directory = await mkdtemp(join(privateTemporaryRoot, 'boss-history-change-'));
   try {
     const namespace = 'boss-geek:' + 'f'.repeat(64);
     const key = conversationKeyV2(namespace, '701', '0');
@@ -573,8 +577,31 @@ test('change-driven history saves an ordinary-message watermark and makes no rep
         },
         evaluate: async (_connection, _expression, metadata) => {
           requests += 1;
+          const sample = buildIdentitySample({
+            stage: metadata.kind === 'friend' ? 'friend' : 'history',
+            target: { friendId: '701', friendSource: '0' },
+            page: metadata.page ?? 0,
+            response: {
+              ok: true,
+              value: {
+                code: 0,
+                zpData:
+                  metadata.kind === 'friend'
+                    ? { result: [{ uid: 'boss701', friendId: '701' }] }
+                    : {
+                        messages: [
+                          { id: 'ordinary1', from: { uid: 'self701' }, to: { uid: 'boss701' } },
+                        ],
+                      },
+              },
+            },
+          });
           return metadata.kind === 'friend'
-            ? { ok: true, identity: { bossId: 'boss701', securityId: 'security701' } }
+            ? {
+                ok: true,
+                identity: { bossId: 'boss701', securityId: 'security701' },
+                identitySample: sample,
+              }
             : {
                 ok: true,
                 observations: [],
@@ -582,6 +609,7 @@ test('change-driven history saves an ordinary-message watermark and makes no rep
                 messageIds: ['ordinary1'],
                 exhausted: true,
                 page: metadata.page,
+                identitySample: sample,
               };
         },
       });
@@ -591,16 +619,26 @@ test('change-driven history saves an ordinary-message watermark and makes no rep
     assert.equal(commits, 1);
     assert.equal(history.conversations[0].watermark, 'ordinary1');
     assert.equal(pendingHistory(history).length, 0);
+    const samplesDirectory = join(directory, 'attribution-diagnostics', 'identity-check');
+    const names = await readdir(samplesDirectory);
+    assert.equal(names.length, 2);
+    const samples = await Promise.all(
+      names.map(async (name) => JSON.parse(await readFile(join(samplesDirectory, name)))),
+    );
+    const historySample = samples.find((item) => item.sample.stage === 'history');
+    assert.equal(historySample.sample.arrays[0].count, 1);
+    assert.ok(names.includes(historySample.previous));
     const second = await run();
     assert.equal(second.usage.historyRequests, 0);
     assert.equal(requests, 2);
+    assert.equal((await readdir(samplesDirectory)).length, 2);
   } finally {
     await rm(directory, { recursive: true });
   }
 });
 
 test('completed-page checkpoint replays locally after progress write fails', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'boss-history-replay-'));
+  const directory = await mkdtemp(join(privateTemporaryRoot, 'boss-history-replay-'));
   try {
     const namespace = 'boss-geek:' + 'd'.repeat(64);
     const record = {

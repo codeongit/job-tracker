@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
+import { assessBossAttribution } from '../../dist/boss-attribution.js';
 import { createEnvelopeV2, conversationKeyV2, validateEnvelopeV2 } from './model-v2.mjs';
 import {
   createResumeHistoryExpression,
@@ -72,10 +73,13 @@ test('history expression uses only read APIs and contains no chat click or messa
   assert.match(expression, /附件简历请求已发送/);
   assert.doesNotMatch(expression, /value\.includes\('附件简历请求已发送'\)/);
   assert.match(expression, /点击查看附件/);
+  // Temporary identity checks read the existing list's account/ID fields only.
+  assert.match(expression, /querySelectorAll\('li\[role="listitem"\]'\)/);
   for (const forbidden of [
     'document.cookie',
     'localStorage',
-    'querySelector',
+    'innerText',
+    'dispatchEvent',
     'click(',
     'contenteditable',
     'sendMsg',
@@ -436,6 +440,161 @@ test('bounded history runner checkpoints every request and reports actual covera
   );
 });
 
+test('temporary samples retain ordinary-message fields and conflicting paths without trusting them', async () => {
+  const target = { conversationKey, friendId: '301', friendSource: '0' };
+  const messages = [
+    {
+      id: 'ordinary-secret-id',
+      type: 1,
+      content: 'PRIVATE_CHAT_BODY',
+      from: { uid: 'self-secret-id' },
+      to: { uid: 'boss-secret-id' },
+      encryptJobId: 'job-other',
+      body: { jobId: 'job-candidate' },
+      time: 1_790_000_000,
+    },
+    {
+      id: 'resume-secret-id',
+      type: 5,
+      content: '附件简历请求已发送',
+      from: { uid: 'self-secret-id' },
+      to: { uid: 'boss-secret-id' },
+      encryptJobId: 'job-candidate',
+      time: 1_790_000_001,
+    },
+  ];
+  class FakeXHR {
+    open(_method, url) {
+      this.url = url;
+    }
+    setRequestHeader() {}
+    send() {
+      this.status = 200;
+      this.responseText = JSON.stringify({
+        code: 0,
+        zpData: this.url.includes('getGeekFriendList')
+          ? {
+              result: [
+                {
+                  uid: 'boss-secret-id',
+                  friendId: '301',
+                  friendSource: '0',
+                  securityId: 'SECRET_TOKEN',
+                },
+              ],
+            }
+          : { messages },
+      });
+      queueMicrotask(() => this.onload());
+    }
+  }
+  const vmNode = {
+    __vue__: {
+      $options: { name: 'virtual-list' },
+      $props: {
+        dataSources: [
+          { friendId: '301', friendSource: '0', uniqueId: '301-0', encryptJobId: 'job-candidate' },
+        ],
+      },
+      $store: { state: { userInfo: { userId: 'self-secret-id' } } },
+    },
+  };
+  const context = {
+    location: { origin: 'https://www.zhipin.com', pathname: '/web/geek/chat' },
+    window: { _PAGE: { uid: 'self-secret-id' } },
+    document: { querySelectorAll: () => [vmNode], hasFocus: () => true },
+    XMLHttpRequest: FakeXHR,
+    queueMicrotask,
+  };
+  const friend = await vm.runInNewContext(createResumeFriendExpression({ target }), context);
+  const page = await vm.runInNewContext(
+    createResumePageExpression({ target, identity: friend.identity, page: 1 }),
+    context,
+  );
+  const fields = new Map(page.identitySample.fields.map((field) => [field.path, field]));
+  assert.equal(page.identitySample.arrays[0].count, 2);
+  assert.equal(page.observations.length, 1);
+  assert.equal(page.observations[0].kind, 'request_sent');
+  assert.equal(
+    fields.get('response.zpData.messages[0].from.uid').identity,
+    fields.get('account.pageUid').identity,
+  );
+  assert.equal(
+    fields.get('response.zpData.messages[0].to.uid').identity,
+    fields.get('request.bossId').identity,
+  );
+  assert.notEqual(
+    fields.get('response.zpData.messages[0].encryptJobId').identity,
+    fields.get('response.zpData.messages[0].body.jobId').identity,
+  );
+  const serialized = JSON.stringify([friend.identitySample, page.identitySample]);
+  assert.doesNotMatch(
+    serialized,
+    /SECRET|PRIVATE|secret-id|job-candidate|job-other|securityId|附件简历/,
+  );
+  assert.equal(page.observations[0].attribution.selfId, 'self-secret-id');
+  assert.equal(page.observations[0].attribution.responseFriendId, 'boss-secret-id');
+  const decision = assessBossAttribution(namespace, {
+    ...page.observations[0],
+    externalJobId: 'job-candidate',
+    attribution: { ...page.observations[0].attribution, accountNamespace: namespace },
+  });
+  assert.equal(decision.status, 'conflict');
+  assert.equal(decision.reason, 'attribution_contact_conflict');
+});
+
+test('temporary sample persistence precedes checkpoints and failure retains consumed request usage', async () => {
+  for (const failAt of [0, 1, 2]) {
+    const checkpoints = [],
+      order = [];
+    let samples = 0,
+      calls = 0;
+    const operation = runResumeHistoryRequests({
+      targets: [{ conversationKey, friendId: '301', friendSource: '0' }],
+      pages: 1,
+      maxRequests: 2,
+      requestDelayMs: 0,
+      execute: async (_expression, metadata) => {
+        calls++;
+        return metadata.kind === 'friend'
+          ? { ok: true, identity: { bossId: 'boss1', securityId: 'SECRET_TOKEN' } }
+          : {
+              ok: true,
+              messageIds: ['ordinary'],
+              observations: [],
+              unresolved: [],
+              exhausted: true,
+            };
+      },
+      onIdentitySample: async (sample, metadata) => {
+        order.push('sample');
+        samples++;
+        if (samples === failAt) throw new Error('PRIVATE_DISK_ERROR');
+        assert.equal(sample.result, 'response_unavailable');
+        assert.equal(metadata.previous, samples === 1 ? null : 'friend-file');
+        return 'friend-file';
+      },
+      onCheckpoint: async (value) => {
+        order.push('checkpoint');
+        checkpoints.push(value);
+      },
+    });
+    if (!failAt) {
+      assert.equal((await operation).usage.historyRequests, 2);
+      assert.deepEqual(order, ['sample', 'checkpoint', 'sample', 'checkpoint']);
+    } else {
+      await assert.rejects(operation, (error) => {
+        assert.equal(error.message, 'BOSS_IDENTITY_SAMPLE_SAVE_FAILED');
+        assert.equal(error.usage.historyRequests, failAt);
+        return true;
+      });
+      assert.equal(checkpoints.length, failAt - 1);
+      if (checkpoints.length) assert.equal(checkpoints[0].nextPage, 1);
+      assert.equal(calls, failAt);
+    }
+  }
+});
+
 test('bounded history runner does not spend a one-request budget on an unusable friend lookup', async () => {
   const checkpoints = [];
   const result = await runResumeHistoryRequests({
@@ -624,4 +783,105 @@ test('new snapshots retain partial identity evidence and enrich observations wit
     second.envelope.resume.observations[0].attribution.accountNamespace,
     base.accountNamespace,
   );
+});
+
+test('response contact and checked self identity share the gate across paged and compatibility reads', async () => {
+  const target = { conversationKey, friendId: '301', friendSource: '0' };
+  for (const scenario of [
+    {
+      name: 'message has no job identity',
+      reason: 'attribution_job_missing',
+      status: 'insufficient',
+    },
+    { name: 'wrong contact', uid: 302, reason: 'attribution_contact_conflict', status: 'conflict' },
+    { name: 'wrong source', source: 1, reason: 'attribution_contact_conflict', status: 'conflict' },
+    {
+      name: 'missing source',
+      source: null,
+      reason: 'attribution_conversation_missing',
+      status: 'insufficient',
+    },
+    {
+      name: 'wrong participant',
+      sender: 999,
+      reason: 'attribution_participant_conflict',
+      status: 'conflict',
+    },
+    {
+      name: 'self sources disagree',
+      storeSelf: 102,
+      reason: 'attribution_participants_missing',
+      status: 'insufficient',
+    },
+  ]) {
+    const contact = { uid: scenario.uid ?? 301, securityId: 'synthetic-security' };
+    if (scenario.source !== null) contact.friendSource = scenario.source ?? 0;
+    const message = {
+      mid: 500,
+      type: 5,
+      content: '附件简历请求已发送',
+      time: 1790000000,
+      from: { uid: scenario.sender ?? 101 },
+      to: { uid: contact.uid },
+    };
+    class FakeXHR {
+      open(_method, url) {
+        this.url = url;
+      }
+      setRequestHeader() {}
+      send() {
+        this.status = 200;
+        this.responseText = JSON.stringify({
+          code: 0,
+          zpData: this.url.includes('getGeekFriendList')
+            ? { result: [contact] }
+            : { messages: [message] },
+        });
+        queueMicrotask(() => this.onload());
+      }
+    }
+    const vmNode = {
+      __vue__: {
+        $options: { name: 'virtual-list' },
+        $props: {
+          dataSources: [
+            { friendId: 301, friendSource: 0, uniqueId: '301-0', encryptJobId: 'candidate-job' },
+          ],
+        },
+        $store: { state: { userInfo: { userId: scenario.storeSelf ?? 101 } } },
+      },
+    };
+    const context = {
+      location: { origin: 'https://www.zhipin.com', pathname: '/web/geek/chat' },
+      window: { _PAGE: { uid: 101 } },
+      document: { querySelectorAll: () => [vmNode], hasFocus: () => true },
+      XMLHttpRequest: FakeXHR,
+      queueMicrotask,
+      setTimeout: (callback) => queueMicrotask(callback),
+    };
+    const friend = await vm.runInNewContext(createResumeFriendExpression({ target }), context);
+    const page = await vm.runInNewContext(
+      createResumePageExpression({ target, identity: friend.identity, page: 1 }),
+      context,
+    );
+    const legacy = await vm.runInNewContext(
+      createResumeHistoryExpression({ targets: [target], pages: 1 }),
+      context,
+    );
+    assert.deepEqual(
+      JSON.parse(JSON.stringify(legacy.observations)),
+      JSON.parse(JSON.stringify(page.observations)),
+      scenario.name,
+    );
+    const observation = page.observations[0];
+    assert.equal(observation.kind, 'request_sent', scenario.name);
+    assert.equal(observation.externalJobId, null, scenario.name);
+    const result = assessBossAttribution(namespace, {
+      ...observation,
+      externalJobId: 'candidate-job',
+      attribution: { ...observation.attribution, accountNamespace: namespace },
+    });
+    assert.equal(result.status, scenario.status, scenario.name);
+    assert.equal(result.reason, scenario.reason, scenario.name);
+  }
 });

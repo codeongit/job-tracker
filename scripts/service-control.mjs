@@ -98,7 +98,9 @@ export async function startService({
   } finally {
     await log.close();
   }
-  for (let attempt = 0; attempt < 20; attempt++) {
+  // Workspace validation and private queue recovery may outlast a three-second poll.
+  const startupDeadline = Date.now() + 30_000;
+  while (Date.now() < startupDeadline) {
     await new Promise((accept) => setTimeout(accept, 150));
     const status = await serviceStatus(root, fetcher);
     if (status.running) return status;
