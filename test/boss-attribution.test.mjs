@@ -3,7 +3,11 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, rm, readdir, readFile, lstat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { bossAttributionSummary } from '../dist/boss-attribution.js';
+import {
+  bossAttributionSummary,
+  buildBossAttributionContext,
+  assessBossAttribution,
+} from '../dist/boss-attribution.js';
 import { bossIntegrationView } from '../dist/settings-view.js';
 import { recordAttributionDiagnostic } from '../scripts/boss-attribution-diagnostics.mjs';
 import { commit, latest } from '../collector/boss/storage.mjs';
@@ -99,4 +103,63 @@ test('诊断落盘失败不提交快照或推进检查点，可修复后重放�
   assert.equal((await loadResumeCheckpoint(root)).nextPage, 2);
   await commit(root, envelope);
   assert.equal((await latest(root)).envelope.version, 4);
+});
+
+test('跨观察上下文按账号隔离，忽略删除和其他平台，重复或同岗位不同观察不构成冲突', () => {
+  const row = { ...event, accountNamespace: account };
+  const context = buildBossAttributionContext([
+    row,
+    { ...row, eventType: 'conversation_observed' },
+    { ...row, accountNamespace: 'other-account', externalJobId: 'other-job' },
+    { ...row, deletedAt: 'deleted', externalJobId: 'deleted-job' },
+    { ...row, platform: 'other', externalJobId: 'other-platform-job' },
+    { ...row, externalJobId: '', conversationKey: '' },
+  ]);
+  assert.equal(assessBossAttribution(account, row, context).reason, 'attribution_evidence_missing');
+  assert.equal(context.messageJobs.get(JSON.stringify([account, row.messageId])).size, 1);
+  const conflicting = buildBossAttributionContext([
+    row,
+    { ...row, conversationKey: 'other-conversation', externalJobId: 'other-job' },
+  ]);
+  assert.equal(
+    assessBossAttribution(account, row, conflicting).reason,
+    'attribution_message_multiple_jobs',
+  );
+  assert.equal(assessBossAttribution(account, row, conflicting).externalJobId, '');
+});
+
+test('会话岗位变化是缺少消息岗位依据的原因，不能变为已确认归属', () => {
+  const row = { ...event, accountNamespace: account };
+  const context = buildBossAttributionContext([
+    row,
+    { ...row, messageId: 'different-message', externalJobId: 'other-job' },
+  ]);
+  assert.deepEqual(assessBossAttribution(account, row, context), {
+    status: 'insufficient',
+    reason: 'attribution_conversation_job_changed',
+    externalJobId: '',
+  });
+});
+
+test('上下文诊断仅保存固定原因与摘要，重复材料去重且不泄漏候选身份', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'boss-context-diagnostic-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const row = { ...event, accountNamespace: account };
+  const context = buildBossAttributionContext([row, { ...row, externalJobId: 'OTHER_SECRET_JOB' }]);
+  await recordAttributionDiagnostic(root, account, row, 'consume', context);
+  await recordAttributionDiagnostic(root, account, row, 'consume', context);
+  const directory = join(root, 'attribution-diagnostics');
+  const names = await readdir(directory);
+  assert.equal(names.length, 1);
+  const text = await readFile(join(directory, names[0]), 'utf8');
+  assert.equal(JSON.parse(text).reason, 'attribution_message_multiple_jobs');
+  assert.doesNotMatch(text, /secret|SECRET|boss-geek/);
+  const summary = bossAttributionSummary({
+    sourceApplications: [
+      { factId: 'one', status: 'review', reason: 'attribution_message_multiple_jobs' },
+      { factId: 'two', status: 'waiting', reason: 'attribution_conversation_job_changed' },
+    ],
+  });
+  assert.equal(summary.conflict, 1);
+  assert.equal(summary.insufficient, 1);
 });

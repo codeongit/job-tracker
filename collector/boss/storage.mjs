@@ -178,6 +178,7 @@ export async function commit(directory, envelope) {
   await recordCollectorDiagnostics(directory, envelope.resume?.observations, {
     accountNamespace: envelope.accountNamespace,
     associations: envelope.jobs?.associations,
+    records: envelope.snapshot?.records,
     unresolved: envelope.resume?.lastUnresolved,
   });
   const suffix = randomUUID();

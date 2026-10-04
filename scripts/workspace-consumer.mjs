@@ -1,4 +1,4 @@
-import { bossAttributionSummary } from '../dist/boss-attribution.js';
+import { bossAttributionSummary, buildBossAttributionContext } from '../dist/boss-attribution.js';
 import { recordAttributionDiagnostic } from './boss-attribution-diagnostics.mjs';
 import { readdir } from 'node:fs/promises';
 import { applyBossBatch, bossReceiptGap } from '../dist/boss-integration.js';
@@ -166,9 +166,19 @@ export function createWorkspaceInboxConsumer({
           blockedAccounts.add(batch.accountNamespace);
           continue;
         }
+        const attributionContext = buildBossAttributionContext([
+          ...current.workspace.data.sourceEvents,
+          ...batch.events.map((event) => ({ ...event, accountNamespace: batch.accountNamespace })),
+        ]);
         for (const event of batch.events)
           if (event.eventType === 'resume_observed')
-            await recordAttributionDiagnostic(inbox.root, batch.accountNamespace, event, 'consume');
+            await recordAttributionDiagnostic(
+              inbox.root,
+              batch.accountNamespace,
+              event,
+              'consume',
+              attributionContext,
+            );
         const replaying = receipt?.status === 'processed';
         const commandId = replaying
             ? `boss-replay:${batch.batchId}:${current.revision}`
@@ -329,9 +339,19 @@ export function createWorkspaceInboxConsumer({
     const receipt = await inbox.readReceipt(batchId, current.workspaceId);
     if (receipt?.status !== 'processed' || !bossReceiptGap(current.workspace.data, batch))
       throw new WorkspaceStoreError('REPLAY_NOT_REQUIRED', '此批次没有待确认的恢复缺口。');
+    const attributionContext = buildBossAttributionContext([
+      ...current.workspace.data.sourceEvents,
+      ...batch.events.map((event) => ({ ...event, accountNamespace: batch.accountNamespace })),
+    ]);
     for (const event of batch.events)
       if (event.eventType === 'resume_observed')
-        await recordAttributionDiagnostic(inbox.root, batch.accountNamespace, event, 'consume');
+        await recordAttributionDiagnostic(
+          inbox.root,
+          batch.accountNamespace,
+          event,
+          'consume',
+          attributionContext,
+        );
     const stamp = now();
     const applied = applyBossBatch(current.workspace.data, batch, {
       workspaceSourceId: current.workspaceId,

@@ -8,7 +8,33 @@ export const ATTRIBUTION_REASONS = Object.freeze({
   attribution_conversation_missing: '缺少独立会话身份',
   attribution_participants_missing: '缺少消息参与者身份',
   attribution_job_missing: '消息未提供岗位身份',
+  attribution_message_multiple_jobs: '同一消息关联了不同候选岗位',
+  attribution_conversation_job_changed: '会话曾关联不同岗位，消息缺少岗位身份',
 });
+
+// Ephemeral candidate associations, never proof of message/job ownership.
+export function buildBossAttributionContext(events) {
+  const messageJobs = new Map(),
+    conversationJobs = new Map();
+  const add = (map, account, identity, job) => {
+    if (!identity) return;
+    const key = JSON.stringify([account, identity]);
+    if (!map.has(key)) map.set(key, new Set());
+    map.get(key).add(job);
+  };
+  for (const event of events) {
+    if (
+      event.deletedAt ||
+      (event.platform && event.platform !== 'boss') ||
+      !event.accountNamespace ||
+      !event.externalJobId
+    )
+      continue;
+    add(messageJobs, event.accountNamespace, event.messageId, event.externalJobId);
+    add(conversationJobs, event.accountNamespace, event.conversationKey, event.externalJobId);
+  }
+  return { messageJobs, conversationJobs };
+}
 const fields = [
   'version',
   'source',
@@ -46,14 +72,23 @@ export function validateAttributionEvidence(value) {
   return structuredClone(value);
 }
 
-export function assessBossAttribution(accountNamespace, event) {
+export function assessBossAttribution(accountNamespace, event, context = null) {
   const evidence = validateAttributionEvidence(event.attribution ?? null);
   const result = (status, reason) => ({
     status,
     reason,
     externalJobId: status === 'verified' ? event.externalJobId : '',
   });
-  if (!evidence) return result('insufficient', 'attribution_evidence_missing');
+  if (context?.messageJobs.get(JSON.stringify([accountNamespace, event.messageId]))?.size > 1)
+    return result('conflict', 'attribution_message_multiple_jobs');
+  const changedJob =
+    context?.conversationJobs.get(JSON.stringify([accountNamespace, event.conversationKey]))?.size >
+    1;
+  if (!evidence)
+    return result(
+      'insufficient',
+      changedJob ? 'attribution_conversation_job_changed' : 'attribution_evidence_missing',
+    );
   if (
     evidence.accountNamespace !== accountNamespace ||
     evidence.conversationKey !== event.conversationKey ||
@@ -74,6 +109,8 @@ export function assessBossAttribution(accountNamespace, event) {
   const expected = [evidence.selfId, evidence.responseBossId];
   if (expected.every(Boolean) && participants.some((id) => id && !expected.includes(id)))
     return result('conflict', 'attribution_participant_conflict');
+  if (changedJob && !evidence.messageJobId)
+    return result('insufficient', 'attribution_conversation_job_changed');
   if (
     !evidence.responseFriendId ||
     !evidence.responseFriendSource ||
@@ -88,9 +125,11 @@ export function assessBossAttribution(accountNamespace, event) {
     !expected.every((id) => participants.includes(id))
   )
     return result('insufficient', 'attribution_participants_missing');
-  if (!evidence.messageJobId || !event.externalJobId)
-    return result('insufficient', 'attribution_job_missing');
-  return result('verified', 'attribution_verified');
+  if (!event.externalJobId) return result('insufficient', 'attribution_job_missing');
+  return result(
+    'verified',
+    evidence.messageJobId ? 'attribution_verified' : 'attribution_conversation_association',
+  );
 }
 
 // Query current decisions, never historical diagnostic-file counts.

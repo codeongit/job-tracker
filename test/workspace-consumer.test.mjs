@@ -1,6 +1,7 @@
+import { bossEventDigestInput, bossBatchDigestInput } from '../dist/boss-batch.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile, readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { WorkspaceStore, workspaceDigest } from '../scripts/workspace-store.mjs';
@@ -403,4 +404,57 @@ test('pending 重基时新发现的岗位冲突自动隔离，同批独立岗位
   );
   assert.equal(after.data.sourceApplications.find((row) => row.id === blockedId).status, 'waiting');
   assert.equal(after.pending.conflicts.length, 1);
+});
+
+test('旧队列消费使用正式上下文诊断，诊断失败不提交或回执，修复后幂等重评', async (t) => {
+  const { store, inbox } = await fixture(t);
+  const consumer = createWorkspaceInboxConsumer({ workspaceStore: store, inbox, now: () => STAMP });
+  await consumer.run();
+  const input = batch({ jobId: 'other-job', sequence: 2 });
+  const e = input.events[0];
+  e.eventType = 'resume_observed';
+  e.intent = 'observe_only';
+  e.summary = 'resume_request_sent';
+  e.receiptStatus = 'not_applicable';
+  e.messageDirection = 'outbound';
+  // A legacy queue has no attribution fields and still crosses the same gate.
+  e.eventId = `boss-event-${workspaceDigest(bossEventDigestInput(input, e))}`;
+  input.policy = {
+    id: 'boss-resume-observation-v1',
+    mode: 'resume',
+    timezone: 'Asia/Shanghai',
+    appliedAtForNew: '',
+    autoCreateComplete: false,
+  };
+  input.batchId = `boss-batch-${workspaceDigest(bossBatchDigestInput(input))}`;
+  await inbox.enqueue(input);
+  const before = await store.read();
+  const directory = join(inbox.root, 'attribution-diagnostics');
+  await rm(directory, { recursive: true });
+  await writeFile(directory, 'blocked', { mode: 0o600 });
+  await consumer.run();
+  assert.equal((await store.read()).revision, before.revision);
+  assert.equal(await inbox.readReceipt(input.batchId, store.workspaceId), null);
+  await rm(directory);
+  await consumer.run();
+  const after = await store.read();
+  assert.deepEqual(after.workspace.data.opportunities, before.workspace.data.opportunities);
+  assert.equal(
+    after.workspace.data.sourceApplications.at(-1).reason,
+    'attribution_message_multiple_jobs',
+  );
+  const names = await readdir(directory);
+  const diagnostics = await Promise.all(
+    names.map((name) => readFile(join(directory, name), 'utf8')),
+  );
+  assert.ok(
+    diagnostics.some(
+      (text) =>
+        JSON.parse(text).stage === 'consume' &&
+        JSON.parse(text).reason === 'attribution_message_multiple_jobs',
+    ),
+  );
+  assert.doesNotMatch(diagnostics.join(''), /friend-1|message-1|other-job|合成摘要|boss-geek/);
+  await consumer.run();
+  assert.equal((await store.read()).revision, after.revision);
 });

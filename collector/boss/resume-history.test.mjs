@@ -646,9 +646,9 @@ test('response contact and checked self identity share the gate across paged and
       status: 'conflict',
     },
     {
-      name: 'message has no job identity',
-      reason: 'attribution_job_missing',
-      status: 'insufficient',
+      name: 'message uses conversation association without its own job identity',
+      reason: 'attribution_conversation_association',
+      status: 'verified',
     },
     { name: 'wrong contact', uid: 302, reason: 'attribution_contact_conflict', status: 'conflict' },
     { name: 'wrong source', source: 1, reason: 'attribution_contact_conflict', status: 'conflict' },

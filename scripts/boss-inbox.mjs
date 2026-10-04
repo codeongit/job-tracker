@@ -1,4 +1,5 @@
 import { recordAttributionDiagnostic } from './boss-attribution-diagnostics.mjs';
+import { buildBossAttributionContext } from '../dist/boss-attribution.js';
 import {
   validateBossBatch as validateBatchStructure,
   bossEventDigestInput,
@@ -469,9 +470,18 @@ export class BossInbox {
     const batch = validateBossBatch(input);
     return this.exclusive(async () => {
       await this.initialize();
+      const attributionContext = buildBossAttributionContext(
+        batch.events.map((event) => ({ ...event, accountNamespace: batch.accountNamespace })),
+      );
       for (const event of batch.events)
         if (event.eventType === 'resume_observed')
-          await recordAttributionDiagnostic(this.root, batch.accountNamespace, event, 'queue');
+          await recordAttributionDiagnostic(
+            this.root,
+            batch.accountNamespace,
+            event,
+            'queue',
+            attributionContext,
+          );
       await this.beforeCommit('batch', batch);
       const filename = batchFilename(batch.batchId);
       const created = await writeNewJson(this.inbox, filename, batch);

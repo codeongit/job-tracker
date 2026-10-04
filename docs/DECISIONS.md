@@ -12,41 +12,43 @@
 
 ## 决策索引
 
-| 编号                                                        | 决策                                               | 状态                                             | 来源                                   |
-| ----------------------------------------------------------- | -------------------------------------------------- | ------------------------------------------------ | -------------------------------------- |
-| [D001](adr/0001-personal-web-app.md)                        | 面向个人使用的独立网页                             | 有效                                             | 用户确认                               |
-| [D002](adr/0002-public-code-private-data.md)                | 公开界面代码，私有 GitHub 仓库存放求职数据         | 有效                                             | 用户确认；文件组织为实现选择           |
-| [D003](adr/0003-local-first-manual-sync.md)                 | 本机先保存，手动触发同步                           | 有效；本机存储由 D026 调整                       | 实现选择                               |
-| [D004](adr/0004-local-ssh-session-token.md)                 | 本机复用 SSH，公开网页使用会话令牌                 | 有效                                             | 用户提出 SSH 偏好；连接边界为实现选择  |
-| [D005](adr/0005-three-way-merge-conflicts.md)               | 三方合并、显式冲突与删除标记                       | 有效；自动导入阻塞范围由 D026 调整               | 实现选择                               |
-| [D006](adr/0006-snapshots-backups-restore.md)               | 自动快照与独立备份，两种恢复语义                   | 有效                                             | 用户同意维护基础版；细节为实现选择     |
-| [D007](adr/0007-versioned-data-migrations.md)               | 区分数据与应用版本，升级失败保留原状态             | 有效                                             | 用户同意维护基础版；细节为实现选择     |
-| [D008](adr/0008-lightweight-static-architecture.md)         | 保留轻量静态架构与可复现的检查流程                 | 有效（测试分工由 D017 调整）                     | 实现选择                               |
-| [D009](adr/0009-reviewed-markdown-import.md)                | 导入先核对，不推断缺失信息、不覆盖已有记录         | 有效                                             | 用户确认历史年份；规则为实现选择       |
-| [D010](adr/0010-ci-separate-deployment.md)                  | 代码推送运行 CI，网页部署单独安排                  | 有效                                             | 已确认维护范围与当前发布状态           |
-| [D011](adr/0011-independent-drafts.md)                      | 未提交输入保存为独立草稿                           | 有效                                             | 用户同意；细节为实现选择               |
-| [D012](adr/0012-local-disk-backups.md)                      | 自动把完整状态保存到本机私有磁盘                   | 有效；D026 增加正式提交历史                      | 用户同意；扩展 D006                    |
-| [D013](adr/0013-actionable-today-view.md)                   | 今日页必须把提示变成可完成的行动                   | 有效（展示由 D016 调整）                         | 用户指出筛选与选择问题；细节为实现选择 |
-| [D014](adr/0014-editable-next-action-suggestions.md)        | 下一步表单提供可编辑的状态建议                     | 有效                                             | 用户要求行动和计划日期默认选项         |
-| [D015](adr/0015-date-based-daily-record.md)                 | 每日记录按业务日期查询，不还原历史快照             | 已替代（日期语义保留于 D016）                    | 用户确认综合日记录及日期含义           |
-| [D016](adr/0016-two-entries-unified-detail.md)              | 两个业务入口与统一岗位详情保留浏览上下文           | 有效（看板安排由 D018 调整）                     | 用户确认导航、日期筛选与详情整理方案   |
-| [D017](adr/0017-manual-browser-testing.md)                  | 真实浏览器相关测试由人工负责                       | 有效                                             | 用户明确要求                           |
-| [D018](adr/0018-simplified-status-paginated-jobs.md)        | 精简消息与招聘状态，岗位只保留分页列表             | 有效                                             | 用户确认状态归并和删除看板             |
-| [D019](adr/0019-boss-resume-status-link.md)                 | BOSS 简历发送联动消息和招聘阶段                    | 有效                                             | 用户提出 BOSS 跟进规则                 |
-| [D020](adr/0020-same-company-hint.md)                       | 新增岗位时非阻断提示同公司记录                     | 有效                                             | 用户确认匹配和提示方式                 |
-| [D021](adr/0021-newest-jobs-first.md)                       | 全部日期下岗位按添加时间倒序                       | 有效                                             | 用户指出新增岗位未排在最前             |
-| [D022](adr/0022-read-only-recruitment-automation.md)        | 招聘自动化只读、低频串行与故障现场保留             | 有效；运行方式由 D026 调整                       | 用户明确要求；由 D023 落实首版接入     |
-| [D023](adr/0023-boss-private-queue-integration.md)          | BOSS 私有队列接入与 2026-09-18 首批规则            | 首批规则有效；运行/存储由 D026 替代              | 用户确认完整实施计划并要求执行         |
-| [D024](adr/0024-boss-date-label-import.md)                  | BOSS 日期标签的用户确认补录规则                    | 日期规则有效；预算由 D026 调整                   | 用户指定“昨天”为 2026-09-20 并要求导入 |
-| [D025](adr/0025-controlled-conversation-detail-read.md)     | 允许受控读取会话详情并设计简历状态采集             | 有效；状态映射由 D030 恢复；归属前提由 D033 收紧 | 用户取消禁止切换聊天并要求分析         |
-| [D026](adr/0026-local-authoritative-workspace.md)           | 本机权威工作区与显式持续跟踪                       | 已实现；真实迁移待人工验收                       | 用户确认关页录入、两种模式与手动启动   |
-| [D027](adr/0027-collector-source-colocation.md)             | 采集器源码与工作台同仓、私有状态分离               | 有效                                             | 用户要求继续迁移并减少外部目录依赖     |
-| [D028](adr/0028-change-driven-history.md)                   | 历史采集默认变化驱动、手动保留公平回填             | 已实现；真实浏览器待验收                         | 用户确认新旧模式并要求实施             |
-| [D029](adr/0029-resume-request-is-not-sent.md)              | 附件简历请求不等于简历已发送                       | 已由 D030 替代                                   | 曾误读平台文案                         |
-| [D030](adr/0030-reject-misattributed-resume-observation.md) | 恢复附件简历发送映射，否决误归属观察               | 有效；真实浏览器待验收                           | 用户澄清平台文案与目标聊天内容         |
-| [D031](adr/0031-explicit-resume-semantics.md)               | 简历观察、含义和应用条件显式分层                   | 有效；真实浏览器待验收                           | 用户同意通过建模与枚举减少语义误判     |
-| [D032](adr/0032-attribution-review-boundaries.md)           | 归属证据不足时停止自动更新，人工状态与证据确认分开 | 设计已确认；由 D033 收敛，未实施                 | 用户确认严格关卡及 Q1–Q9 均选 A        |
-| [D033](adr/0033-boss-import-convergence.md)                 | BOSS 导入统一归属判断与处理链路                    | 已实现；真实平台及浏览器待人工验收               | 用户确认整体收敛计划并要求实施         |
+| 编号                                                          | 决策                                               | 状态                                             | 来源                                       |
+| ------------------------------------------------------------- | -------------------------------------------------- | ------------------------------------------------ | ------------------------------------------ |
+| [D001](adr/0001-personal-web-app.md)                          | 面向个人使用的独立网页                             | 有效                                             | 用户确认                                   |
+| [D002](adr/0002-public-code-private-data.md)                  | 公开界面代码，私有 GitHub 仓库存放求职数据         | 有效                                             | 用户确认；文件组织为实现选择               |
+| [D003](adr/0003-local-first-manual-sync.md)                   | 本机先保存，手动触发同步                           | 有效；本机存储由 D026 调整                       | 实现选择                                   |
+| [D004](adr/0004-local-ssh-session-token.md)                   | 本机复用 SSH，公开网页使用会话令牌                 | 有效                                             | 用户提出 SSH 偏好；连接边界为实现选择      |
+| [D005](adr/0005-three-way-merge-conflicts.md)                 | 三方合并、显式冲突与删除标记                       | 有效；自动导入阻塞范围由 D026 调整               | 实现选择                                   |
+| [D006](adr/0006-snapshots-backups-restore.md)                 | 自动快照与独立备份，两种恢复语义                   | 有效                                             | 用户同意维护基础版；细节为实现选择         |
+| [D007](adr/0007-versioned-data-migrations.md)                 | 区分数据与应用版本，升级失败保留原状态             | 有效                                             | 用户同意维护基础版；细节为实现选择         |
+| [D008](adr/0008-lightweight-static-architecture.md)           | 保留轻量静态架构与可复现的检查流程                 | 有效（测试分工由 D017 调整）                     | 实现选择                                   |
+| [D009](adr/0009-reviewed-markdown-import.md)                  | 导入先核对，不推断缺失信息、不覆盖已有记录         | 有效                                             | 用户确认历史年份；规则为实现选择           |
+| [D010](adr/0010-ci-separate-deployment.md)                    | 代码推送运行 CI，网页部署单独安排                  | 有效                                             | 已确认维护范围与当前发布状态               |
+| [D011](adr/0011-independent-drafts.md)                        | 未提交输入保存为独立草稿                           | 有效                                             | 用户同意；细节为实现选择                   |
+| [D012](adr/0012-local-disk-backups.md)                        | 自动把完整状态保存到本机私有磁盘                   | 有效；D026 增加正式提交历史                      | 用户同意；扩展 D006                        |
+| [D013](adr/0013-actionable-today-view.md)                     | 今日页必须把提示变成可完成的行动                   | 有效（展示由 D016 调整）                         | 用户指出筛选与选择问题；细节为实现选择     |
+| [D014](adr/0014-editable-next-action-suggestions.md)          | 下一步表单提供可编辑的状态建议                     | 有效                                             | 用户要求行动和计划日期默认选项             |
+| [D015](adr/0015-date-based-daily-record.md)                   | 每日记录按业务日期查询，不还原历史快照             | 已替代（日期语义保留于 D016）                    | 用户确认综合日记录及日期含义               |
+| [D016](adr/0016-two-entries-unified-detail.md)                | 两个业务入口与统一岗位详情保留浏览上下文           | 有效（看板安排由 D018 调整）                     | 用户确认导航、日期筛选与详情整理方案       |
+| [D017](adr/0017-manual-browser-testing.md)                    | 真实浏览器相关测试由人工负责                       | 有效                                             | 用户明确要求                               |
+| [D018](adr/0018-simplified-status-paginated-jobs.md)          | 精简消息与招聘状态，岗位只保留分页列表             | 有效                                             | 用户确认状态归并和删除看板                 |
+| [D019](adr/0019-boss-resume-status-link.md)                   | BOSS 简历发送联动消息和招聘阶段                    | 有效                                             | 用户提出 BOSS 跟进规则                     |
+| [D020](adr/0020-same-company-hint.md)                         | 新增岗位时非阻断提示同公司记录                     | 有效                                             | 用户确认匹配和提示方式                     |
+| [D021](adr/0021-newest-jobs-first.md)                         | 全部日期下岗位按添加时间倒序                       | 有效                                             | 用户指出新增岗位未排在最前                 |
+| [D022](adr/0022-read-only-recruitment-automation.md)          | 招聘自动化只读、低频串行与故障现场保留             | 有效；运行方式由 D026 调整                       | 用户明确要求；由 D023 落实首版接入         |
+| [D023](adr/0023-boss-private-queue-integration.md)            | BOSS 私有队列接入与 2026-09-18 首批规则            | 首批规则有效；运行/存储由 D026 替代              | 用户确认完整实施计划并要求执行             |
+| [D024](adr/0024-boss-date-label-import.md)                    | BOSS 日期标签的用户确认补录规则                    | 日期规则有效；预算由 D026 调整                   | 用户指定“昨天”为 2026-09-20 并要求导入     |
+| [D025](adr/0025-controlled-conversation-detail-read.md)       | 允许受控读取会话详情并设计简历状态采集             | 有效；状态映射由 D030 恢复；归属前提由 D033 收紧 | 用户取消禁止切换聊天并要求分析             |
+| [D026](adr/0026-local-authoritative-workspace.md)             | 本机权威工作区与显式持续跟踪                       | 已实现；真实迁移待人工验收                       | 用户确认关页录入、两种模式与手动启动       |
+| [D027](adr/0027-collector-source-colocation.md)               | 采集器源码与工作台同仓、私有状态分离               | 有效                                             | 用户要求继续迁移并减少外部目录依赖         |
+| [D028](adr/0028-change-driven-history.md)                     | 历史采集默认变化驱动、手动保留公平回填             | 已实现；真实浏览器待验收                         | 用户确认新旧模式并要求实施                 |
+| [D029](adr/0029-resume-request-is-not-sent.md)                | 附件简历请求不等于简历已发送                       | 已由 D030 替代                                   | 曾误读平台文案                             |
+| [D030](adr/0030-reject-misattributed-resume-observation.md)   | 恢复附件简历发送映射，否决误归属观察               | 有效；真实浏览器待验收                           | 用户澄清平台文案与目标聊天内容             |
+| [D031](adr/0031-explicit-resume-semantics.md)                 | 简历观察、含义和应用条件显式分层                   | 有效；真实浏览器待验收                           | 用户同意通过建模与枚举减少语义误判         |
+| [D032](adr/0032-attribution-review-boundaries.md)             | 归属证据不足时停止自动更新，人工状态与证据确认分开 | 设计已确认；由 D033 收敛，未实施                 | 用户确认严格关卡及 Q1–Q9 均选 A            |
+| [D033](adr/0033-boss-import-convergence.md)                   | BOSS 导入统一归属判断与处理链路                    | 已实现；归属前提由 D035 调整                     | 用户确认整体收敛计划并要求实施             |
+| [D034](adr/0034-boss-cross-observation-attribution.md)        | BOSS 跨观察归属防错                                | 已实现；真实浏览器待人工验收                     | 用户确认防错计划并要求实施                 |
+| [D035](adr/0035-boss-conversation-association-application.md) | 允许依据会话关联应用简历观察                       | 已实现；身份排查已收尾；业务验收待确认           | 用户明确取消消息岗位必填并确认历史处理范围 |
 
 ## D001：面向个人使用的独立网页
 
@@ -180,10 +182,18 @@
 
 见 [ADR-0033](adr/0033-boss-import-convergence.md)。严格关卡保留，复杂异常交互延后。
 
+## D034：BOSS 跨观察归属防错
+
+见 [ADR-0034](adr/0034-boss-cross-observation-attribution.md)。补充跨观察检查，保持严格归属前提和历史保护。
+
+## D035：允许依据会话关联应用简历观察
+
+见 [ADR-0035](adr/0035-boss-conversation-association-application.md)。替代 D033 的消息岗位必填前提，保留 D034 拦截及人工保护。
+
 ## 新决策模板
 
 ```markdown
-## D034：一句话说明决定
+## D036：一句话说明决定
 
 - **记录日期 / 状态：** YYYY-MM-DD / 待定或有效。
 - **来源：** 用户明确要求、实现选择，或所替代的决策编号。

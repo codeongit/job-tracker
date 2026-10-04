@@ -7,7 +7,7 @@ import {
 
 // Evidence is immutable. Application decisions are separately replayable and never
 // turn a rule upgrade or a restored backup into a new platform observation.
-export const SOURCE_RULE_VERSION = 'boss-application-v4';
+export const SOURCE_RULE_VERSION = 'boss-application-v6';
 
 export function sourceApplicationForEvent(data, event) {
   const factId = event.factId || (hasBossFactIdentity(event) ? bossFactId(event) : '');

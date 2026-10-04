@@ -8,6 +8,7 @@ import { stableHash } from '../scripts/boss-integration.mjs';
 import { WorkspaceStore } from '../scripts/workspace-store.mjs';
 import { validateBossBatch as validateQueuedBossBatch } from '../scripts/boss-inbox.mjs';
 import { emptyData, live, markManualFields } from '../dist/model.js';
+import { bossFactId } from '../dist/source-identity.js';
 import { effectiveSourceFacts } from '../dist/source-ledger.js';
 import { initialWorkspace } from '../dist/workspace.js';
 import {
@@ -170,24 +171,28 @@ function resumeBatch(events, { sequence = 2, version = 1 } = {}) {
 function verifiedResumeBatch(events, options) {
   const input = resumeBatch(events, options);
   input.version = 3;
-  input.events = events.map((event) => ({
-    ...event,
-    attribution: {
-      version: 1,
-      source: 'history',
-      accountNamespace: input.accountNamespace,
-      conversationKey: event.conversationKey,
-      messageId: event.messageId,
-      requestedBossId: 'boss-1',
-      responseFriendId: event.friendId,
-      responseFriendSource: event.friendSource,
-      responseBossId: 'boss-1',
-      selfId: 'self-1',
-      senderId: 'boss-1',
-      recipientId: 'self-1',
-      messageJobId: event.externalJobId || null,
-    },
-  }));
+  input.events = events.map((event) =>
+    event.eventType !== 'resume_observed'
+      ? event
+      : {
+          ...event,
+          attribution: {
+            version: 1,
+            source: 'history',
+            accountNamespace: input.accountNamespace,
+            conversationKey: event.conversationKey,
+            messageId: event.messageId,
+            requestedBossId: 'boss-1',
+            responseFriendId: event.friendId,
+            responseFriendSource: event.friendSource,
+            responseBossId: 'boss-1',
+            selfId: 'self-1',
+            senderId: 'boss-1',
+            recipientId: 'self-1',
+            messageJobId: event.externalJobId || null,
+          },
+        },
+  );
   for (const event of input.events)
     event.eventId = `boss-event-${stableHash(bossEventDigestInput(input, event))}`;
   input.batchId = `boss-batch-${stableHash(bossBatchDigestInput(input))}`;
@@ -1193,7 +1198,6 @@ test('归属关卡拒绝旧队列、缺字段与同公司不同岗位，补证�
     ['senderId', 'other-person', 'attribution_participant_conflict'],
     ['messageJobId', 'same-company-other-job', 'attribution_job_conflict'],
     ['responseFriendId', null, 'attribution_conversation_missing'],
-    ['messageJobId', null, 'attribution_job_missing'],
     ['selfId', null, 'attribution_participants_missing'],
   ]) {
     const input = verifiedResumeBatch([resumeEvent({ summary: 'resume_request_sent' })]);
@@ -1222,4 +1226,253 @@ test('归属关卡拒绝旧队列、缺字段与同公司不同岗位，补证�
   tampered.events[0].attribution.messageJobId = 'changed';
   assert.throws(() => validateQueuedBossBatch(tampered));
   await assert.rejects(verifyBossBatch(tampered));
+});
+
+function applySynthetic(data, input, options = {}) {
+  return applyBossBatch(data, input, { workspaceSourceId: SOURCE_ID, stamp: STAMP, ...options })
+    .data;
+}
+
+function secondJobEvent(overrides = {}) {
+  return event({
+    externalJobId: 'second-job',
+    canonicalUrl: 'https://www.zhipin.com/job_detail/second-job.html',
+    conversationKey: '2'.repeat(64),
+    friendId: 'friend-2',
+    uniqueId: 'friend-2-source-1',
+    messageId: 'second-list-message',
+    sequence: 1,
+    ...overrides,
+  });
+}
+
+function twoJobs() {
+  return applySynthetic(boundData(), batch([event(), secondJobEvent()]));
+}
+
+function secondResume(overrides = {}) {
+  return resumeEvent({
+    externalJobId: 'second-job',
+    conversationKey: '2'.repeat(64),
+    friendId: 'friend-2',
+    uniqueId: 'friend-2-source-1',
+    sequence: 2,
+    ...overrides,
+  });
+}
+
+test('同批跨岗位重复先扫描全部候选，事件顺序不影响拦截，无关岗位继续应用', () => {
+  const ordinary = secondJobEvent({ messageId: 'resume-message-1', sequence: 2, initial: false });
+  const input = verifiedResumeBatch([
+    resumeEvent({ summary: 'resume_request_sent' }),
+    ordinary,
+    secondResume({ messageId: 'independent-message', summary: 'resume_request_sent' }),
+  ]);
+  for (const rows of [input.events, [...input.events].reverse()]) {
+    const data = applySynthetic(twoJobs(), { ...input, events: rows });
+    const one = data.sourceApplications.find(
+      (a) => a.factId === bossFactId({ ...input.events[0], accountNamespace: ACCOUNT }),
+    );
+    assert.equal(one.status, 'review');
+    assert.equal(one.reason, 'attribution_message_multiple_jobs');
+    assert.equal(one.ruleVersion, 'boss-application-v6');
+    assert.equal(data.opportunities.find((o) => o.externalId === JOB_ID).resumeState, '未知');
+    assert.equal(
+      data.opportunities.find((o) => o.externalId === 'second-job').resumeState,
+      '已发送',
+    );
+  }
+});
+
+test('跨批重复阻止新增应用，等待项可重评，已应用与人工否决不回退', () => {
+  const first = verifiedResumeBatch([resumeEvent({ summary: 'resume_request_sent' })]);
+  const applied = applySynthetic(twoJobs(), first);
+  const oldDecision = structuredClone(applied.sourceApplications.at(-1));
+  const conflicting = verifiedResumeBatch([secondResume({ summary: 'resume_request_sent' })]);
+  const blocked = applySynthetic(applied, conflicting);
+  assert.deepEqual(
+    blocked.sourceApplications.find((a) => a.id === oldDecision.id),
+    oldDecision,
+  );
+  assert.equal(blocked.sourceApplications.at(-1).reason, 'attribution_message_multiple_jobs');
+  assert.equal(blocked.opportunities.find((o) => o.externalId === JOB_ID).resumeState, '已发送');
+  assert.deepEqual(applySynthetic(blocked, conflicting).opportunities, blocked.opportunities);
+  const waitingInput = resumeBatch([resumeEvent({ summary: 'resume_request_sent' })]);
+  const waiting = applySynthetic(twoJobs(), waitingInput);
+  const both = applySynthetic(waiting, conflicting);
+  const rechecked = applySynthetic(both, waitingInput);
+  assert.equal(
+    rechecked.sourceApplications.find(
+      (a) => a.factId === bossFactId({ ...waitingInput.events[0], accountNamespace: ACCOUNT }),
+    ).reason,
+    'attribution_message_multiple_jobs',
+  );
+  const rejected = rejectMisattributedResumeObservation(applied, {
+    opportunityId: applied.opportunities.find((o) => o.externalId === JOB_ID).id,
+    eventId: first.events[0].eventId,
+    stamp: STAMP,
+  });
+  const rejection = structuredClone(
+    rejected.sourceApplications.find((a) => a.id === oldDecision.id),
+  );
+  const after = applySynthetic(applySynthetic(rejected, conflicting), first);
+  assert.deepEqual(
+    after.sourceApplications.find((a) => a.id === rejection.id),
+    rejection,
+  );
+  assert.equal(after.sourceApplications.at(-1).reason, 'attribution_message_multiple_jobs');
+});
+
+test('会话岗位变化不替代消息岗位证据，旧队列等待，明确身份通过或冲突，人工状态受保护', () => {
+  const data = applySynthetic(
+    twoJobs(),
+    batch([
+      secondJobEvent({
+        conversationKey: '1'.repeat(64),
+        friendId: 'friend-1',
+        uniqueId: 'friend-1-source-1',
+        messageId: 'changed-list-message',
+      }),
+    ]),
+  );
+  const raw = resumeBatch([resumeEvent({ summary: 'resume_request_sent' })]);
+  const waiting = applySynthetic(data, raw);
+  assert.equal(waiting.sourceApplications.at(-1).reason, 'attribution_conversation_job_changed');
+  const complete = verifiedResumeBatch([resumeEvent({ summary: 'resume_request_sent' })]);
+  const applied = applySynthetic(waiting, complete);
+  assert.equal(applied.opportunities.find((o) => o.externalId === JOB_ID).resumeState, '已发送');
+  const missing = structuredClone(complete);
+  missing.events[0].attribution.messageJobId = null;
+  assert.equal(
+    applySynthetic(data, missing).sourceApplications.at(-1).reason,
+    'attribution_conversation_job_changed',
+  );
+  missing.events[0].attribution.responseFriendId = null;
+  assert.equal(
+    applySynthetic(data, missing).sourceApplications.at(-1).reason,
+    'attribution_conversation_job_changed',
+  );
+  const mismatch = structuredClone(complete);
+  mismatch.events[0].attribution.messageJobId = 'second-job';
+  assert.equal(
+    applySynthetic(data, mismatch).sourceApplications.at(-1).reason,
+    'attribution_job_conflict',
+  );
+  const protectedData = structuredClone(data);
+  const job = protectedData.opportunities.find((o) => o.externalId === JOB_ID);
+  job.resumeState = '被索要';
+  markManualFields(protectedData, job.id, ['resumeState']);
+  const protectedResult = applySynthetic(protectedData, complete);
+  assert.equal(protectedResult.opportunities.find((o) => o.id === job.id).resumeState, '被索要');
+  assert.equal(protectedResult.sourceApplications.at(-1).status, 'protected');
+});
+
+test('恢复重放使用当前来源上下文，删除记录不作为候选线索且不自动复活', () => {
+  const first = verifiedResumeBatch([resumeEvent({ summary: 'resume_request_sent' })]);
+  const applied = applySynthetic(twoJobs(), first);
+  const restored = applySynthetic(
+    applied,
+    batch([secondJobEvent({ messageId: 'resume-message-1' })]),
+  );
+  const removed = applied.sourceApplications.at(-1);
+  restored.sourceFacts = restored.sourceFacts.filter((f) => f.id !== removed.factId);
+  restored.sourceApplications = restored.sourceApplications.filter((a) => a.id !== removed.id);
+  const conflict = restored;
+  assert.throws(() => applySynthetic(conflict, first), { code: 'RESTORE_REVIEW_REQUIRED' });
+  const replay = applySynthetic(conflict, first, { allowEventRestore: true });
+  assert.equal(replay.sourceApplications.at(-1).reason, 'attribution_message_multiple_jobs');
+  assert.equal(replay.sourceApplications.at(-1).status, 'review');
+  const deleted = structuredClone(twoJobs());
+  const other = deleted.sourceEvents.find((e) => e.externalJobId === 'second-job');
+  other.messageId = 'resume-message-1';
+  other.deletedAt = STAMP;
+  assert.equal(applySynthetic(deleted, first).sourceApplications.at(-1).status, 'applied');
+});
+
+function conversationResumeBatch(events) {
+  const input = verifiedResumeBatch(events);
+  for (const event of input.events) if (event.attribution) event.attribution.messageJobId = null;
+  input.batchId = `boss-batch-${stableHash(bossBatchDigestInput(input))}`;
+  return input;
+}
+
+test('缺少消息岗位身份时依据会话应用新消息和历史等待项，记录依据且保留原事实身份', async () => {
+  const data = applySynthetic(boundData(), batch([event()]));
+  const row = resumeEvent({ summary: 'resume_request_sent' });
+  const input = conversationResumeBatch([row]);
+  const raw = structuredClone(input);
+  raw.events[0].attribution = null;
+  raw.batchId = `boss-batch-${stableHash(bossBatchDigestInput(raw))}`;
+  const waiting = applySynthetic(data, raw);
+  validateQueuedBossBatch(input);
+  await verifyBossBatch(input);
+  const applied = applySynthetic(waiting, input);
+  assert.equal(applied.opportunities[0].resumeState, '已发送');
+  assert.equal(applied.opportunities[0].readState, '已读');
+  assert.equal(applied.opportunities[0].stage, '沟通中');
+  assert.equal(applied.sourceEvents.length, waiting.sourceEvents.length);
+  assert.equal(applied.sourceFacts.length, waiting.sourceFacts.length);
+  assert.equal(applied.sourceApplications.at(-1).id, waiting.sourceApplications.at(-1).id);
+  assert.equal(
+    applied.sourceApplications.at(-1).reason,
+    'resume_status_advanced_conversation_association',
+  );
+  assert.equal(applied.sourceApplications.at(-1).ruleVersion, 'boss-application-v6');
+  assert.deepEqual(applySynthetic(applied, input), applied);
+  const restored = structuredClone(waiting);
+  restored.sourceFacts.pop();
+  restored.sourceApplications.pop();
+  const replay = applySynthetic(restored, input, { allowEventRestore: true });
+  assert.equal(
+    replay.sourceApplications.at(-1).reason,
+    'resume_status_advanced_conversation_association',
+  );
+});
+
+test('会话归属仍拒绝缺联系人、错误参与者、无岗位、跨岗位重复，人工保护和否决不变', () => {
+  const data = twoJobs();
+  const row = resumeEvent({ summary: 'resume_request_sent' });
+  for (const [field, value, reason] of [
+    ['responseFriendId', null, 'attribution_conversation_missing'],
+    ['senderId', 'wrong-person', 'attribution_participant_conflict'],
+    ['selfId', null, 'attribution_participants_missing'],
+  ]) {
+    const input = conversationResumeBatch([row]);
+    input.events[0].attribution[field] = value;
+    const result = applySynthetic(data, input);
+    assert.deepEqual(result.opportunities, data.opportunities);
+    assert.equal(result.sourceApplications.at(-1).reason, reason);
+  }
+  const missingJob = conversationResumeBatch([
+    resumeEvent({ externalJobId: '', summary: 'resume_request_sent' }),
+  ]);
+  assert.equal(
+    applySynthetic(data, missingJob).sourceApplications.at(-1).reason,
+    'attribution_job_missing',
+  );
+  const conflicting = conversationResumeBatch([
+    row,
+    secondResume({ summary: 'resume_request_sent' }),
+  ]);
+  const blocked = applySynthetic(data, conflicting);
+  assert.deepEqual(blocked.opportunities, data.opportunities);
+  assert.ok(
+    blocked.sourceApplications
+      .filter((a) => a.action === 'resume_observed')
+      .every((a) => a.reason === 'attribution_message_multiple_jobs'),
+  );
+  const input = conversationResumeBatch([row]);
+  const manual = structuredClone(data);
+  const job = manual.opportunities.find((o) => o.externalId === JOB_ID);
+  markManualFields(manual, job.id, ['resumeState']);
+  const protectedData = applySynthetic(manual, input);
+  assert.equal(protectedData.sourceApplications.at(-1).status, 'protected');
+  assert.deepEqual(protectedData.opportunities, manual.opportunities);
+  const applied = applySynthetic(data, input);
+  const rejected = rejectMisattributedResumeObservation(applied, {
+    opportunityId: applied.opportunities.find((o) => o.externalId === JOB_ID).id,
+    eventId: input.events[0].eventId,
+    stamp: STAMP,
+  });
+  assert.deepEqual(applySynthetic(rejected, input), rejected);
 });

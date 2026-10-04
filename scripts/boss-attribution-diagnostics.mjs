@@ -2,15 +2,21 @@ import { RESUME_KINDS, RESUME_SUMMARIES } from '../dist/resume-rules.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { chmod, lstat, mkdir, open, link, unlink, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { assessBossAttribution } from '../dist/boss-attribution.js';
+import { assessBossAttribution, buildBossAttributionContext } from '../dist/boss-attribution.js';
 const digest = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const stages = new Set(['checkpoint', 'snapshot', 'queue', 'consume']);
 
 // First occurrence only. Neither raw identities nor text are written to diagnostic files.
-export async function recordAttributionDiagnostic(root, accountNamespace, event, stage) {
+export async function recordAttributionDiagnostic(
+  root,
+  accountNamespace,
+  event,
+  stage,
+  context = null,
+) {
   if (!stages.has(stage)) throw new Error('ATTRIBUTION_DIAGNOSTIC_STAGE_INVALID');
   const decision = event.messageId
-    ? assessBossAttribution(accountNamespace, event)
+    ? assessBossAttribution(accountNamespace, event, context)
     : { status: 'collection', reason: 'missing_message_identity' };
   if (decision.status === 'verified') return;
   const evidence = event.attribution;
@@ -125,7 +131,13 @@ export async function recordAttributionDiagnostic(root, accountNamespace, event,
 export async function recordCollectorDiagnostics(
   directory,
   observations,
-  { accountNamespace = null, stage = 'snapshot', associations = [], unresolved = [] } = {},
+  {
+    accountNamespace = null,
+    stage = 'snapshot',
+    associations = [],
+    unresolved = [],
+    records = [],
+  } = {},
 ) {
   for (const item of unresolved) {
     if (
@@ -140,17 +152,34 @@ export async function recordCollectorDiagnostics(
         stage,
       );
   }
-  for (const observation of observations || []) {
+  const events = (observations || []).map((observation) => {
     const candidate = associations.find(
       (item) => item.conversationKey === observation.conversationKey && item.status === 'current',
     );
-    const event = {
+    return {
       ...observation,
+      accountNamespace,
       friendId: observation.friendId ?? observation.platformIdentity?.friendId,
       friendSource: observation.friendSource ?? observation.platformIdentity?.friendSource,
       externalJobId: candidate?.jobId || observation.externalJobId || '',
       attribution: observation.attribution ?? null,
     };
-    await recordAttributionDiagnostic(directory, accountNamespace, event, stage);
+  });
+  const context = buildBossAttributionContext([
+    ...events,
+    ...records.map((record) => ({
+      accountNamespace,
+      conversationKey: record.key,
+      messageId: record.latestMessageId,
+      externalJobId: record.jobAssociation?.jobId,
+    })),
+    ...associations.map((item) => ({
+      accountNamespace,
+      conversationKey: item.conversationKey,
+      externalJobId: item.jobId,
+    })),
+  ]);
+  for (const event of events) {
+    await recordAttributionDiagnostic(directory, accountNamespace, event, stage, context);
   }
 }

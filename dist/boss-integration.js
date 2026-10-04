@@ -1,6 +1,10 @@
 import { validateBossBatch, bossEventDigestInput, bossBatchDigestInput } from './boss-batch.js';
 export { validateBossBatch } from './boss-batch.js';
-import { assessBossAttribution, bossAttributionSummary } from './boss-attribution.js';
+import {
+  assessBossAttribution,
+  bossAttributionSummary,
+  buildBossAttributionContext,
+} from './boss-attribution.js';
 import { resumeRule, resumeTransition } from './resume-rules.js';
 import {
   clone,
@@ -369,8 +373,8 @@ export function bossReceiptGap(data, batch) {
   }).length;
 }
 
-function resolveResumeEvent(data, batch, event) {
-  const attribution = assessBossAttribution(batch.accountNamespace, event);
+function resolveResumeEvent(data, batch, event, context) {
+  const attribution = assessBossAttribution(batch.accountNamespace, event, context);
   if (attribution.status !== 'verified')
     return {
       status: 'review',
@@ -413,7 +417,7 @@ function resolveResumeEvent(data, batch, event) {
       applicationStatus: opportunity?.deletedAt ? 'protected' : 'review',
       reason: opportunity?.deletedAt ? 'opportunity_deleted' : 'job_identity_conflict',
     };
-  return { status: 'recorded', targetId: opportunity.id };
+  return { status: 'recorded', targetId: opportunity.id, attributionReason: attribution.reason };
 }
 
 function applyResumeStatus(data, result, event, stamp) {
@@ -629,6 +633,10 @@ export function applyBossBatch(
     throw integrationError('此 BOSS 账号尚未绑定到当前浏览器工作区。', 'SOURCE_NOT_BOUND');
 
   const counts = { added: 0, linked: 0, observed: 0, reviewed: 0, skipped: 0 };
+  const attributionContext = buildBossAttributionContext([
+    ...data.sourceEvents,
+    ...batch.events.map((event) => ({ ...event, accountNamespace: batch.accountNamespace })),
+  ]);
   for (const event of batch.events) {
     const identity = { ...event, platform: 'boss', accountNamespace: batch.accountNamespace },
       completeFactIdentity = hasBossFactIdentity(identity),
@@ -706,7 +714,7 @@ export function applyBossBatch(
             reason: 'entity_sync_conflict',
           }
         : event.eventType === 'resume_observed'
-          ? resolveResumeEvent(data, batch, event)
+          ? resolveResumeEvent(data, batch, event, attributionContext)
           : event.intent === 'review'
             ? {
                 status: 'review',
@@ -722,7 +730,14 @@ export function applyBossBatch(
     if (result.linked) counts.linked++;
     if (result.status === 'recorded') counts.observed++;
     else counts.reviewed++;
-    if (event.eventType === 'resume_observed') applyResumeStatus(data, result, event, stamp);
+    if (event.eventType === 'resume_observed') {
+      applyResumeStatus(data, result, event, stamp);
+      if (
+        result.attributionReason === 'attribution_conversation_association' &&
+        ['applied', 'no_effect'].includes(result.applicationStatus)
+      )
+        result.reason += '_conversation_association';
+    }
     const evidence =
       stored && !stored.deletedAt
         ? stored
