@@ -4,7 +4,7 @@ import { parseReceipt } from './receipt.mjs';
 
 const MAX_LOADED_ROWS = 1000;
 const MAX_TEXT = 2000;
-const JOB_ID = /^[A-Za-z0-9_-]+$/;
+const JOB_ID = /^[A-Za-z0-9_~\-]+$/;
 const POSITIVE_ID = /^[1-9]\d*$/;
 const SOURCE_ID = /^\d+$/;
 
@@ -115,7 +115,7 @@ export const expression = pagePrelude(`
       unread:null, outgoingReceipt,
       receiptObservationSource:node ? 'rendered_dom' : 'offscreen_unknown',
       rendered:Boolean(node), domIdentityMatches,
-      encryptJobId:/^[A-Za-z0-9_-]+$/.test(encryptJobId ?? '') ? encryptJobId : null,
+      encryptJobId:/^[A-Za-z0-9_~\-]+$/.test(encryptJobId ?? '') ? encryptJobId : null,
       jobName:jobName || null,
     });
   });

@@ -434,3 +434,25 @@ test('未来服务协议拒绝正式读写；静态域不访问本机服务', as
   assert.equal(await website.client.update((value) => value), null);
   assert.equal(website.calls.length, 0);
 });
+
+test('忽略命令绑定已核对版本，丢失回复重用同一请求，不盲目跟随新版本', async () => {
+  let posts = 0;
+  const f = fixture({
+    custom: async (call, { envelope }) => {
+      if (call.path !== './__local/workspace/commands') return;
+      assert.equal(call.parsed.type, 'ignore_boss_observations');
+      posts++;
+      if (posts === 1) throw new Error('synthetic lost reply');
+      return response(envelope());
+    },
+  });
+  await f.client.read();
+  await assert.rejects(f.client.ignoreBossObservations(['synthetic-id'], 0), {
+    code: 'WORKSPACE_REVISION_CONFLICT',
+  });
+  assert.equal(posts, 0);
+  await f.client.ignoreBossObservations(['synthetic-id'], 1);
+  const commands = f.calls.filter((call) => call.path === './__local/workspace/commands');
+  assert.equal(commands.length, 2);
+  assert.deepEqual(commands[0].parsed, commands[1].parsed);
+});

@@ -1,3 +1,4 @@
+import { PLATFORM_JOB_LABELS, groupBossObservations } from './boss-observations.js';
 import { STAGES, getOpportunityStatus, live, today } from './model.js';
 import { DUE_DATE_PRESETS, addCalendarDays, getTaskDefaults } from './planning.js';
 import { getTodayItems } from './today.js';
@@ -69,7 +70,7 @@ export function createViews(context, pendingTasks) {
   function jobRow(o) {
     const { state, selected, jobDate } = context(),
       next = jobDate ? null : pendingTasks(o.id)[0];
-    return `<button class="job-row" data-job="${esc(o.id)}" aria-pressed="${selected === o.id}"><div class="row-top"><span class="company">${esc(o.company)}</span><span class="badges">${o.priority === '重点' ? '<span class="badge warn">重点</span>' : ''}<span class="badge ${o.stage === '沟通中' ? 'blue' : ''}">${jobDate ? '当前阶段：' : ''}${esc(getOpportunityStatus(o).stage)}</span></span></div><div class="job-role">${esc(o.role)}</div>${next ? `<div class="next-task">${esc(next.text)}</div>` : ''}<div class="row-bottom"><span>${esc(o.platform || '渠道未填')} · ${esc(messageStatus(state.data, o))}</span><span>${next ? esc(next.dueAt || '日期待定') : esc(o.appliedAt || '日期未填')}</span></div></button>`;
+    return `<button class="job-row" data-job="${esc(o.id)}" aria-pressed="${selected === o.id}"><div class="row-top"><span class="company">${esc(o.company)}</span><span class="badges">${o.priority === '重点' ? '<span class="badge warn">重点</span>' : ''}${o.platformJobState === 'closed' ? '<span class="badge">平台已关闭</span>' : ''}<span class="badge ${o.stage === '沟通中' ? 'blue' : ''}">${jobDate ? '当前阶段：' : ''}${esc(getOpportunityStatus(o).stage)}</span></span></div><div class="job-role">${esc(o.role)}</div>${next ? `<div class="next-task">${esc(next.text)}</div>` : ''}<div class="row-bottom"><span>${esc(o.platform || '渠道未填')} · ${esc(messageStatus(state.data, o))}</span><span>${next ? esc(next.dueAt || '日期待定') : esc(o.appliedAt || '日期未填')}</span></div></button>`;
   }
   function detailDateRecords() {
     const { state, selected, detailDate } = context();
@@ -80,7 +81,7 @@ export function createViews(context, pendingTasks) {
     return `<section class="detail-date-records"><h3>查看日期：${esc(detailDate)}</h3><p class="note-summary">这里展示所选日期的记录；下方操作按各自填写或实际发生的日期保存。</p>${record ? dailyRecordEvents(record, detailDate) : '<p class="note-summary">这个岗位在所选日期没有记录。</p>'}</section>`;
   }
   function detail() {
-    const { state, selected, detailSections = {} } = context(),
+    const { state, selected, detailSections = {}, detailBackLabel = '返回结果' } = context(),
       o = live(state.data.opportunities).find((x) => x.id === selected);
     if (!o) return '';
     const activities = live(state.data.activities)
@@ -109,18 +110,54 @@ export function createViews(context, pendingTasks) {
             Number(b.sourceSequence || 0) - Number(a.sourceSequence || 0) ||
             (b.observedAt || '').localeCompare(a.observedAt || ''),
         ),
-      platformSection = observations.length
-        ? `<details class="detail-section" data-detail-section-panel="platform"${expanded('platform')}><summary>平台观察 <span class="muted">${observations.length} 条</span></summary><p class="note-summary">来自只读列表或历史记录采集，不覆盖人工消息、简历或招聘阶段。</p><ol class="timeline platform-observations">${observations
+      observationId = (event) => sourceApplicationForEvent(state.data, event)?.id || event.id,
+      platformGroups = groupBossObservations(
+        observations.map((event) => ({
+          applicationId: observationId(event),
+          reason: sourceApplicationForEvent(state.data, event)?.reason || '',
+          status: sourceApplicationForEvent(state.data, event)?.status || event.status,
+        })),
+        { ...state.data, sourceEvents: observations },
+      ).map((group) => ({
+        ...group,
+        rows: observations.filter((event) => group.applicationIds.includes(observationId(event))),
+      })),
+      platformSection = platformGroups.length
+        ? `<details class="detail-section" data-detail-section-panel="platform"${expanded('platform')}><summary>平台观察 <span class="muted">${platformGroups.length} 条消息 · ${observations.length} 项观察</span></summary><p class="note-summary">同一消息的普通观察、送达及已读汇总展示，原始事实保留；不覆盖人工消息、简历或招聘阶段。</p><ol class="timeline platform-observations">${platformGroups
             .slice(0, 20)
-            .map(
-              (event) =>
-                `<li><time>${esc(event.evidenceDate || event.observedAt || '时间未知')} · ${esc(event.contact || '招聘者未标记')} · ${esc(platformObservationLabel(event))}</time>${event.eventType === 'resume_observed' ? '<span class="muted">结构化简历事件</span>' : event.summary ? esc(event.summary) : '<span class="muted">没有可展示的列表摘要</span>'}</li>`,
-            )
+            .map((group) => {
+              const event = group.rows[0];
+              const summary = group.rows.find(
+                (row) => row.eventType !== 'resume_observed' && row.summary,
+              )?.summary;
+              const labels = [...new Set(group.rows.map(platformObservationLabel))];
+              return `<li><time>${esc(event.evidenceDate || event.observedAt || '时间未知')} · ${esc(event.contact || '招聘者未标记')} · ${labels.map(esc).join('、')}</time>${summary ? esc(summary) : '<span class="muted">结构化平台观察</span>'}<small>包含 ${group.rows.length} 项观察</small></li>`;
+            })
             .join(
               '',
-            )}</ol>${observations.length > 20 ? `<p class="note-summary">仅显示最近 20 条，共 ${observations.length} 条。</p>` : ''}</details>`
+            )}</ol>${platformGroups.length > 20 ? `<p class="note-summary">仅显示最近 20 条消息，共 ${platformGroups.length} 条。</p>` : ''}</details>`
         : '';
-    return `<aside class="panel detail-panel" aria-labelledby="detail-title"><div class="detail-head"><button class="text-button detail-back" data-close-detail>← 返回结果</button><h2 id="detail-title" tabindex="-1">${esc(o.company)}</h2><p class="job-role">${esc(o.role)}</p><div class="badges"><span class="badge blue">当前岗位阶段：${esc(getOpportunityStatus(o).stage)}</span><span class="badge">消息：${esc(messageStatus(state.data, o))}</span><span class="badge">简历：${esc(o.resumeState || '未知')}</span></div><div class="detail-actions"><button class="primary" data-detail-section="activity">记录沟通</button><button class="secondary" data-detail-section="task">安排下一步</button><button class="text-button" data-action="edit" data-editor-focus="stage" data-id="${esc(o.id)}">更新阶段</button></div></div><div class="detail-body"><div id="detail-filter-notice" class="warning" hidden></div><div id="detail-date-records">${detailDateRecords()}</div>${o.stage === '已结束' ? `<div class="warning">已结束：${esc(o.endReason || '原因未填')}</div>` : ''}<section class="pending-actions"><h3>下一步行动 <small class="muted">${tasks.length}</small></h3>${tasks.length ? tasks.map((t) => `<div class="task-line"><div class="task-text">${esc(t.text)}<small>${esc(t.dueAt || '日期待定')}${t.dueAt && t.dueAt < currentDate ? ' · 已逾期' : ''}</small></div><button class="text-button" data-complete="${esc(t.id)}">完成</button><button class="text-button" data-cancel-task="${esc(t.id)}">取消</button></div>`).join('') : '<p class="note-summary">尚未安排下一步。</p>'}</section><details class="detail-section" data-detail-section-panel="task"${expanded('task')}><summary>安排下一步</summary><form id="task-form" class="form-stack" data-suggested-default="${!!defaults.text}"><label>新增行动<input name="text" required maxlength="500" placeholder="例如：询问面试安排" value="${esc(defaults.text)}"></label><label>计划日期<input type="date" name="dueAt" value="${esc(defaults.dueAt)}"></label><div class="date-presets" role="group" aria-label="计划日期快捷选项"><span>快捷日期</span>${datePresets}<button type="button" class="date-preset" data-due-offset="" aria-pressed="${!defaults.dueAt}">不设日期</button></div><button class="secondary" type="submit">安排下一步</button></form></details><details class="detail-section" data-detail-section-panel="activity"${expanded('activity')}><summary>记录沟通</summary><form id="activity-form" class="form-stack"><label>发生了什么<textarea name="text" required maxlength="10000" placeholder="例如：已发送简历，对方说下周安排面试"></textarea></label><div class="form-grid"><label>日期<input type="date" name="date" value="${currentDate}" required></label><label>类型<select name="type">${options(['沟通记录', '对方回复', '发送简历', '跟进', '面试', '复盘'], '沟通记录')}</select></label></div><button class="primary" type="submit">保存沟通记录</button></form></details>${platformSection}<details class="detail-section" data-detail-section-panel="facts"${expanded('facts')}><summary>基础资料</summary><div class="detail-actions">${url ? `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer" class="text-button">打开岗位 ↗</a>` : '<span></span>'}<button class="text-button" data-action="edit" data-id="${esc(o.id)}">编辑岗位</button></div><dl class="detail-facts"><dt>首次联系</dt><dd>${esc(o.appliedAt || '未填')}</dd><dt>联系人</dt><dd>${esc(o.contact || '未填')}</dd>${o.location ? `<dt>地点</dt><dd>${esc(o.location)}</dd>` : ''}${o.salary ? `<dt>薪资</dt><dd>${esc(o.salary)}</dd>` : ''}</dl>${o.notes ? `<section class="section-gap"><h3>备注</h3><p class="long-copy">${esc(o.notes)}</p></section>` : ''}${o.description ? `<section class="section-gap"><h3>岗位描述</h3><p class="long-copy">${esc(o.description)}</p></section>` : ''}${o.rawStatus ? `<div class="raw-note">导入时的原始状态：${esc(o.rawStatus)}</div>` : ''}</details><details class="detail-section" data-detail-section-panel="history"${expanded('history')}><summary>完整历史 <span class="muted">${activities.length + resolvedTasks.length} 条</span></summary><div class="section-gap"><h3>沟通时间线</h3>${activities.length ? `<ol class="timeline">${activities.map((a) => `<li><time>${esc(a.date || '日期未记录')} · ${esc(a.type || '记录')}</time>${esc(a.text)}</li>`).join('')}</ol>` : '<p class="note-summary">还没有沟通记录。</p>'}${resolvedTasks.length ? `<h3 class="section-gap">已完成 / 已取消行动</h3>${resolvedTasks.map((t) => `<div class="task-line"><div class="task-text">${esc(t.text)}<small>${esc(t.status)} · 原计划：${esc(t.dueAt || '未设日期')}${t.completedAt ? ` · ${esc(new Date(t.completedAt).toLocaleString('zh-CN'))}` : ''}</small></div></div>`).join('')}` : ''}</div></details></div></aside>`;
+    return `<aside class="panel detail-panel" aria-labelledby="detail-title"><div class="detail-head"><button class="text-button detail-back" data-close-detail>← ${esc(detailBackLabel)}</button><h2 id="detail-title" tabindex="-1">${esc(o.company)}</h2><p class="job-role">${esc(o.role)}</p><div class="badges"><span class="badge blue">当前岗位阶段：${esc(getOpportunityStatus(o).stage)}</span><span class="badge">消息：${esc(messageStatus(state.data, o))}</span><span class="badge">简历：${esc(o.resumeState || '未知')}</span>${o.platformJobState && o.platformJobState !== 'unknown' ? `<span class="badge">${esc(PLATFORM_JOB_LABELS[o.platformJobState])}</span>` : ''}</div><div class="detail-actions"><button class="primary" data-detail-section="activity">记录沟通</button><button class="secondary" data-detail-section="task">安排下一步</button><button class="text-button" data-action="edit" data-editor-focus="stage" data-id="${esc(o.id)}">更新阶段</button></div></div><div class="detail-body"><div id="detail-filter-notice" class="warning" hidden></div><div id="detail-date-records">${detailDateRecords()}</div>${o.stage === '已结束' ? `<div class="warning">已结束：${esc(o.endReason || '原因未填')}</div>` : ''}<section class="pending-actions"><h3>下一步行动 <small class="muted">${tasks.length}</small></h3>${tasks.length ? tasks.map((t) => `<div class="task-line"><div class="task-text">${esc(t.text)}<small>${esc(t.dueAt || '日期待定')}${t.dueAt && t.dueAt < currentDate ? ' · 已逾期' : ''}</small></div><button class="text-button" data-complete="${esc(t.id)}">完成</button><button class="text-button" data-cancel-task="${esc(t.id)}">取消</button></div>`).join('') : '<p class="note-summary">尚未安排下一步。</p>'}</section><details class="detail-section" data-detail-section-panel="task"${expanded('task')}><summary>安排下一步</summary><form id="task-form" class="form-stack" data-suggested-default="${!!defaults.text}"><label>新增行动<input name="text" required maxlength="500" placeholder="例如：询问面试安排" value="${esc(defaults.text)}"></label><label>计划日期<input type="date" name="dueAt" value="${esc(defaults.dueAt)}"></label><div class="date-presets" role="group" aria-label="计划日期快捷选项"><span>快捷日期</span>${datePresets}<button type="button" class="date-preset" data-due-offset="" aria-pressed="${!defaults.dueAt}">不设日期</button></div><button class="secondary" type="submit">安排下一步</button></form></details><details class="detail-section" data-detail-section-panel="activity"${expanded('activity')}><summary>记录沟通</summary><form id="activity-form" class="form-stack"><label>发生了什么<textarea name="text" required maxlength="10000" placeholder="例如：已发送简历，对方说下周安排面试"></textarea></label><div class="form-grid"><label>日期<input type="date" name="date" value="${currentDate}" required></label><label>类型<select name="type">${options(['沟通记录', '对方回复', '发送简历', '跟进', '面试', '复盘'], '沟通记录')}</select></label></div><button class="primary" type="submit">保存沟通记录</button></form></details>${platformSection}<details class="detail-section" data-detail-section-panel="facts"${expanded('facts')}><summary>基础资料</summary><div class="detail-actions">${url ? `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer" class="text-button">打开岗位 ↗</a>` : '<span></span>'}<button class="text-button" data-action="edit" data-id="${esc(o.id)}">编辑岗位</button></div><dl class="detail-facts"><dt>首次联系</dt><dd>${esc(o.appliedAt || '未填')}</dd><dt>联系人</dt><dd>${esc(o.contact || '未填')}</dd>${
+      [
+        ...new Set(
+          observations
+            .filter((event) => event.status === 'recorded')
+            .map((event) => event.company)
+            .filter(Boolean),
+        ),
+      ].length
+        ? `<dt>观察中的招聘方</dt><dd>${[
+            ...new Set(
+              observations
+                .filter((event) => event.status === 'recorded')
+                .map((event) => event.company)
+                .filter(Boolean),
+            ),
+          ]
+            .map(esc)
+            .join('、')}</dd>`
+        : ''
+    }${o.location ? `<dt>地点</dt><dd>${esc(o.location)}</dd>` : ''}${o.salary ? `<dt>薪资</dt><dd>${esc(o.salary)}</dd>` : ''}</dl>${o.notes ? `<section class="section-gap"><h3>备注</h3><p class="long-copy">${esc(o.notes)}</p></section>` : ''}${o.description ? `<section class="section-gap"><h3>岗位描述</h3><p class="long-copy">${esc(o.description)}</p></section>` : ''}${o.rawStatus ? `<div class="raw-note">导入时的原始状态：${esc(o.rawStatus)}</div>` : ''}</details><details class="detail-section" data-detail-section-panel="history"${expanded('history')}><summary>完整历史 <span class="muted">${activities.length + resolvedTasks.length} 条</span></summary><div class="section-gap"><h3>沟通时间线</h3>${activities.length ? `<ol class="timeline">${activities.map((a) => `<li><time>${esc(a.date || '日期未记录')} · ${esc(a.type || '记录')}</time>${esc(a.text)}</li>`).join('')}</ol>` : '<p class="note-summary">还没有沟通记录。</p>'}${resolvedTasks.length ? `<h3 class="section-gap">已完成 / 已取消行动</h3>${resolvedTasks.map((t) => `<div class="task-line"><div class="task-text">${esc(t.text)}<small>${esc(t.status)} · 原计划：${esc(t.dueAt || '未设日期')}${t.completedAt ? ` · ${esc(new Date(t.completedAt).toLocaleString('zh-CN'))}` : ''}</small></div></div>`).join('')}` : ''}</div></details></div></aside>`;
   }
   function todayView() {
     const { state, actionTab = 'today' } = context(),

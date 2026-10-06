@@ -18,6 +18,42 @@ export function initialWorkspace() {
 const V1_GROUPS = ['opportunities', 'activities', 'tasks', 'imports'];
 const dataMigrations = new Map([
   [
+    3,
+    (input) => {
+      const stateFields = ['platformJobState', 'platformJobStateSource', 'platformJobStateAt'];
+      const resolutionFields = ['resolutionSource', 'resolvedJobId', 'resolvedJobUrl'];
+      for (const group of ['opportunities', 'sourceApplications']) {
+        if (
+          !Array.isArray(input[group]) ||
+          input[group].some((row) =>
+            [...stateFields, ...resolutionFields].some((field) => field in row),
+          )
+        )
+          throw new Error('旧数据包含未知字段，已停止迁移。');
+      }
+      input = upgradeSourceLedger(input);
+      return {
+        ...input,
+        schemaVersion: 4,
+        opportunities: input.opportunities.map((row) => ({
+          ...row,
+          platformJobState: 'unknown',
+          platformJobStateSource: '',
+          platformJobStateAt: '',
+        })),
+        sourceApplications: input.sourceApplications.map((row) => ({
+          ...row,
+          resolutionSource: '',
+          resolvedJobId: '',
+          resolvedJobUrl: '',
+          platformJobState: 'unknown',
+          platformJobStateSource: '',
+          platformJobStateAt: '',
+        })),
+      };
+    },
+  ],
+  [
     1,
     (input) => {
       if (Object.keys(input).some((key) => !['schemaVersion', ...V1_GROUPS].includes(key)))
@@ -87,9 +123,19 @@ function validatePending(pending) {
     for (const side of ['base', 'local', 'remote']) {
       if (c[side] !== undefined) {
         if (c[side].id !== c.id) throw new Error('冲突记录 ID 不一致。');
-        c[side] = migrateData({ ...emptyData(), [c.group]: [c[side]] }, { allowOrphans: true })[
-          c.group
-        ][0];
+        const sideData = emptyData();
+        if (pending.data.schemaVersion < 3) {
+          delete sideData.sourceFacts;
+          delete sideData.sourceApplications;
+        }
+        if (pending.data.schemaVersion < 2) {
+          delete sideData.sourceBindings;
+          delete sideData.sourceEvents;
+        }
+        c[side] = migrateData(
+          { ...sideData, schemaVersion: pending.data.schemaVersion, [c.group]: [c[side]] },
+          { allowOrphans: true },
+        )[c.group][0];
       }
     }
   }
@@ -187,6 +233,8 @@ export function restoreWorkspace(current, backup, mode) {
     if (mode !== 'snapshot')
       throw new Error('包含同步冲突的完整备份请使用“回到快照”，以保留双方记录。');
     const restored = incoming.workspace;
+    preserveManualJobDetails(before.data, restored.data);
+    preserveManualJobDetails(before.data, restored.pending.data);
     restored.generation = s.generation + 1;
     restored.pending.generation = restored.generation;
     restored.lastSync = '';
@@ -211,10 +259,42 @@ export function restoreWorkspace(current, backup, mode) {
       s.data[group] = [...rows.values()];
     }
   }
+  preserveManualJobDetails(before.data, s.data);
+  const originalSchema = backup?.workspace?.data?.schemaVersion ?? backup?.schemaVersion;
+  if (originalSchema < 4) {
+    for (const group of ['opportunities', 'sourceApplications']) {
+      for (const previous of before.data[group]) {
+        const row = s.data[group].find((row) => row.id === previous.id && !row.deletedAt);
+        if (
+          row &&
+          !previous.deletedAt &&
+          previous.platformJobStateSource === 'user' &&
+          (row.platformJobState || 'unknown') === 'unknown'
+        ) {
+          row.platformJobState = previous.platformJobState;
+          row.platformJobStateSource = previous.platformJobStateSource;
+          row.platformJobStateAt = previous.platformJobStateAt;
+        }
+      }
+    }
+  }
   for (const job of s.data.opportunities.filter((o) => o.deletedAt))
     removeOpportunity(s.data, job.id);
   s.data = validateData(s.data);
   s.generation++;
   s.lastSync = '';
   return s;
+}
+
+function preserveManualJobDetails(before, next) {
+  for (const previous of before.sourceApplications) {
+    if (previous.deletedAt || previous.resolutionSource !== 'user') continue;
+    const row = next.sourceApplications.find(
+      (row) => row.id === previous.id && row.factId === previous.factId && !row.deletedAt,
+    );
+    if (!row || !['waiting', 'review'].includes(row.status)) continue;
+    if (!next.opportunities.some((target) => target.id === previous.opportunityId))
+      throw new Error('备份缺少已人工确认的岗位目标，请保留当前工作区并核对备份。');
+    Object.assign(row, clone(previous));
+  }
 }

@@ -555,7 +555,7 @@ test('inbox is immutable, private, and does not chmod a shared parent', async (t
   const beforeMode = (await lstat(root)).mode & 0o777;
   const snapshot = await readTrackerSnapshot(join(data, FIRST_NAME));
   const batch = createInitialBatch(snapshot, 1);
-  assert.equal(batch.version, 3);
+  assert.equal(batch.version, 4);
   // Queue v3 binds attribution material in its batch digest. Repeated writes remain immutable.
   const first = await inbox.enqueue(batch);
   const second = await inbox.enqueue(batch);
@@ -1012,4 +1012,33 @@ test('诊断写入失败不能产生队列批次或推进消费', async (t) => {
   await assert.rejects(inbox.enqueue(createResumeBatch(snapshot, 1)), /DIAGNOSTIC_PATH_INVALID/);
   assert.equal((await inbox.list()).length, 0);
   assert.equal(await inbox.readControl(), null);
+});
+
+test('旧快照岗位波浪号与归属岗位字段共用岗位 ID 规则，账号消息规则不放宽', async () => {
+  const { validateAttributionEvidence } = await import('../dist/boss-attribution.js');
+  const envelope = JSON.parse(JSON.stringify(fixture({ rows: 1 })).replaceAll('job_1', 'job_1~'));
+  assert.equal(
+    validateTrackerEnvelope(envelope).snapshot.records[0].jobAssociation.jobId,
+    'job_1~',
+  );
+  const evidence = {
+    version: 1,
+    source: 'history',
+    accountNamespace: null,
+    conversationKey: null,
+    messageId: null,
+    requestedBossId: null,
+    responseFriendId: null,
+    responseFriendSource: null,
+    responseBossId: null,
+    selfId: null,
+    senderId: null,
+    recipientId: null,
+    messageJobId: 'job_1~',
+  };
+  // Use the public whitelist rather than adding a producer verification flag.
+  evidence.accountNamespace = ACCOUNT;
+  evidence.conversationKey = 'a'.repeat(64);
+  assert.equal(validateAttributionEvidence(evidence).messageJobId, 'job_1~');
+  assert.throws(() => validateAttributionEvidence({ ...evidence, senderId: 'actor~' }));
 });

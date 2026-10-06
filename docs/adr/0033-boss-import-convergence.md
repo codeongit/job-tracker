@@ -43,3 +43,5 @@ v0.9.6 删除全部临时身份取样、结构诊断和双会话任务代码及�
 [D034](0034-boss-cross-observation-attribution.md) 增加跨观察候选关联检查；本决策的严格归属前提、历史应用保护和延期项继续有效。
 
 [D035](0035-boss-conversation-association-application.md) 部分替代消息自身岗位身份的必填前提，允许满足身份和跨观察检查的会话关联应用；其他收敛与保护规则保留。
+
+[D036](0036-boss-waiting-observation-ignore.md) 部分调整只读异常交互边界，允许用户多选确认并持续忽略等待观察；归属与审计保护保留。

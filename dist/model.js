@@ -1,3 +1,4 @@
+import { BOSS_JOB_ID, isCanonicalBossJobUrl } from './boss-job-url.js';
 import { RESUME_SUMMARIES, RESUME_STATE } from './resume-rules.js';
 import { DATA_VERSION } from './version.js';
 import { bossApplicationId, bossFactId, hasBossFactIdentity } from './source-identity.js';
@@ -175,6 +176,9 @@ const OPPORTUNITY_FIELDS = [
   'description',
   'notes',
   'rawStatus',
+  'platformJobState',
+  'platformJobStateSource',
+  'platformJobStateAt',
   'createdAt',
   'updatedAt',
   'deletedAt',
@@ -216,6 +220,12 @@ const FIELDS = {
     'opportunityId',
     'ruleVersion',
     'action',
+    'resolutionSource',
+    'resolvedJobId',
+    'resolvedJobUrl',
+    'platformJobState',
+    'platformJobStateSource',
+    'platformJobStateAt',
     'status',
     'reason',
     'appliedAt',
@@ -301,27 +311,11 @@ function validDate(value) {
 const BOSS_ACCOUNT_NAMESPACE = /^boss-geek:[a-f0-9]{64}$/;
 const BOSS_BATCH_ID = /^boss-batch-[a-f0-9]{64}$/;
 const BOSS_EVENT_ID = /^boss-event-[a-f0-9]{64}$/;
-const BOSS_JOB_ID = /^[A-Za-z0-9_-]{1,300}$/;
 const BOSS_CONVERSATION_KEY = /^[a-f0-9]{64}$/;
 const BOSS_SNAPSHOT = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,199}\.json#sha256:[a-f0-9]{64}$/;
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
 function validBossJobUrl(value, jobId) {
-  if (!BOSS_JOB_ID.test(jobId)) return false;
-  try {
-    const url = new URL(value);
-    return (
-      url.protocol === 'https:' &&
-      url.hostname === 'www.zhipin.com' &&
-      !url.username &&
-      !url.password &&
-      !url.port &&
-      !url.search &&
-      !url.hash &&
-      value === new URL(`/job_detail/${jobId}.html`, 'https://www.zhipin.com').href
-    );
-  } catch {
-    return false;
-  }
+  return BOSS_JOB_ID.test(jobId) && isCanonicalBossJobUrl(value, jobId);
 }
 function validateBossSourceIdentity(item, group) {
   if (item.platform !== 'boss' || !BOSS_ACCOUNT_NAMESPACE.test(item.accountNamespace))
@@ -506,6 +500,18 @@ function validateSourceFact(item) {
 }
 
 function validateSourceApplication(item) {
+  if (
+    item.resolutionSource &&
+    (item.resolutionSource !== 'user' ||
+      item.status !== 'no_effect' ||
+      item.reason !== 'user_confirmed_job_details' ||
+      !item.opportunityId ||
+      !BOSS_JOB_ID.test(item.resolvedJobId || '') ||
+      !isCanonicalBossJobUrl(item.resolvedJobUrl, item.resolvedJobId))
+  )
+    throw new Error('人工岗位资料处理记录无效。');
+  if (!item.resolutionSource && (item.resolvedJobId || item.resolvedJobUrl))
+    throw new Error('人工处理依据缺少来源。');
   requireSourceFields('sourceApplications', item, [
     'factId',
     'ruleVersion',
@@ -592,6 +598,7 @@ export function validateData(input, { allowOrphans = false } = {}) {
         if (group === 'sourceFacts') validateSourceFact(clean);
         if (group === 'sourceApplications') validateSourceApplication(clean);
       }
+      if (['opportunities', 'sourceApplications'].includes(group)) validatePlatformJobState(clean);
       out[group].push(clean);
     }
   }
@@ -946,4 +953,15 @@ export function markdownExport(data) {
       out += `- ${a.date || '日期未记录'}：${escape(a.text)}\n`;
   }
   return out;
+}
+
+export function validatePlatformJobState(item) {
+  const state = item.platformJobState || 'unknown';
+  if (
+    !['unknown', 'open', 'closed'].includes(state) ||
+    (state === 'unknown'
+      ? Boolean(item.platformJobStateSource || item.platformJobStateAt)
+      : item.platformJobStateSource !== 'user' || !validIso(item.platformJobStateAt))
+  )
+    throw new Error('平台职位状态或人工依据无效。');
 }

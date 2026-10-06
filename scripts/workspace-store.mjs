@@ -1,3 +1,8 @@
+import {
+  resolveBossJobDetails,
+  setBossJobState,
+  propagatePlatformJobState,
+} from '../dist/boss-observations.js';
 import { mkdir, open, readFile, rename, unlink, lstat, rmdir, chmod } from 'node:fs/promises';
 import { join, isAbsolute, dirname } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
@@ -13,7 +18,11 @@ import {
   resolveConflicts,
   validateData,
 } from '../dist/model.js';
-import { bindBossAccount, rejectMisattributedResumeObservation } from '../dist/boss-integration.js';
+import {
+  bindBossAccount,
+  rejectMisattributedResumeObservation,
+  ignoreBossObservations,
+} from '../dist/boss-integration.js';
 import { MAX_BACKUP_BYTES } from '../dist/limits.js';
 
 export const WORKSPACE_PROTOCOL_VERSION = 1;
@@ -39,6 +48,9 @@ const COMMAND_TYPES = new Set([
   'bind_boss_account',
   'correct_boss_resume_request',
   'reject_boss_resume_observation',
+  'ignore_boss_observations',
+  'resolve_boss_job_details',
+  'set_boss_job_state',
 ]);
 
 export class WorkspaceStoreError extends Error {
@@ -690,6 +702,11 @@ export class WorkspaceStore {
             if (index >= 0) rows[index] = copy(change.record);
             else rows.push(copy(change.record));
           }
+          workspace.data = propagatePlatformJobState(
+            current.workspace.data,
+            workspace.data,
+            this.now(),
+          );
           workspace.data = releaseManualFieldOwnership(current.workspace.data, workspace.data);
           for (const value of payload.releaseFields) {
             const release = object(value, ['opportunityId', 'fields']);
@@ -748,6 +765,51 @@ export class WorkspaceStore {
           } catch (error) {
             if (error.code === 'BOSS_RESUME_REJECTION_UNSAFE')
               fail('BOSS_RESUME_REJECTION_UNSAFE', error.message, 409);
+            throw error;
+          }
+          workspace.generation++;
+        } else if (['resolve_boss_job_details', 'set_boss_job_state'].includes(command.type)) {
+          object(
+            payload,
+            command.type === 'resolve_boss_job_details'
+              ? [
+                  'applicationIds',
+                  'opportunityId',
+                  'externalJobId',
+                  'canonicalUrl',
+                  'retiredOpportunityIds',
+                ]
+              : ['applicationIds', 'externalJobId', 'canonicalUrl', 'state'],
+          );
+          if (current.workspace.pending) fail('SYNC_CONFLICT', '请先核对同步冲突。', 409);
+          workspace = copy(current.workspace);
+          try {
+            workspace.data = (
+              command.type === 'resolve_boss_job_details' ? resolveBossJobDetails : setBossJobState
+            )(workspace.data, {
+              ...payload,
+              workspaceSourceId: current.workspaceId,
+              stamp: this.now(),
+            });
+          } catch (error) {
+            if (error.code === 'BOSS_DETAILS_UNSAFE') fail(error.code, error.message, 409);
+            throw error;
+          }
+          workspace.generation++;
+        } else if (command.type === 'ignore_boss_observations') {
+          object(payload, ['applicationIds']);
+          if (current.workspace.pending)
+            fail('SYNC_CONFLICT', '请先核对同步冲突，再忽略观察。', 409);
+          workspace = copy(current.workspace);
+          try {
+            workspace.data = ignoreBossObservations(workspace.data, {
+              ...payload,
+              workspaceSourceId: current.workspaceId,
+              stamp: this.now(),
+            });
+          } catch (error) {
+            if (['BOSS_IGNORE_INVALID', 'BOSS_IGNORE_UNSAFE'].includes(error.code))
+              fail(error.code, error.message, error.code === 'BOSS_IGNORE_INVALID' ? 400 : 409);
             throw error;
           }
           workspace.generation++;

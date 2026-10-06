@@ -1243,3 +1243,71 @@ details > p {
     flex-shrink: 0;
   }
 }
+
+.boss-waiting-group {
+  margin-top: 20px;
+}
+.boss-waiting-group h4 {
+  margin: 0 0 8px;
+}
+.boss-observation-list {
+  list-style: none;
+  margin: 12px 0;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+}
+.boss-observation-card {
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.boss-observation-choice {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  cursor: pointer;
+  color: var(--text);
+}
+.boss-observation-choice > input[type='checkbox'] {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  margin: 3px 0 0;
+  padding: 0;
+  accent-color: var(--accent);
+}
+.boss-observation-choice > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.boss-observation-meta,
+.boss-observation-reason {
+  display: block;
+  margin-top: 6px;
+  line-height: 1.5;
+}
+.boss-observation-meta {
+  color: var(--muted);
+}
+.boss-ignore-actions {
+  position: sticky;
+  top: 12px;
+  z-index: 2;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  padding: 12px 0;
+}
+
+.boss-observation-review {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+.boss-observation-review p {
+  margin: 6px 0;
+}
+.boss-observation-review small {
+  display: block;
+  margin-top: 8px;
+}

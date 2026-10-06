@@ -113,6 +113,30 @@ export function resolveJobRows(envelope) {
       : false;
     return {
       record,
+      jobDetails: (() => {
+        const details = evidence.filter((item) => item.source === 'detail_page_title');
+        if (!details.length) return null;
+        if (
+          details.some(
+            (item) => item.name !== details[0].name || item.company !== details[0].company,
+          ) ||
+          !details[0].company?.trim()
+        )
+          return {
+            jobId: association.jobId,
+            canonicalUrl: association.detailUrl,
+            jobName: '',
+            company: '',
+            source: 'detail_page_conflict',
+          };
+        return {
+          jobId: association.jobId,
+          canonicalUrl: association.detailUrl,
+          jobName: details[0].name,
+          company: details[0].company,
+          source: 'detail_page_title',
+        };
+      })(),
       externalJobId: association?.jobId ?? '',
       canonicalUrl: association?.detailUrl ?? '',
       jobName: selected?.name ?? record.observedJobName ?? '',
@@ -378,11 +402,15 @@ export function createBatch({
       capturedAt: envelope.snapshot.capturedAt,
     },
     coverage: coverageOf(envelope),
-    events: events.map((event) =>
-      event.eventType === 'resume_observed'
-        ? { ...structuredClone(event), attribution: event.attribution ?? null }
-        : structuredClone(event),
-    ),
+    events: events.map((event) => {
+      const row = resolveJobRows(envelope).find((row) => row.record.key === event.conversationKey);
+      return {
+        ...(event.eventType === 'resume_observed'
+          ? { ...structuredClone(event), attribution: event.attribution ?? null }
+          : structuredClone(event)),
+        jobDetails: row?.jobDetails ?? null,
+      };
+    }),
   };
   batch.batchId = batchIdFor(batch);
   return validateBossBatch(batch);

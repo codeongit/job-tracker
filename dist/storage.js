@@ -1,3 +1,4 @@
+import { propagatePlatformJobState } from './boss-observations.js';
 import {
   clone,
   emptyData,
@@ -142,7 +143,10 @@ export async function editData(transform, options = {}) {
   }
   return updateCachedState((s) => {
     if (s.pending) throw new Error('请先到“数据与同步”解决冲突，再继续编辑。');
-    const next = releaseManualFieldOwnership(s.data, transform(clone(s.data)));
+    const next = releaseManualFieldOwnership(
+      s.data,
+      propagatePlatformJobState(s.data, transform(clone(s.data)), new Date().toISOString()),
+    );
     if (!equal(next, s.data)) {
       s.data = next;
       s.generation++;
@@ -189,6 +193,10 @@ export async function acknowledgeSync(captured, uploaded, syncTransactionId) {
 export async function bindBossSource(accountNamespace, { restore = false } = {}) {
   if (!(await service().active())) return null;
   return service().bindBossAccount(accountNamespace, restore);
+}
+export async function ignoreBossObservations(applicationIds, expectedRevision) {
+  if (!(await service().active())) throw new Error('忽略观察需要连接本机服务。');
+  return service().ignoreBossObservations(applicationIds, expectedRevision);
 }
 export async function saveSnapshot(reason) {
   if (await service().active()) return (await service().read()) ?? null;

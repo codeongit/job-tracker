@@ -53,7 +53,7 @@ test('旧工作区升级幂等，保留数据、基线、删除标记和冲突�
   assert.equal(upgraded.data.tasks[0].deletedAt, '2026-01-01');
 });
 test('未来数据/工作区版本和未知字段拒绝写入，不静默丢弃字段', () => {
-  assert.throws(() => migrateData({ ...emptyData(), schemaVersion: 4 }), /版本/);
+  assert.throws(() => migrateData({ ...emptyData(), schemaVersion: 5 }), /版本/);
   assert.throws(() => migrateWorkspace({ ...workspace(), workspaceVersion: 4 }), /版本/);
   const d = data(job('a'));
   d.opportunities[0].futureField = '保留';

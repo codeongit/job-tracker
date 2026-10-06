@@ -1,3 +1,4 @@
+import { bossPlatformState } from './platform-job-state.js';
 import {
   bossApplicationId,
   bossFactId,
@@ -7,7 +8,7 @@ import {
 
 // Evidence is immutable. Application decisions are separately replayable and never
 // turn a rule upgrade or a restored backup into a new platform observation.
-export const SOURCE_RULE_VERSION = 'boss-application-v6';
+export const SOURCE_RULE_VERSION = 'boss-application-v9';
 
 export function sourceApplicationForEvent(data, event) {
   const factId = event.factId || (hasBossFactIdentity(event) ? bossFactId(event) : '');
@@ -21,6 +22,32 @@ export function sourceApplicationForEvent(data, event) {
   );
 }
 
+export const IGNORED_OBSERVATION_REASON = 'user_ignored_unresolved_observation';
+
+export function isIgnoredObservation(application) {
+  return application?.status === 'protected' && application.reason === IGNORED_OBSERVATION_REASON;
+}
+
+export function bossWaitingItems(data) {
+  const seen = new Set();
+  return (data.sourceEvents || [])
+    .filter((event) => !event.deletedAt)
+    .flatMap((event) => {
+      const application = sourceApplicationForEvent(data, event);
+      if (!application || application.status !== 'waiting' || seen.has(application.id)) return [];
+      seen.add(application.id);
+      return [
+        {
+          applicationId: application.id,
+          reason: application.reason,
+          candidate: event.jobName || '',
+          candidateCompany: event.company || '',
+        },
+      ];
+    })
+    .sort((a, b) => a.applicationId.localeCompare(b.applicationId));
+}
+
 export function sourceReviewCounts(data) {
   const result = { waiting: 0, review: 0, protected: 0, applied: 0, no_effect: 0 },
     seen = new Set();
@@ -29,7 +56,8 @@ export function sourceReviewCounts(data) {
     const application = sourceApplicationForEvent(data, event);
     if (application && !seen.has(application.id)) {
       seen.add(application.id);
-      if (application.status in result) result[application.status]++;
+      if (isIgnoredObservation(application)) result.ignored = (result.ignored || 0) + 1;
+      else if (application.status in result) result[application.status]++;
     } else if (!application && !event.factId) result.waiting++;
   }
   for (const application of data.sourceApplications || []) {
@@ -42,7 +70,8 @@ export function sourceReviewCounts(data) {
     // one active decision shown to users.
     if (mappedEvent?.factId && mappedEvent.factId !== fact.id) continue;
     seen.add(application.id);
-    if (application.status in result) result[application.status]++;
+    if (isIgnoredObservation(application)) result.ignored = (result.ignored || 0) + 1;
+    else if (application.status in result) result[application.status]++;
   }
   return result;
 }
@@ -101,7 +130,11 @@ export function effectiveSourceFacts(data) {
   const facts = new Map();
   for (const event of effectiveSourceEvents(data)) {
     if (event.deletedAt) continue;
-    if (sourceApplicationForEvent(data, event)?.reason === 'user_rejected_wrong_conversation')
+    if (
+      ['user_rejected_wrong_conversation', IGNORED_OBSERVATION_REASON].includes(
+        sourceApplicationForEvent(data, event)?.reason,
+      )
+    )
       continue;
     const key =
       event.factId ||
@@ -169,6 +202,11 @@ export function recordSourceApplication(
   if (existing && !existing.deletedAt && !['waiting', 'review'].includes(existing.status))
     return existing;
   const application = {
+    ...Object.fromEntries(
+      ['platformJobState', 'platformJobStateSource', 'platformJobStateAt']
+        .filter((field) => existing && field in existing)
+        .map((field) => [field, existing[field]]),
+    ),
     id,
     factId: fact.id,
     opportunityId: decision.targetId || '',
@@ -186,6 +224,20 @@ export function recordSourceApplication(
     updatedAt: stamp,
     deletedAt: '',
   };
+  const availability = bossPlatformState(
+    data,
+    event.accountNamespace,
+    event.externalJobId,
+    event.canonicalUrl,
+  );
+  if (!existing?.platformJobState || existing.platformJobState === 'unknown') {
+    if (['open', 'closed'].includes(availability.state))
+      Object.assign(application, {
+        platformJobState: availability.state,
+        platformJobStateSource: availability.source,
+        platformJobStateAt: availability.at,
+      });
+  }
   if (existing) Object.assign(existing, application);
   else data.sourceApplications.push(application);
   return application;

@@ -12,6 +12,7 @@ export const DRAFT_FIELDS = {
     'stage',
     'readState',
     'resumeState',
+    'platformJobState',
     'endReason',
     'priority',
     'location',

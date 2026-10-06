@@ -1,9 +1,11 @@
+import { bossObservationGroups } from '../dist/boss-observations.js';
 import { bossAttributionSummary, buildBossAttributionContext } from '../dist/boss-attribution.js';
 import { recordAttributionDiagnostic } from './boss-attribution-diagnostics.mjs';
 import { readdir } from 'node:fs/promises';
 import { applyBossBatch, bossReceiptGap } from '../dist/boss-integration.js';
 import { validateData, mergeData, equal } from '../dist/model.js';
 import { bossApplicationId, bossFactId, hasBossFactIdentity } from '../dist/source-identity.js';
+import { bossWaitingItems } from '../dist/source-ledger.js';
 import { WorkspaceStoreError } from './workspace-store.mjs';
 
 const applicationIdFor = (batch, event) => {
@@ -313,6 +315,17 @@ export function createWorkspaceInboxConsumer({
       revision: current.revision,
       restoreReview,
       attribution: bossAttributionSummary(current.workspace?.data),
+      waitingItems: current.workspace ? bossWaitingItems(current.workspace.data) : [],
+      observationMessageCounts: current.workspace
+        ? {
+            waiting: bossObservationGroups(current.workspace.data).filter(
+              (group) => group.waitingApplicationIds.length,
+            ).length,
+            review: bossObservationGroups(current.workspace.data).filter(
+              (group) => group.status === 'review',
+            ).length,
+          }
+        : { waiting: 0, review: 0 },
     };
   }
   async function replay(batchId, expectedRevision) {

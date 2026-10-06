@@ -1,3 +1,4 @@
+import { BOSS_JOB_ID, parseBossJobUrl, isCanonicalBossJobUrl } from '../../dist/boss-job-url.js';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
@@ -8,7 +9,6 @@ const chrome = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const accountPattern = /^[a-zA-Z0-9_-]{1,40}$/;
 const namespacePattern = /^boss-geek:[0-9a-f]{64}$/;
 const targetPattern = /^[A-Za-z0-9_-]{1,200}$/;
-const detailPattern = /^https:\/\/www\.zhipin\.com\/job_detail\/[A-Za-z0-9_-]+\.html$/;
 const safeDetailRedirect =
   /^https:\/\/www\.zhipin\.com\/(?:passport|login|security|captcha|web\/user)(?:\/|\?|$)/i;
 
@@ -514,7 +514,7 @@ export function createCdpController({
     };
     return {
       async createOwnedTab({ ownerToken, initialUrl }) {
-        if (ownedTargetId || !detailPattern.test(initialUrl))
+        if (ownedTargetId || !isCanonicalBossJobUrl(initialUrl))
           throw coded(ownedTargetId ? 'DETAIL_TAB_ALREADY_CREATED' : 'INVALID_DETAIL_URL');
         const binding = await boundTarget(connection);
         owner = ownerToken;
@@ -532,7 +532,7 @@ export function createCdpController({
       },
       async navigateOwnedTab(handle, { ownerToken, expectedUrl, nextUrl }) {
         verifyHandle(handle, ownerToken);
-        if (!detailPattern.test(expectedUrl) || !detailPattern.test(nextUrl))
+        if (!isCanonicalBossJobUrl(expectedUrl) || !isCanonicalBossJobUrl(nextUrl))
           throw coded('INVALID_DETAIL_URL');
         const { target } = await ownedTarget();
         if (target.url !== expectedUrl) throw coded('DETAIL_TAB_CHANGED');
@@ -540,7 +540,7 @@ export function createCdpController({
       },
       async closeOwnedTab(handle, { ownerToken, expectedUrl }) {
         verifyHandle(handle, ownerToken);
-        if (!detailPattern.test(expectedUrl) && !safeDetailRedirect.test(expectedUrl))
+        if (!isCanonicalBossJobUrl(expectedUrl) && !safeDetailRedirect.test(expectedUrl))
           throw coded('INVALID_DETAIL_URL');
         const { currentEndpoint, target } = await ownedTarget();
         if (target.url !== expectedUrl) throw coded('DETAIL_TAB_CHANGED');

@@ -135,7 +135,7 @@ test('waits for the configured human-paced interval before navigating to another
   assert.equal(waits.filter((duration) => duration === 10_000).length, 1);
 });
 
-test('same job is visited once and company mismatches remain candidates', async () => {
+test('same job is visited once and employer evidence may differ from recruiter', async () => {
   const pages = [
     { url: url('aaa'), title: '「Team Lead招聘」_实际雇主招聘-BOSS直聘' },
     { url: url('aaa'), title: '「Team Lead招聘」_实际雇主招聘-BOSS直聘' },
@@ -148,17 +148,10 @@ test('same job is visited once and company mismatches remain candidates', async 
       candidate('recruiter-b', 'aaa', '猎头公司'),
     ],
   });
-  assert.equal(result.observations.length, 1);
-  assert.equal(result.candidates.length, 1);
-  assert.equal(result.candidates[0].status, 'candidate');
-  assert.equal(result.candidates[0].reason, 'detail_company_mismatch');
-  assert.equal(result.candidates[0].expectedCompany, '猎头公司');
-  assert.equal(result.candidates[0].observedCompany, '实际雇主');
-  assert.equal(result.candidates[0].name, 'Team Lead');
-  assert.equal(result.candidates[0].title, '「Team Lead招聘」_实际雇主招聘-BOSS直聘');
-  assert.equal(result.candidates[0].evidence.observedCompany, '实际雇主');
+  assert.equal(result.observations.length, 2);
+  assert.equal(result.candidates.length, 0);
+  assert.equal(result.observations[1].company, '实际雇主');
   assert.equal(calls.filter((call) => call[0] === 'create').length, 1);
-  assert.equal(calls.filter((call) => call[0] === 'navigate').length, 0);
 });
 
 test('reuses exact prior job evidence without opening a browser tab', async () => {

@@ -1,3 +1,4 @@
+import { isCanonicalBossJobUrl } from '../../dist/boss-job-url.js';
 const SCOPE = 'loaded-chat-list';
 const STRING_FIELDS = ['contact', 'company', 'title', 'preview', 'timeLabel'];
 const CONFIDENCES = new Set(['dom', 'name_company']);
@@ -65,7 +66,7 @@ function copyJob(record, name) {
   if (job.detailUrl !== null) {
     if (
       typeof job.detailUrl !== 'string' ||
-      !/^https:\/\/www\.zhipin\.com\/job_detail\/[A-Za-z0-9_-]+\.html$/.test(job.detailUrl) ||
+      !isCanonicalBossJobUrl(job.detailUrl) ||
       new URL(job.detailUrl).href !== job.detailUrl
     ) {
       throw new TypeError(

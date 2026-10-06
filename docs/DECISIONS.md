@@ -49,6 +49,18 @@
 | [D033](adr/0033-boss-import-convergence.md)                   | BOSS 导入统一归属判断与处理链路                    | 已实现；归属前提由 D035 调整                     | 用户确认整体收敛计划并要求实施             |
 | [D034](adr/0034-boss-cross-observation-attribution.md)        | BOSS 跨观察归属防错                                | 已实现；真实浏览器待人工验收                     | 用户确认防错计划并要求实施                 |
 | [D035](adr/0035-boss-conversation-association-application.md) | 允许依据会话关联应用简历观察                       | 已实现；身份排查已收尾；业务验收待确认           | 用户明确取消消息岗位必填并确认历史处理范围 |
+| [D036](adr/0036-boss-waiting-observation-ignore.md)           | 处理历史等待项并允许人工忽略观察                   | 已实现；真实界面待人工验收                       | 用户确认处理计划与持续忽略范围             |
+| [D037](adr/0037-boss-existing-job-details.md)                 | 复用精确匹配的本机岗位资料与就地核对               | 已实现；资料及展示由 D038 调整                   | 用户要求自动补齐已有资料并改善跳转         |
+| [D038](adr/0038-boss-job-details-and-observation-groups.md)   | 详情页补齐岗位、消息汇总与平台状态                 | 已实现；人工指定目标边界由 D039 调整             | 用户确认完整实施计划                       |
+| [D039](adr/0039-boss-manual-retired-job-resolution.md)        | 人工指定现存岗位处理旧观察                         | 已实施；真实界面待人工验收                       | 用户确认定点补齐及保留删除重复记录         |
+
+## D039：人工指定现存岗位处理旧观察
+
+完整记录见 [ADR-0039](adr/0039-boss-manual-retired-job-resolution.md)。允许精确补入空岗位 ID，并在明确列出已删除重复记录后指定现存目标；自动导入和删除保护继续有效。
+
+## D038：详情页补齐岗位与消息汇总展示
+
+完整记录见 [ADR-0038](adr/0038-boss-job-details-and-observation-groups.md)。应用 0.10.0 / 数据 v4；详情页资料优先、人工定点处理、消息汇总和独立平台状态。
 
 ## D001：面向个人使用的独立网页
 
@@ -190,10 +202,14 @@
 
 见 [ADR-0035](adr/0035-boss-conversation-association-application.md)。替代 D033 的消息岗位必填前提，保留 D034 拦截及人工保护。
 
+## D036：处理历史等待项并允许人工忽略观察
+
+见 [ADR-0036](adr/0036-boss-waiting-observation-ignore.md)。仅忽略所选等待观察，保留原始材料和归属检查。
+
 ## 新决策模板
 
 ```markdown
-## D036：一句话说明决定
+## D037：一句话说明决定
 
 - **记录日期 / 状态：** YYYY-MM-DD / 待定或有效。
 - **来源：** 用户明确要求、实现选择，或所替代的决策编号。
@@ -205,3 +221,7 @@
 - **重新评估条件：** 什么变化会使这个决定不再合适？
 - **替代关系：** 如有，关联旧编号并将旧条目标为已替代。
 ```
+
+## D037：复用精确匹配的本机岗位资料
+
+完整记录见 [ADR-0037](adr/0037-boss-existing-job-details.md)。

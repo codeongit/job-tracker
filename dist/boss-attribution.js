@@ -1,3 +1,4 @@
+import { BOSS_JOB_ID } from './boss-job-url.js';
 // Evidence is carried only by private snapshots/batches. Shared data stores the decision.
 export const ATTRIBUTION_REASONS = Object.freeze({
   attribution_evidence_missing: '缺少独立归属依据',
@@ -64,7 +65,8 @@ export function validateAttributionEvidence(value) {
       .some(
         (key) =>
           value[key] !== null &&
-          (typeof value[key] !== 'string' || !/^[A-Za-z0-9_:-]{1,300}$/.test(value[key])),
+          (typeof value[key] !== 'string' ||
+            !(key.endsWith('JobId') ? BOSS_JOB_ID : /^[A-Za-z0-9_:-]{1,300}$/).test(value[key])),
       )
   ) {
     throw Object.assign(new Error('BOSS_ATTRIBUTION_EVIDENCE_INVALID'), { code: 'BATCH_INVALID' });

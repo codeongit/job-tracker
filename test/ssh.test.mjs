@@ -243,7 +243,7 @@ test('本机SSH读写签发并完成服务端同步事务，PUT不能省略事�
   assert.equal(written.body.syncTransactionId, syncTransactionId);
   assert.equal(written.calls, 1);
   assert.deepEqual(actions.slice(1), [
-    ['reserve', syncTransactionId, 3, null],
+    ['reserve', syncTransactionId, 4, null],
     ['complete', syncTransactionId],
   ]);
 });

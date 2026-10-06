@@ -332,10 +332,12 @@ export function createLocalWorkspaceClient({
     return job;
   }
 
-  async function submit(type, payload) {
+  async function submit(type, payload, expectedRevision) {
     if (!(await active())) return null;
     const execute = async () => {
       const current = await load();
+      if (expectedRevision !== undefined && current.revision !== expectedRevision)
+        throw failure('记录已变化，请刷新后重新核对所选观察。', 'WORKSPACE_REVISION_CONFLICT', 409);
       let committed;
       try {
         committed = await request('./__local/workspace/commands', {
@@ -463,6 +465,8 @@ export function createLocalWorkspaceClient({
     acknowledgeSync: (syncTransactionId) => submit('acknowledge_sync', { syncTransactionId }),
     bindBossAccount: (accountNamespace, restore = false) =>
       submit('bind_boss_account', { accountNamespace, restore }),
+    ignoreBossObservations: (applicationIds, expectedRevision) =>
+      submit('ignore_boss_observations', { applicationIds }, expectedRevision),
     active,
     prepareImport,
     importCurrent,

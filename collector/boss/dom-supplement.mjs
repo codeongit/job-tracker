@@ -378,7 +378,7 @@ export function createDomSupplementReadExpression(target, { allowSwitch = true }
       const rawJobId=clean(node.getAttribute('data-job-id'));
       observations.push({conversationKey:target.conversationKey,friendId:target.friendId,
         friendSource:target.friendSource,messageId,direction:'system',messageType:5,kind,platformTime,
-        externalJobId:/^[A-Za-z0-9_-]{1,300}$/.test(rawJobId??'')?rawJobId:null,
+        externalJobId:/^[A-Za-z0-9_~\-]{1,300}$/.test(rawJobId??'')?rawJobId:null,
         source:${JSON.stringify(DOM_STATUS_SOURCE)}});}
     return {ok:true,url,target,switchAttempted,capturedAt:new Date().toISOString(),observations,unresolved,
       coverage:{requestedConversations:1,resolvedConversations:1,pagesPerConversation:0}};`,

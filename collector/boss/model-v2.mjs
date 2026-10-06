@@ -1,9 +1,9 @@
+import { BOSS_JOB_ID, parseBossJobUrl, isCanonicalBossJobUrl } from '../../dist/boss-job-url.js';
 import { validateAttributionEvidence } from '../../dist/boss-attribution.js';
 import { RESUME_KINDS, RESUME_STATUS_KINDS } from '../../dist/resume-rules.js';
 import { createHash } from 'node:crypto';
 
 export const V2_SCOPE = 'loaded-chat-list';
-const JOB_URL = /^https:\/\/www\.zhipin\.com\/job_detail\/([A-Za-z0-9_-]+)\.html$/;
 const RECEIPTS = new Set(['unknown', 'delivered', 'read', 'unread']);
 const ASSOCIATION_STATUSES = new Set(['current', 'historical']);
 
@@ -103,14 +103,15 @@ export function conversationKeyV2(accountNamespace, friendId, friendSource) {
 
 export function canonicalJobUrlV2(jobId) {
   const id = identityPart(jobId, 'jobId');
-  if (!/^[A-Za-z0-9_-]+$/.test(id)) fail('jobId contains unsupported characters');
+  if (!BOSS_JOB_ID.test(id)) fail('jobId contains unsupported characters');
   return `https://www.zhipin.com/job_detail/${id}.html`;
 }
 
 function jobIdFromUrl(url, path) {
-  const match = typeof url === 'string' && url.match(JOB_URL);
-  if (!match || new URL(url).href !== url) fail(`${path} must be a canonical BOSS job-detail URL`);
-  return match[1];
+  const match = typeof url === 'string' && parseBossJobUrl(url);
+  if (!match || !isCanonicalBossJobUrl(url))
+    fail(`${path} must be a canonical BOSS job-detail URL`);
+  return match.jobId;
 }
 
 function normalizeReceipt(value, path) {
@@ -554,7 +555,7 @@ function validateEnvelopeVersion(input, allowedVersions) {
     timestamp(record.platformTime, `${path}.platformTime`);
     if (record.externalJobId !== null) {
       const externalJobId = identityPart(record.externalJobId, `${path}.externalJobId`);
-      if (!/^[A-Za-z0-9_-]+$/.test(externalJobId)) fail(`${path}.externalJobId is invalid`);
+      if (!BOSS_JOB_ID.test(externalJobId)) fail(`${path}.externalJobId is invalid`);
     }
     timestamp(record.observedAt, `${path}.observedAt`);
     const expectedSources = statusKind

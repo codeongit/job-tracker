@@ -157,7 +157,15 @@ test('v2迁移生成独立事实与应用账本，保留原事件且不会重放
   const migrated = migrateData(old);
   assert.deepEqual(old, before);
   assert.equal(migrated.sourceEvents[0].factId, bossFactId(old.sourceEvents[0]));
-  assert.deepEqual(migrated.opportunities, old.opportunities);
+  assert.deepEqual(
+    migrated.opportunities,
+    old.opportunities.map((row) => ({
+      ...row,
+      platformJobState: 'unknown',
+      platformJobStateSource: '',
+      platformJobStateAt: '',
+    })),
+  );
   assert.equal(migrated.sourceFacts[0].id, bossFactId(old.sourceEvents[0]));
   assert.equal(migrated.sourceApplications[0].ruleVersion, 'legacy_v1');
   assert.equal(migrated.sourceApplications[0].status, 'applied');
@@ -467,7 +475,7 @@ test('v1数据逐级迁移到v3且未知旧字段、未来格式继续停止写�
   const old = asV1(sourceData());
   const before = clone(old);
   const migrated = migrateData(old);
-  assert.equal(migrated.schemaVersion, 3);
+  assert.equal(migrated.schemaVersion, 4);
   assert.deepEqual(migrated.sourceBindings, []);
   assert.deepEqual(migrated.sourceEvents, []);
   assert.deepEqual(old, before);
@@ -476,7 +484,7 @@ test('v1数据逐级迁移到v3且未知旧字段、未来格式继续停止写�
   const unknown = { ...old, sourceEvents: [] };
   assert.throws(() => migrateData(unknown), /未知字段/);
   assert.deepEqual(unknown.sourceEvents, []);
-  assert.throws(() => migrateData({ ...emptyData(), schemaVersion: 4 }), /版本/);
+  assert.throws(() => migrateData({ ...emptyData(), schemaVersion: 5 }), /版本/);
 });
 
 test('工作区data/base/pending及冲突双方、完整备份和草稿原版本一并通过v1迁移', () => {
@@ -506,7 +514,7 @@ test('工作区data/base/pending及冲突双方、完整备份和草稿原版本
     migrated.pending.data,
     migrated.pending.remote,
   ]) {
-    assert.equal(data.schemaVersion, 3);
+    assert.equal(data.schemaVersion, 4);
     assert.deepEqual(data.sourceBindings, []);
     assert.deepEqual(data.sourceEvents, []);
   }
@@ -526,7 +534,7 @@ test('工作区data/base/pending及冲突双方、完整备份和草稿原版本
     workspace: current,
   };
   const parsed = parseBackup(backup);
-  assert.equal(parsed.workspace.data.schemaVersion, 3);
+  assert.equal(parsed.workspace.data.schemaVersion, 4);
   assert.deepEqual(parsed.drafts[0].original, draft.original);
 });
 
@@ -547,7 +555,7 @@ test('从 v1 工作区直接回到 v1 快照时也迁移全部集合并保留墓
   const older = asV1(sourceData());
   older.opportunities = [];
   const restored = restoreWorkspace(current, older, 'snapshot');
-  assert.equal(restored.data.schemaVersion, 3);
+  assert.equal(restored.data.schemaVersion, 4);
   assert.deepEqual(restored.data.sourceBindings, []);
   assert.deepEqual(restored.data.sourceEvents, []);
   assert.ok(restored.data.opportunities[0].deletedAt);
@@ -573,12 +581,12 @@ test('GitHub、浏览器SSH桥和服务端Git读取均在远端入口迁移v1数
       });
     },
   );
-  assert.equal((await github.read()).data.schemaVersion, 3);
+  assert.equal((await github.read()).data.schemaVersion, 4);
 
   const local = localSshClient('synthetic-session', async () =>
     Response.json({ data: legacy, sha: 'b'.repeat(40), missing: false }),
   );
-  assert.equal((await local.read()).data.schemaVersion, 3);
+  assert.equal((await local.read()).data.schemaVersion, 4);
 
   const store = new GitStore({
     cache: 'unused',
@@ -591,5 +599,34 @@ test('GitHub、浏览器SSH桥和服务端Git读取均在远端入口迁移v1数
     if (args[1] === 'blob') return text;
     throw new Error(`Unexpected synthetic git call: ${args.join(' ')}`);
   };
-  assert.equal((await store.fileAt('synthetic-head')).data.schemaVersion, 3);
+  assert.equal((await store.fileAt('synthetic-head')).data.schemaVersion, 4);
+});
+
+test('v3→v4保留人工结果与关闭元数据，同步分歧留冲突，未知旧字段和未来版本拒绝', () => {
+  const legacy = sourceData();
+  legacy.schemaVersion = 3;
+  const migrated = migrateData(legacy);
+  assert.equal(migrated.schemaVersion, 4);
+  assert.equal(migrated.opportunities[0].platformJobState, 'unknown');
+  assert.equal(migrated.sourceApplications[0].resolutionSource, '');
+  assert.deepEqual(migrateData(migrated), migrated);
+  const bad = clone(legacy);
+  bad.opportunities[0].platformJobState = 'closed';
+  assert.throws(() => migrateData(bad), /未知字段/);
+  const local = clone(migrated),
+    remote = clone(migrated);
+  Object.assign(local.opportunities[0], {
+    platformJobState: 'closed',
+    platformJobStateSource: 'user',
+    platformJobStateAt: STAMP,
+  });
+  Object.assign(remote.opportunities[0], {
+    platformJobState: 'open',
+    platformJobStateSource: 'user',
+    platformJobStateAt: STAMP,
+  });
+  assert.equal(mergeData(migrated, local, remote).conflicts[0].group, 'opportunities');
+  const workspace = initialWorkspace();
+  workspace.data = local;
+  assert.deepEqual(parseBackup(createBackup(workspace)).workspace.data, local);
 });

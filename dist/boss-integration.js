@@ -1,3 +1,4 @@
+import { parseBossJobUrl } from './boss-job-url.js';
 import { validateBossBatch, bossEventDigestInput, bossBatchDigestInput } from './boss-batch.js';
 export { validateBossBatch } from './boss-batch.js';
 import {
@@ -19,6 +20,10 @@ import {
   sourceApplicationForEvent,
   sourceReviewCounts,
   effectiveSourceFacts,
+  bossWaitingItems,
+  isIgnoredObservation,
+  IGNORED_OBSERVATION_REASON,
+  SOURCE_RULE_VERSION,
 } from './source-ledger.js';
 import { bossApplicationId, bossFactId, hasBossFactIdentity } from './source-identity.js';
 
@@ -65,14 +70,7 @@ function normalize(value) {
 }
 
 function bossJobIdFromUrl(value) {
-  if (!value) return '';
-  try {
-    const url = new URL(value);
-    if (url.protocol !== 'https:' || url.hostname !== 'www.zhipin.com') return '';
-    return decodeURIComponent(url.pathname.match(/^\/job_detail\/([^/]+)\.html$/)?.[1] || '');
-  } catch {
-    return '';
-  }
+  return parseBossJobUrl(value)?.jobId || '';
 }
 
 function isBossPlatform(value) {
@@ -239,7 +237,13 @@ function isCompatible(opportunity, event, binding = null) {
       (opportunity.role || '') === (binding.lastAutoRole || '');
   return (
     isBossPlatform(opportunity.platform) &&
-    (!opportunity.company || normalize(opportunity.company) === normalize(event.company)) &&
+    (!opportunity.company ||
+      normalize(opportunity.company) === normalize(event.company) ||
+      (event.jobDetails &&
+        (binding
+          ? splitAutoFields(binding).has('company') &&
+            opportunity.company === binding.lastAutoCompany
+          : true))) &&
     (roleMatches || roleIsAutoOwned) &&
     (!opportunity.externalId || opportunity.externalId === event.externalJobId) &&
     (!urlJobId || urlJobId === event.externalJobId)
@@ -533,6 +537,261 @@ export function rejectMisattributedResumeObservation(data, { opportunityId, even
   return validateData(next);
 }
 
+// A navigation candidate is not an attribution decision and never changes data.
+export function bossWaitingReviewTarget(data, applicationId) {
+  const application = live(data?.sourceApplications || []).find(
+    (row) => row.id === applicationId && row.status === 'waiting',
+  );
+  const fact =
+    application &&
+    live(data.sourceFacts || []).find(
+      (row) => row.id === application.factId && row.platform === 'boss',
+    );
+  const events = fact && live(data.sourceEvents || []).filter((row) => row.factId === fact.id);
+  if (
+    !events?.length ||
+    events.some((row) => row.platform !== 'boss' || row.accountNamespace !== fact.accountNamespace)
+  )
+    return null;
+  const jobIds = new Set(events.map((row) => row.externalJobId).filter(Boolean));
+  if (jobIds.size !== 1) return null;
+  const externalJobId = [...jobIds][0];
+  const urls = new Set(events.map((row) => row.canonicalUrl).filter(Boolean));
+  if (
+    urls.size !== 1 ||
+    bossJobIdFromUrl([...urls][0]) !== externalJobId ||
+    !events.some((row) => row.externalJobId === externalJobId && row.canonicalUrl === [...urls][0])
+  )
+    return null;
+  const canonicalUrl = [...urls][0];
+  const bindings = live(data.sourceBindings || []).filter(
+    (row) =>
+      row.platform === 'boss' &&
+      row.kind === 'opportunity' &&
+      row.accountNamespace === fact.accountNamespace &&
+      row.externalJobId === externalJobId,
+  );
+  if (bindings.length !== 1 || bindings[0].canonicalUrl !== canonicalUrl) return null;
+  const binding = bindings[0];
+  const opportunity = live(data.opportunities || []).find(
+    (row) => row.id === binding.opportunityId,
+  );
+  if (
+    !opportunity ||
+    !isBossPlatform(opportunity.platform || '') ||
+    (opportunity.externalId && opportunity.externalId !== externalJobId) ||
+    bossJobIdFromUrl(opportunity.url) !== externalJobId ||
+    events.some(
+      (row) =>
+        (row.company && normalize(row.company) !== normalize(opportunity.company)) ||
+        (row.jobName && normalize(row.jobName) !== normalize(opportunity.role)),
+    )
+  )
+    return null;
+  return {
+    opportunityId: opportunity.id,
+    company: opportunity.company || '',
+    role: opportunity.role || '',
+    resumeState: opportunity.resumeState || '未知',
+    manualResumeState: !(
+      splitAutoFields(binding).has('resumeState') &&
+      (opportunity.resumeState || '') === (binding.lastAutoResumeState || '')
+    ),
+  };
+}
+
+// Suggestions are for manual inspection only; company similarity never grants attribution.
+export function bossWaitingReviewCandidates(data, applicationId) {
+  const application = live(data?.sourceApplications || []).find(
+    (row) => row.id === applicationId && ['waiting', 'review'].includes(row.status),
+  );
+  const fact =
+    application &&
+    live(data.sourceFacts || []).find(
+      (row) => row.id === application.factId && row.platform === 'boss',
+    );
+  if (!fact) return [];
+  const events = live(data.sourceEvents || []).filter(
+    (row) =>
+      row.factId === fact.id &&
+      row.platform === 'boss' &&
+      row.accountNamespace === fact.accountNamespace,
+  );
+  if (!events.length) return [];
+  return live(data.opportunities || [])
+    .flatMap((opportunity) => {
+      if (
+        !isBossPlatform(opportunity.platform || '') ||
+        live(data.sourceBindings || []).some(
+          (row) =>
+            row.kind === 'opportunity' &&
+            row.platform === 'boss' &&
+            row.opportunityId === opportunity.id &&
+            row.accountNamespace !== fact.accountNamespace,
+        )
+      )
+        return [];
+      const exact = events.some(
+        (row) =>
+          row.externalJobId &&
+          (opportunity.externalId === row.externalJobId ||
+            bossJobIdFromUrl(opportunity.url) === row.externalJobId),
+      );
+      const sameCompany = events.some(
+        (row) => row.company && normalize(row.company) === normalize(opportunity.company),
+      );
+      return exact || sameCompany
+        ? [
+            {
+              opportunityId: opportunity.id,
+              company: opportunity.company || '',
+              role: opportunity.role || '',
+              exact,
+            },
+          ]
+        : [];
+    })
+    .sort((a, b) => Number(b.exact) - Number(a.exact) || a.role.localeCompare(b.role, 'zh-CN'));
+}
+
+export function ignoreBossObservations(inputData, { applicationIds, workspaceSourceId, stamp }) {
+  canonicalIso(stamp, 'ignoredAt');
+  if (
+    !UUID.test(workspaceSourceId) ||
+    !Array.isArray(applicationIds) ||
+    !applicationIds.length ||
+    applicationIds.length > 100 ||
+    new Set(applicationIds).size !== applicationIds.length ||
+    applicationIds.some(
+      (id) => typeof id !== 'string' || !/^boss-application-[a-f0-9]{64}$/.test(id),
+    )
+  )
+    throw integrationError('忽略观察参数无效。', 'BOSS_IGNORE_INVALID');
+  const data = clone(inputData);
+  const selected = applicationIds.map((id) => {
+    const application = live(data.sourceApplications).find((row) => row.id === id);
+    const fact = application && live(data.sourceFacts).find((row) => row.id === application.factId);
+    const event =
+      application &&
+      live(data.sourceEvents).find((row) => sourceApplicationForEvent(data, row)?.id === id);
+    const accounts =
+      event &&
+      live(data.sourceBindings).filter(
+        (row) =>
+          row.kind === 'account' &&
+          row.platform === 'boss' &&
+          row.accountNamespace === event.accountNamespace,
+      );
+    if (
+      !application ||
+      application.status !== 'waiting' ||
+      !fact ||
+      fact.platform !== 'boss' ||
+      !event ||
+      event.platform !== 'boss' ||
+      fact.accountNamespace !== event.accountNamespace ||
+      accounts.length !== 1 ||
+      accounts[0].workspaceSourceId !== workspaceSourceId
+    )
+      throw integrationError('所选观察已变化或来源无效，请刷新后重新核对。', 'BOSS_IGNORE_UNSAFE');
+    return application;
+  });
+  for (const application of selected) {
+    application.status = 'protected';
+    application.reason = IGNORED_OBSERVATION_REASON;
+    application.ruleVersion = SOURCE_RULE_VERSION;
+    application.appliedAt = '';
+    application.updatedAt = stamp;
+  }
+  return validateData(data);
+}
+
+// Missing titles may reuse exact local job identity, never company guesses.
+function resolveIncompleteExistingEvent(data, batch, event, stamp) {
+  const bindings = live(data.sourceBindings).filter(
+    (row) =>
+      row.kind === 'opportunity' &&
+      row.platform === 'boss' &&
+      row.accountNamespace === batch.accountNamespace &&
+      row.externalJobId === event.externalJobId,
+  );
+  if (
+    !event.externalJobId ||
+    !event.canonicalUrl ||
+    bossJobIdFromUrl(event.canonicalUrl) !== event.externalJobId
+  )
+    return null;
+  if (!bindings.length) {
+    const candidates = data.opportunities.filter(
+      (row) =>
+        row.externalId === event.externalJobId || bossJobIdFromUrl(row.url) === event.externalJobId,
+    );
+    if (!candidates.length) return null;
+    const opportunity = candidates[0];
+    if (
+      candidates.length !== 1 ||
+      opportunity.deletedAt ||
+      !opportunity.role?.trim() ||
+      !opportunity.company?.trim() ||
+      bossJobIdFromUrl(opportunity.url) !== event.externalJobId ||
+      !isCompatible(opportunity, { ...event, jobName: opportunity.role }) ||
+      live(data.sourceBindings).some(
+        (row) =>
+          row.kind === 'opportunity' &&
+          row.platform === 'boss' &&
+          row.opportunityId === opportunity.id &&
+          (row.accountNamespace !== batch.accountNamespace ||
+            row.externalJobId !== event.externalJobId ||
+            row.canonicalUrl !== event.canonicalUrl),
+      )
+    )
+      return {
+        status: 'review',
+        targetId: '',
+        applicationStatus: 'review',
+        reason: 'identity_conflict',
+      };
+    data.sourceBindings.push(createBinding(batch, event, opportunity.id, stamp, false));
+    return {
+      status: 'recorded',
+      evidenceStatus: 'review',
+      targetId: opportunity.id,
+      applicationStatus: 'no_effect',
+      reason: 'existing_job_details_available',
+      linked: true,
+    };
+  }
+  if (bindings.length !== 1)
+    return {
+      status: 'review',
+      targetId: '',
+      applicationStatus: 'review',
+      reason: 'identity_conflict',
+    };
+  const binding = bindings[0];
+  const opportunity = live(data.opportunities).find((row) => row.id === binding.opportunityId);
+  if (
+    !opportunity ||
+    !opportunity.role?.trim() ||
+    !opportunity.company?.trim() ||
+    binding.canonicalUrl !== event.canonicalUrl ||
+    !isCompatible(opportunity, { ...event, jobName: opportunity.role }, binding)
+  )
+    return {
+      status: 'review',
+      targetId: '',
+      applicationStatus: 'review',
+      reason: 'identity_conflict',
+    };
+  return {
+    status: 'recorded',
+    evidenceStatus: 'review',
+    targetId: opportunity.id,
+    applicationStatus: 'no_effect',
+    reason: 'bound_job_details_available',
+  };
+}
+
 function resolveEvent(data, batch, event, stamp) {
   const jobBindings = live(data.sourceBindings).filter(
     (binding) =>
@@ -675,9 +934,11 @@ export function applyBossBatch(
       if (stored.deletedAt) data.sourceEvents.splice(storedIndex, 1);
     }
     if (
-      event.eventType === 'resume_observed' &&
       application &&
-      !['waiting', 'review'].includes(application.status)
+      (application.resolutionSource === 'user' ||
+        isIgnoredObservation(application) ||
+        (event.eventType === 'resume_observed' &&
+          !['waiting', 'review'].includes(application.status)))
     ) {
       const evidence =
         stored && !stored.deletedAt ? stored : sourceEvent(batch, event, '', 'review', stamp);
@@ -715,17 +976,45 @@ export function applyBossBatch(
           }
         : event.eventType === 'resume_observed'
           ? resolveResumeEvent(data, batch, event, attributionContext)
-          : event.intent === 'review'
+          : event.jobDetails?.source === 'detail_page_conflict'
             ? {
                 status: 'review',
                 targetId: '',
-                applicationStatus: event.externalJobId && event.jobName ? 'review' : 'waiting',
-                reason:
-                  event.externalJobId && event.jobName
-                    ? 'identity_conflict'
-                    : 'missing_job_details',
+                applicationStatus: 'review',
+                reason: 'identity_conflict',
               }
-            : resolveEvent(data, batch, event, stamp);
+            : event.intent === 'review' && !event.jobDetails
+              ? (!event.jobName.trim()
+                  ? resolveIncompleteExistingEvent(data, batch, event, stamp)
+                  : null) || {
+                  status: 'review',
+                  targetId: '',
+                  applicationStatus: event.externalJobId && event.jobName ? 'review' : 'waiting',
+                  reason:
+                    event.externalJobId && event.jobName
+                      ? 'identity_conflict'
+                      : 'missing_job_details',
+                }
+              : resolveEvent(
+                  data,
+                  batch,
+                  event.jobDetails
+                    ? {
+                        ...event,
+                        company: event.jobDetails.company,
+                        jobName: event.jobDetails.jobName,
+                        nameSource: 'detail_page_title',
+                        intent: 'create_or_link',
+                      }
+                    : event,
+                  stamp,
+                );
+    if (
+      event.eventType !== 'resume_observed' &&
+      event.jobDetails &&
+      (!event.jobName.trim() || !event.company.trim())
+    )
+      result.evidenceStatus = 'review';
     if (result.added) counts.added++;
     if (result.linked) counts.linked++;
     if (result.status === 'recorded') counts.observed++;
@@ -741,7 +1030,7 @@ export function applyBossBatch(
     const evidence =
       stored && !stored.deletedAt
         ? stored
-        : sourceEvent(batch, event, result.targetId, result.status, stamp);
+        : sourceEvent(batch, event, result.targetId, result.evidenceStatus || result.status, stamp);
     if (!stored || stored.deletedAt) data.sourceEvents.push(evidence);
     recordSourceApplication(data, evidence, result, stamp, { allowRestore: allowEventRestore });
   }
@@ -782,7 +1071,12 @@ export async function discoverBossIntegration(fetcher = fetch, hostname = locati
 export function bossInboxClient(session, workspaceSourceId, fetcher = fetch) {
   if (!/^[a-f0-9]{64}$/.test(session) || !UUID.test(workspaceSourceId))
     throw integrationError('本机 BOSS 接入会话无效。', 'SESSION_INVALID');
-  async function request(path, options = {}) {
+  async function request(path, options = {}, timeoutMs = 15000) {
+    const signal = options.signal || AbortSignal.timeout(timeoutMs);
+    const connectionError = () =>
+      signal.reason?.name === 'TimeoutError'
+        ? integrationError(`本机 BOSS 接口请求超过 ${timeoutMs / 1000} 秒未返回。`, 'LOCAL_TIMEOUT')
+        : integrationError('本机 BOSS 接入服务暂时无法连接。', 'LOCAL_UNAVAILABLE');
     let response;
     try {
       response = await fetcher(path, {
@@ -794,15 +1088,21 @@ export function bossInboxClient(session, workspaceSourceId, fetcher = fetch) {
           'X-Job-Tracker-Protocol': '1',
           ...options.headers,
         },
-        signal: options.signal || AbortSignal.timeout(15000),
+        signal,
       });
-    } catch {
-      throw integrationError('本机 BOSS 接入服务暂时无法连接。', 'LOCAL_UNAVAILABLE');
+    } catch (error) {
+      if (error?.name === 'TimeoutError')
+        throw integrationError(
+          `本机 BOSS 接口请求超过 ${timeoutMs / 1000} 秒未返回。`,
+          'LOCAL_TIMEOUT',
+        );
+      throw connectionError();
     }
     let result;
     try {
       result = await response.json();
     } catch {
+      if (signal.aborted) throw connectionError();
       throw integrationError('本机 BOSS 接入服务返回无效内容。', 'LOCAL_INVALID');
     }
     if (!response.ok) {
@@ -814,7 +1114,11 @@ export function bossInboxClient(session, workspaceSourceId, fetcher = fetch) {
   }
   return {
     index: () =>
-      request(`./__local/boss-inbox?workspaceSourceId=${encodeURIComponent(workspaceSourceId)}`),
+      request(
+        `./__local/boss-inbox?workspaceSourceId=${encodeURIComponent(workspaceSourceId)}`,
+        {},
+        30000,
+      ),
     read: (batchId) => {
       if (!BATCH_ID.test(batchId)) throw integrationError('BOSS 批次 ID 无效。', 'BATCH_INVALID');
       return request(`./__local/boss-inbox/${batchId}`);
@@ -919,6 +1223,7 @@ export function createBossQueueConsumer({
       workspaceSourceId = discovered.workspaceId;
     }
     client = bossInboxClient(discovered.session, workspaceSourceId, fetcher);
+    publish({ available: true, serverManaged });
     return true;
   }
 
@@ -978,7 +1283,14 @@ export function createBossQueueConsumer({
       ...summarizeIndex(index, initialState.data, workspaceSourceId),
       connected: true,
       error: '',
+      connectionStale: false,
+      refreshFailures: 0,
+      refreshError: '',
+      lastStatusAt: now(),
       applicationCounts: sourceReviewCounts(initialState.data),
+      waitingItems: serverManaged
+        ? index.recovery?.waitingItems || []
+        : bossWaitingItems(initialState.data),
     });
     if (serverManaged) {
       // The local service owns ingestion, including when this page is closed.
@@ -1074,10 +1386,23 @@ export function createBossQueueConsumer({
           (lock) => (lock ? task() : status),
         );
       } catch (error) {
-        publish({
-          error: `${error.code || 'BOSS_INTEGRATION_FAILED'}：${error.message}`,
-          blocked: '',
-        });
+        if (
+          serverManaged &&
+          status.lastStatusAt &&
+          ['LOCAL_UNAVAILABLE', 'LOCAL_TIMEOUT'].includes(error.code)
+        ) {
+          const refreshFailures = (status.refreshFailures || 0) + 1;
+          publish({
+            connectionStale: true,
+            refreshFailures,
+            refreshError: `${error.code}：${error.message}`,
+            error: refreshFailures > 1 ? `${error.code}：${error.message}` : '',
+          });
+        } else
+          publish({
+            error: `${error.code || 'BOSS_INTEGRATION_FAILED'}：${error.message}`,
+            blocked: '',
+          });
         return status;
       } finally {
         publish({ running: false });
@@ -1090,6 +1415,8 @@ export function createBossQueueConsumer({
   }
 
   async function bind(accountNamespace, { restore = false } = {}) {
+    if (serverManaged && status.connectionStale)
+      throw integrationError('状态尚未更新，请等待刷新成功后再处理绑定。', 'LOCAL_STATUS_STALE');
     if (!status.accounts.some((account) => account.accountNamespace === accountNamespace))
       throw integrationError('队列中没有这个 BOSS 来源账号。', 'SOURCE_INVALID');
     const stamp = now();
@@ -1111,6 +1438,8 @@ export function createBossQueueConsumer({
   }
 
   async function replay(batchId) {
+    if (serverManaged && status.connectionStale)
+      throw integrationError('状态尚未更新，请等待刷新成功后再核对重放。', 'LOCAL_STATUS_STALE');
     if (!status.restoreReview?.some((gap) => gap.batchId === batchId))
       throw integrationError('这个批次当前不需要恢复核对。', 'REPLAY_NOT_REQUIRED');
     if (!(await connect())) throw integrationError('本机 BOSS 接入未启用。', 'LOCAL_UNAVAILABLE');

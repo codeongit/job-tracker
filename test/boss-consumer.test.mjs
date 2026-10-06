@@ -9,12 +9,24 @@ import { WorkspaceStore } from '../scripts/workspace-store.mjs';
 import { validateBossBatch as validateQueuedBossBatch } from '../scripts/boss-inbox.mjs';
 import { emptyData, live, markManualFields } from '../dist/model.js';
 import { bossFactId } from '../dist/source-identity.js';
-import { effectiveSourceFacts } from '../dist/source-ledger.js';
-import { initialWorkspace } from '../dist/workspace.js';
+import {
+  effectiveSourceFacts,
+  sourceReviewCounts,
+  bossWaitingItems,
+} from '../dist/source-ledger.js';
+import {
+  initialWorkspace,
+  createBackup,
+  restoreWorkspace,
+  migrateWorkspace,
+} from '../dist/workspace.js';
 import {
   applyBossBatch,
   bindBossAccount,
   rejectMisattributedResumeObservation,
+  ignoreBossObservations,
+  bossWaitingReviewTarget,
+  bossWaitingReviewCandidates,
   createBossQueueConsumer,
   latestPlatformObservation,
   verifyBossBatch,
@@ -861,6 +873,91 @@ function consumerHarness(inputBatch, options = {}) {
   };
 }
 
+test('本机只读状态偶发刷新失败标注旧状态，持续失败才报连接异常，成功后恢复', async () => {
+  let failed = false,
+    timeout = false,
+    calls = 0;
+  const consumer = createBossQueueConsumer({
+    fetcher: async (url) => {
+      if (url === './__local/session')
+        return Response.json({
+          bossIntegrationEnabled: true,
+          localWorkspaceEnabled: true,
+          workspaceId: SOURCE_ID,
+          session: 'f'.repeat(64),
+        });
+      calls++;
+      if (failed) throw new TypeError('synthetic network interruption');
+      if (timeout) throw new DOMException('synthetic timeout', 'TimeoutError');
+      return Response.json({ status: {}, batches: [], tracking: { lifecycle: 'stopped' } });
+    },
+    storage: { getItem: () => SOURCE_ID, setItem: () => {} },
+    readWorkspace: async () => ({ data: boundData(), pending: null }),
+    editWorkspace: async () => {
+      throw new Error('read-only refresh must not write');
+    },
+    lockManager: { request: async (_name, _options, callback) => callback({}) },
+    hostname: '127.0.0.1',
+    now: () => STAMP,
+  });
+  const initial = await consumer.run();
+  assert.equal(initial.error, '');
+  failed = true;
+  const intermittent = await consumer.run();
+  assert.equal(intermittent.error, '');
+  assert.equal(intermittent.connectionStale, true);
+  assert.equal(intermittent.refreshFailures, 1);
+  assert.equal(intermittent.tracking.lifecycle, 'stopped');
+  assert.equal(intermittent.lastStatusAt, STAMP);
+  const persistent = await consumer.run();
+  assert.match(persistent.error, /LOCAL_UNAVAILABLE/);
+  assert.equal(persistent.refreshFailures, 2);
+  failed = false;
+  const recovered = await consumer.run();
+  assert.equal(recovered.connectionStale, false);
+  assert.equal(recovered.refreshFailures, 0);
+  assert.equal(recovered.error, '');
+  assert.equal(calls, 4);
+  timeout = true;
+  const timedOut = await consumer.run();
+  assert.equal(timedOut.error, '');
+  assert.match(timedOut.refreshError, /LOCAL_TIMEOUT/);
+  assert.match(timedOut.refreshError, /30 秒/);
+  assert.equal(timedOut.connectionStale, true);
+  await assert.rejects(consumer.bind(ACCOUNT), (error) => error.code === 'LOCAL_STATUS_STALE');
+  await assert.rejects(
+    consumer.replay('synthetic'),
+    (error) => error.code === 'LOCAL_STATUS_STALE',
+  );
+});
+
+test('首次状态读取失败立即提示，未取得状态时不使用短时失败容忍', async () => {
+  const consumer = createBossQueueConsumer({
+    fetcher: async (url) => {
+      if (url === './__local/session')
+        return Response.json({
+          bossIntegrationEnabled: true,
+          localWorkspaceEnabled: true,
+          workspaceId: SOURCE_ID,
+          session: 'f'.repeat(64),
+        });
+      throw new TypeError('synthetic unavailable service');
+    },
+    storage: { getItem: () => SOURCE_ID, setItem: () => {} },
+    readWorkspace: async () => ({ data: boundData(), pending: null }),
+    editWorkspace: async () => {
+      throw new Error('must not write');
+    },
+    lockManager: { request: async (_name, _options, callback) => callback({}) },
+    hostname: '127.0.0.1',
+    now: () => STAMP,
+  });
+  const status = await consumer.run();
+  assert.equal(status.available, true);
+  assert.match(status.error, /LOCAL_UNAVAILABLE/);
+  assert.equal(status.lastStatusAt, undefined);
+});
+
 test('IndexedDB 已提交但回执丢失时重放零新增、零重复事件，之后才确认队列', async () => {
   const harness = consumerHarness(batch([event()]), { failFirstReceipt: true });
   const interrupted = await harness.consumer.run();
@@ -1275,7 +1372,7 @@ test('同批跨岗位重复先扫描全部候选，事件顺序不影响拦截�
     );
     assert.equal(one.status, 'review');
     assert.equal(one.reason, 'attribution_message_multiple_jobs');
-    assert.equal(one.ruleVersion, 'boss-application-v6');
+    assert.equal(one.ruleVersion, 'boss-application-v9');
     assert.equal(data.opportunities.find((o) => o.externalId === JOB_ID).resumeState, '未知');
     assert.equal(
       data.opportunities.find((o) => o.externalId === 'second-job').resumeState,
@@ -1417,7 +1514,7 @@ test('缺少消息岗位身份时依据会话应用新消息和历史等待项�
     applied.sourceApplications.at(-1).reason,
     'resume_status_advanced_conversation_association',
   );
-  assert.equal(applied.sourceApplications.at(-1).ruleVersion, 'boss-application-v6');
+  assert.equal(applied.sourceApplications.at(-1).ruleVersion, 'boss-application-v9');
   assert.deepEqual(applySynthetic(applied, input), applied);
   const restored = structuredClone(waiting);
   restored.sourceFacts.pop();
@@ -1475,4 +1572,856 @@ test('会话归属仍拒绝缺联系人、错误参与者、无岗位、跨岗�
     stamp: STAMP,
   });
   assert.deepEqual(applySynthetic(rejected, input), rejected);
+});
+
+test('缺标题普通观察只接受完整且唯一的现有精确绑定，不改人工字段', () => {
+  const options = { workspaceSourceId: SOURCE_ID, stamp: STAMP };
+  const initial = applyBossBatch(boundData(), batch([event()]), options).data;
+  const binding = initial.sourceBindings.find((row) => row.kind === 'opportunity');
+  binding.autoFields = '';
+  const incoming = event({ jobName: '', intent: 'review', messageId: 'missing-title' });
+  const result = applyBossBatch(initial, batch([incoming]), options).data;
+  assert.equal(result.sourceApplications.at(-1).status, 'no_effect');
+  assert.deepEqual(result.opportunities, initial.opportunities);
+  assert.deepEqual(result.sourceBindings, initial.sourceBindings);
+  for (const overrides of [{ company: '另一公司' }, { jobName: '另一岗位' }]) {
+    const rejected = applyBossBatch(
+      initial,
+      batch([event({ jobName: '', intent: 'review', messageId: 'missing-title', ...overrides })]),
+      options,
+    ).data;
+    assert.equal(rejected.sourceApplications.at(-1).status, 'review');
+    assert.deepEqual(rejected.opportunities, initial.opportunities);
+  }
+  assert.throws(
+    () =>
+      applyBossBatch(
+        initial,
+        batch([
+          event({
+            jobName: '',
+            intent: 'review',
+            canonicalUrl: 'https://www.zhipin.com/job_detail/otherJob.html',
+          }),
+        ]),
+        options,
+      ),
+    { code: 'BATCH_INVALID' },
+  );
+  const deleted = structuredClone(initial);
+  deleted.opportunities[0].deletedAt = STAMP;
+  assert.equal(
+    applyBossBatch(deleted, batch([incoming]), options).data.sourceApplications.at(-1).status,
+    'review',
+  );
+  const unbound = structuredClone(initial);
+  unbound.sourceBindings = unbound.sourceBindings.filter((row) => row.kind === 'account');
+  assert.equal(
+    applyBossBatch(unbound, batch([incoming]), options).data.sourceApplications.at(-1).status,
+    'no_effect',
+  );
+});
+
+test('人工忽略保留原始观察，重复消费、补证与恢复不应用，新消息继续处理', () => {
+  const options = { workspaceSourceId: SOURCE_ID, stamp: STAMP };
+  const incoming = event({ jobName: '', intent: 'review' });
+  const waiting = applyBossBatch(boundData(), batch([incoming]), options).data;
+  const id = bossWaitingItems(waiting)[0].applicationId;
+  const ignored = ignoreBossObservations(waiting, { applicationIds: [id], ...options });
+  assert.deepEqual(ignored.sourceEvents, waiting.sourceEvents);
+  assert.deepEqual(ignored.sourceFacts, waiting.sourceFacts);
+  assert.deepEqual(ignored.opportunities, waiting.opportunities);
+  assert.equal(sourceReviewCounts(ignored).waiting, 0);
+  assert.equal(sourceReviewCounts(ignored).protected, 0);
+  assert.equal(sourceReviewCounts(ignored).ignored, 1);
+  assert.equal(effectiveSourceFacts(ignored).length, 0);
+  assert.deepEqual(applyBossBatch(ignored, batch([incoming]), options).data, ignored);
+  const enriched = applyBossBatch(ignored, batch([event()]), {
+    ...options,
+    allowEventRestore: true,
+  }).data;
+  assert.equal(enriched.opportunities.length, 0);
+  assert.equal(enriched.sourceEvents.length, 2);
+  assert.equal(
+    enriched.sourceApplications.find((row) => row.id === id).reason,
+    'user_ignored_unresolved_observation',
+  );
+  const workspace = initialWorkspace();
+  workspace.data = enriched;
+  const restored = migrateWorkspace(
+    restoreWorkspace(workspace, createBackup(workspace), 'snapshot'),
+  );
+  assert.equal(sourceReviewCounts(restored.data).ignored, 1);
+  const fresh = applyBossBatch(
+    restored.data,
+    batch([event({ messageId: 'new-message' })]),
+    options,
+  ).data;
+  assert.equal(fresh.opportunities.length, 1);
+  assert.equal(sourceReviewCounts(fresh).ignored, 1);
+  for (const applicationIds of [
+    [id, 'boss-application-' + 'f'.repeat(64)],
+    [id, id],
+  ]) {
+    assert.throws(() => ignoreBossObservations(waiting, { applicationIds, ...options }));
+    assert.equal(waiting.sourceApplications[0].status, 'waiting');
+  }
+  assert.throws(
+    () =>
+      ignoreBossObservations(waiting, {
+        applicationIds: [id],
+        ...options,
+        workspaceSourceId: '00000000-0000-4000-8000-000000000002',
+      }),
+    { code: 'BOSS_IGNORE_UNSAFE' },
+  );
+});
+
+test('固定忽略命令版本检查、原子失败和丢失回执精确重试', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'boss-ignore-'));
+  let failStage = '';
+  const store = new WorkspaceStore(join(root, 'workspace'), {
+    now: () => STAMP,
+    beforeCommit: async (stage) => {
+      if (stage === failStage) {
+        failStage = '';
+        throw new Error('synthetic interruption');
+      }
+    },
+  });
+  t.after(async () => {
+    await store.close();
+    await rm(root, { recursive: true, force: true });
+  });
+  await store.initialize();
+  const workspaceId = (await store.read()).workspaceId;
+  const options = { workspaceSourceId: workspaceId, stamp: STAMP };
+  const workspace = initialWorkspace();
+  workspace.data = applyBossBatch(
+    bindBossAccount(emptyData(), ACCOUNT, workspaceId, STAMP),
+    batch([event({ jobName: '', intent: 'review' })]),
+    options,
+  ).data;
+  const imported = await store.execute({
+    commandId: 'ignore-fixture',
+    expectedRevision: 0,
+    type: 'import_workspace',
+    payload: { workspace, reason: 'synthetic' },
+  });
+  const applicationId = bossWaitingItems(imported.workspace.data)[0].applicationId;
+  const command = {
+    commandId: 'ignore-selected',
+    expectedRevision: imported.revision,
+    type: 'ignore_boss_observations',
+    payload: { applicationIds: [applicationId] },
+  };
+  await assert.rejects(
+    store.execute({ ...command, commandId: 'stale-ignore', expectedRevision: 0 }),
+    { code: 'WORKSPACE_REVISION_CONFLICT' },
+  );
+  await assert.rejects(
+    store.execute({
+      ...command,
+      commandId: 'unsafe-ignore',
+      payload: { applicationIds: [applicationId, 'boss-application-' + 'f'.repeat(64)] },
+    }),
+    { code: 'BOSS_IGNORE_UNSAFE' },
+  );
+  failStage = 'before_head';
+  await assert.rejects(store.execute(command), /synthetic interruption/);
+  assert.equal((await store.read()).revision, imported.revision);
+  assert.equal((await store.read()).workspace.data.sourceApplications[0].status, 'waiting');
+  failStage = 'after_head';
+  await assert.rejects(store.execute(command), /synthetic interruption/);
+  const retried = await store.execute(command);
+  assert.equal(retried.replayed, true);
+  assert.equal(sourceReviewCounts(retried.workspace.data).ignored, 1);
+  assert.equal(retried.revision, imported.revision + 1);
+});
+
+test('忽略的普通观察仍提供跨岗位线索，人工决定不因同步合并消失', async () => {
+  const { mergeData } = await import('../dist/model.js');
+  const options = { workspaceSourceId: SOURCE_ID, stamp: STAMP };
+  const waiting = applyBossBatch(
+    boundData(),
+    batch([event({ jobName: '', intent: 'review', messageId: 'shared-message' })]),
+    options,
+  ).data;
+  const ignored = ignoreBossObservations(waiting, {
+    ...options,
+    applicationIds: bossWaitingItems(waiting).map((item) => item.applicationId),
+  });
+  const merged = mergeData(waiting, ignored, waiting);
+  assert.equal(merged.conflicts.length, 0);
+  assert.equal(sourceReviewCounts(merged.data).ignored, 1);
+  const otherJob = event({
+    externalJobId: 'otherJob',
+    canonicalUrl: 'https://www.zhipin.com/job_detail/otherJob.html',
+    messageId: 'other-intro',
+  });
+  const seeded = applyBossBatch(ignored, batch([otherJob]), options).data;
+  const otherResume = resumeEvent({
+    externalJobId: 'otherJob',
+    canonicalUrl: otherJob.canonicalUrl,
+    messageId: 'shared-message',
+    linked: true,
+    summary: 'resume_sent_confirmed',
+  });
+  const result = applyBossBatch(seeded, verifiedResumeBatch([otherResume]), options).data;
+  assert.equal(result.sourceApplications.at(-1).reason, 'attribution_message_multiple_jobs');
+  assert.equal(sourceReviewCounts(result).ignored, 1);
+});
+
+test('同步待处理状态下整批忽略拒绝且不改来源决定', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'boss-ignore-pending-'));
+  const store = new WorkspaceStore(join(root, 'workspace'), { now: () => STAMP });
+  t.after(async () => {
+    await store.close();
+    await rm(root, { recursive: true, force: true });
+  });
+  await store.initialize();
+  const workspaceId = (await store.read()).workspaceId;
+  const workspace = initialWorkspace();
+  workspace.data = applyBossBatch(
+    bindBossAccount(emptyData(), ACCOUNT, workspaceId, STAMP),
+    batch([event({ jobName: '', intent: 'review' })]),
+    { workspaceSourceId: workspaceId, stamp: STAMP },
+  ).data;
+  workspace.pending = {
+    data: structuredClone(workspace.data),
+    remote: structuredClone(workspace.data),
+    conflicts: [],
+    generation: workspace.generation,
+  };
+  const imported = await store.execute({
+    commandId: 'pending-ignore-fixture',
+    expectedRevision: 0,
+    type: 'import_workspace',
+    payload: { workspace, reason: 'synthetic' },
+  });
+  await assert.rejects(
+    store.execute({
+      commandId: 'ignore-pending',
+      expectedRevision: imported.revision,
+      type: 'ignore_boss_observations',
+      payload: {
+        applicationIds: bossWaitingItems(workspace.data).map((item) => item.applicationId),
+      },
+    }),
+    { code: 'SYNC_CONFLICT' },
+  );
+  assert.deepEqual((await store.read()).workspace, imported.workspace);
+});
+
+test('等待项核对只读选择精确绑定目标，人工控制标识与实际所有权一致', async () => {
+  const { bossIntegrationView } = await import('../dist/settings-view.js');
+  const options = { workspaceSourceId: SOURCE_ID, stamp: STAMP };
+  const initial = applyBossBatch(boundData(), batch([event()]), options).data;
+  const waiting = applyBossBatch(
+    initial,
+    resumeBatch([resumeEvent({ linked: true, summary: 'resume_sent_confirmed' })]),
+    options,
+  ).data;
+  const application = waiting.sourceApplications.at(-1);
+  const original = structuredClone(waiting);
+  const target = bossWaitingReviewTarget(waiting, application.id);
+  assert.equal(target.opportunityId, initial.opportunities[0].id);
+  assert.equal(target.company, '合成公司');
+  assert.equal(target.role, '合成岗位');
+  assert.equal(target.resumeState, '未知');
+  assert.equal(target.manualResumeState, false);
+  const html = bossIntegrationView(
+    { available: true, serverManaged: true, revision: 1, waitingItems: bossWaitingItems(waiting) },
+    { data: waiting },
+  );
+  assert.match(html, /查看候选岗位/);
+  assert.match(html, /编辑岗位状态/);
+  assert.match(html, /本机候选岗位/);
+  assert.match(html, /当前简历：未知 · 自动维护/);
+  assert.match(html, /编辑不会确认或忽略观察/);
+  assert.deepEqual(waiting, original);
+  const manual = structuredClone(waiting);
+  manual.opportunities[0].resumeState = '已发送';
+  assert.equal(bossWaitingReviewTarget(manual, application.id).manualResumeState, true);
+  assert.equal(bossWaitingReviewTarget(manual, application.id).resumeState, '已发送');
+  const sameValueManual = structuredClone(waiting);
+  markManualFields(sameValueManual, target.opportunityId, ['resumeState']);
+  assert.equal(bossWaitingReviewTarget(sameValueManual, application.id).manualResumeState, true);
+  const manualHtml = bossIntegrationView(
+    { available: true, serverManaged: true, revision: 1, waitingItems: bossWaitingItems(manual) },
+    { data: manual },
+  );
+  assert.match(manualHtml, /当前简历：已发送 · 由你设置（人工控制）/);
+});
+
+test('等待项直达入口拒绝跨账号、多目标、链接矛盾、删除与未绑定，不按名称猜测', async () => {
+  const { bossIntegrationView } = await import('../dist/settings-view.js');
+  const options = { workspaceSourceId: SOURCE_ID, stamp: STAMP };
+  const initial = applyBossBatch(boundData(), batch([event()]), options).data;
+  const waiting = applyBossBatch(
+    initial,
+    resumeBatch([resumeEvent({ linked: true, summary: 'resume_sent_confirmed' })]),
+    options,
+  ).data;
+  const id = waiting.sourceApplications.at(-1).id;
+  const variants = [
+    (data) => {
+      data.sourceBindings.find((row) => row.kind === 'opportunity').accountNamespace =
+        OTHER_ACCOUNT;
+    },
+    (data) => {
+      data.sourceBindings.push({
+        ...data.sourceBindings.find((row) => row.kind === 'opportunity'),
+        id: 'duplicate-binding',
+      });
+    },
+    (data) => {
+      data.opportunities[0].url = 'https://www.zhipin.com/job_detail/otherJob.html';
+    },
+    (data) => {
+      data.opportunities[0].deletedAt = STAMP;
+    },
+    (data) => {
+      data.sourceBindings = data.sourceBindings.filter((row) => row.kind === 'account');
+    },
+    (data) => {
+      data.sourceApplications.at(-1).status = 'protected';
+    },
+    (data) => {
+      data.sourceFacts.find((row) => row.id === data.sourceApplications.at(-1).factId).deletedAt =
+        STAMP;
+    },
+    (data) => {
+      const e = data.sourceEvents.at(-1);
+      data.sourceEvents.push({
+        ...e,
+        id: 'another-observation',
+        externalJobId: 'otherJob',
+        canonicalUrl: 'https://www.zhipin.com/job_detail/otherJob.html',
+      });
+    },
+    (data) => {
+      data.opportunities[0].company = '另一公司';
+    },
+  ];
+  for (const mutate of variants) {
+    const data = structuredClone(waiting);
+    mutate(data);
+    assert.equal(bossWaitingReviewTarget(data, id), null);
+    const html = bossIntegrationView(
+      {
+        available: true,
+        serverManaged: true,
+        revision: 1,
+        waitingItems: [{ applicationId: id, reason: 'attribution_evidence_missing' }],
+      },
+      { data },
+    );
+    assert.match(html, /未找到可唯一对应的本机岗位/);
+    assert.doesNotMatch(html, /data-view="list"/);
+    assert.doesNotMatch(html, /data-boss-review-action=/);
+  }
+  const views = createViews(
+    () => ({
+      state: { data: waiting },
+      selected: initial.opportunities[0].id,
+      detailBackLabel: '返回观察列表',
+    }),
+    () => [],
+  );
+  assert.match(views.detail(), /data-close-detail>← 返回观察列表/);
+});
+
+test('缺标题精确本机资料可建立非自动字段绑定；矛盾、跨账号、多目标仍拦截', () => {
+  const options = { workspaceSourceId: SOURCE_ID, stamp: STAMP };
+  const seeded = applyBossBatch(boundData(), batch([event()]), options).data;
+  seeded.sourceBindings = seeded.sourceBindings.filter((row) => row.kind === 'account');
+  const incoming = batch([event({ jobName: '', intent: 'review', messageId: 'local-details' })]);
+  const result = applyBossBatch(seeded, incoming, options).data;
+  assert.equal(result.sourceApplications.at(-1).status, 'no_effect');
+  assert.equal(result.sourceApplications.at(-1).reason, 'existing_job_details_available');
+  assert.equal(result.sourceBindings.at(-1).autoFields, '');
+  assert.deepEqual(result.opportunities, seeded.opportunities);
+  assert.deepEqual(applyBossBatch(result, incoming, options).data, result);
+  for (const change of [
+    (data) => {
+      data.opportunities[0].company = '矛盾公司';
+    },
+    (data) => {
+      data.opportunities[0].url = 'https://www.zhipin.com/job_detail/other.html';
+    },
+    (data) => {
+      data.opportunities[0].deletedAt = STAMP;
+    },
+    (data) => {
+      data.opportunities.push({ ...data.opportunities[0], id: 'duplicate-job' });
+    },
+    (data) => {
+      data.sourceBindings.push({
+        ...data.sourceBindings[0],
+        id: `boss-account-${OTHER_ACCOUNT.slice('boss-geek:'.length)}`,
+        accountNamespace: OTHER_ACCOUNT,
+      });
+      data.sourceBindings.push({
+        ...result.sourceBindings.at(-1),
+        id: `boss-job-${OTHER_ACCOUNT.slice('boss-geek:'.length)}-${JOB_ID}`,
+        accountNamespace: OTHER_ACCOUNT,
+      });
+    },
+  ]) {
+    const data = structuredClone(seeded);
+    change(data);
+    const rejected = applyBossBatch(data, incoming, options).data;
+    assert.equal(rejected.sourceApplications.at(-1).status, 'review');
+    assert.deepEqual(rejected.opportunities, data.opportunities);
+    assert.deepEqual(rejected.sourceBindings, data.sourceBindings);
+  }
+});
+
+test('候选在观察卡片内核对；名称建议只用于导航，不能自动完成简历归属', async () => {
+  const { bossIntegrationView } = await import('../dist/settings-view.js');
+  const options = { workspaceSourceId: SOURCE_ID, stamp: STAMP };
+  const initial = applyBossBatch(boundData(), batch([event()]), options).data;
+  initial.sourceBindings = initial.sourceBindings.filter((row) => row.kind === 'account');
+  const waiting = applyBossBatch(
+    initial,
+    resumeBatch([resumeEvent({ linked: true })]),
+    options,
+  ).data;
+  const application = waiting.sourceApplications.at(-1);
+  const before = structuredClone(waiting);
+  const candidates = bossWaitingReviewCandidates(waiting, application.id);
+  assert.equal(candidates.length, 1);
+  assert.equal(candidates[0].exact, true);
+  const html = bossIntegrationView(
+    {
+      available: true,
+      serverManaged: true,
+      revision: 1,
+      waitingItems: [{ applicationId: application.id, reason: application.reason }],
+    },
+    { data: waiting },
+  );
+  assert.match(html, /核对本机候选岗位/);
+  assert.match(html, /打开岗位详情/);
+  assert.match(html, /data-boss-candidate=/);
+  assert.doesNotMatch(html, /data-view="list"/);
+  assert.deepEqual(waiting, before);
+  const other = structuredClone(waiting);
+  other.opportunities[0].externalId = 'other-job';
+  other.opportunities[0].url = 'https://www.zhipin.com/job_detail/other-job.html';
+  assert.equal(bossWaitingReviewCandidates(other, application.id)[0].exact, false);
+  other.opportunities[0].deletedAt = STAMP;
+  assert.deepEqual(bossWaitingReviewCandidates(other, application.id), []);
+});
+
+test('明确岗位资料矛盾展示来源公司和本机候选，不提供忽略等待项操作', async () => {
+  const { bossIntegrationView } = await import('../dist/settings-view.js');
+  const options = { workspaceSourceId: SOURCE_ID, stamp: STAMP };
+  const initial = applyBossBatch(boundData(), batch([event()]), options).data;
+  initial.sourceBindings = initial.sourceBindings.filter((row) => row.kind === 'account');
+  const data = applyBossBatch(
+    initial,
+    batch([
+      event({ jobName: '', intent: 'review', company: '来源不同公司', messageId: 'contradiction' }),
+    ]),
+    options,
+  ).data;
+  const html = bossIntegrationView({ available: true, applicationCounts: { review: 1 } }, { data });
+  assert.match(html, /岗位资料不一致/);
+  assert.match(html, /来源不同公司/);
+  assert.match(html, /合成公司/);
+  assert.match(html, /打开岗位详情/);
+  assert.doesNotMatch(html, /data-boss-ignore-item=/);
+});
+
+test('详情页补资料允许招聘方与用人公司不同，原观察与身份不改，人工字段不覆盖', async () => {
+  const { parseBossJobUrl } = await import('../dist/boss-job-url.js');
+  assert.deepEqual(
+    parseBossJobUrl('https://www.zhipin.com/job_detail/job~.html?securityId=synthetic#top'),
+    { jobId: 'job~', canonicalUrl: 'https://www.zhipin.com/job_detail/job~.html' },
+  );
+  for (const bad of [
+    'https://www.zhipin.com:443/job_detail/job~.html',
+    'https://evil.example/job_detail/job~.html',
+    'https://www.zhipin.com/job_detail/../job.html',
+    'https://www.zhipin.com/job_detail/a%2Fb.html',
+  ])
+    assert.equal(parseBossJobUrl(bad), null);
+  const observation = event({
+    externalJobId: 'job~',
+    canonicalUrl: 'https://www.zhipin.com/job_detail/job~.html',
+    jobName: '',
+    company: '合成猎头',
+    intent: 'review',
+  });
+  const originalEventId = observation.eventId;
+  const delivery = batch([observation]);
+  delivery.version = 4;
+  delivery.events[0].jobDetails = {
+    jobId: 'job~',
+    canonicalUrl: observation.canonicalUrl,
+    company: '某匿名用人企业',
+    jobName: '详情岗位',
+    source: 'detail_page_title',
+  };
+  delivery.batchId = `boss-batch-${stableHash(bossBatchDigestInput(delivery))}`;
+  await verifyBossBatch(delivery);
+  const bound = bindBossAccount(emptyData(), ACCOUNT, SOURCE_ID, STAMP);
+  const result = applyBossBatch(bound, delivery, {
+    workspaceSourceId: SOURCE_ID,
+    stamp: STAMP,
+  }).data;
+  assert.equal(result.opportunities[0].company, '某匿名用人企业');
+  assert.equal(result.opportunities[0].role, '详情岗位');
+  assert.equal(result.sourceEvents[0].company, '合成猎头');
+  assert.equal(result.sourceEvents[0].jobName, '');
+  assert.equal(result.sourceEvents[0].id, originalEventId);
+  const conflictingDetails = structuredClone(delivery);
+  Object.assign(conflictingDetails.events[0].jobDetails, {
+    source: 'detail_page_conflict',
+    company: '',
+    jobName: '',
+  });
+  const conflictResult = applyBossBatch(bound, conflictingDetails, {
+    workspaceSourceId: SOURCE_ID,
+    stamp: STAMP,
+  }).data;
+  assert.equal(conflictResult.opportunities.length, 0);
+  assert.equal(conflictResult.sourceApplications[0].status, 'review');
+  const identityConflict = structuredClone(delivery);
+  identityConflict.events[0].jobDetails.jobId = 'other';
+  assert.throws(() =>
+    applyBossBatch(bound, identityConflict, { workspaceSourceId: SOURCE_ID, stamp: STAMP }),
+  );
+  const owned = bindBossAccount(emptyData(), ACCOUNT, SOURCE_ID, STAMP);
+  owned.opportunities.push({
+    id: 'manual',
+    company: '人工公司',
+    role: '人工岗位',
+    platform: 'BOSS',
+    stage: '面试中',
+    resumeState: '未知',
+    externalId: 'job~',
+    url: observation.canonicalUrl,
+  });
+  const protectedResult = applyBossBatch(owned, delivery, {
+    workspaceSourceId: SOURCE_ID,
+    stamp: STAMP,
+  }).data;
+  assert.equal(protectedResult.opportunities[0].company, '人工公司');
+  assert.equal(protectedResult.opportunities[0].role, '人工岗位');
+});
+
+test('人工定点补齐只完成普通资料观察，持续重放保留决定、原证据和简历状态', async () => {
+  const { resolveBossJobDetails, groupBossObservations } =
+    await import('../dist/boss-observations.js');
+  const observations = [
+    event({ externalJobId: '', canonicalUrl: '', jobName: '', intent: 'review' }),
+    event({
+      externalJobId: '',
+      canonicalUrl: '',
+      jobName: '',
+      intent: 'review',
+      messageDirection: 'unknown',
+      receiptStatus: 'unknown',
+      receiptSource: '',
+    }),
+  ];
+  const delivery = batch(observations);
+  const bound = bindBossAccount(emptyData(), ACCOUNT, SOURCE_ID, STAMP);
+  const data = applyBossBatch(bound, delivery, { workspaceSourceId: SOURCE_ID, stamp: STAMP }).data;
+  data.opportunities.push({
+    id: 'manual-target',
+    company: '人工公司',
+    role: '人工岗位',
+    stage: '面试中',
+    platform: 'BOSS',
+    externalId: JOB_ID,
+    url: JOB_URL,
+    resumeState: '未知',
+  });
+  const original = structuredClone(data);
+  const items = bossWaitingItems(data);
+  assert.equal(items.length, 2);
+  assert.equal(groupBossObservations(items, data).length, 1);
+  const options = {
+    applicationIds: items.map((item) => item.applicationId),
+    opportunityId: 'manual-target',
+    externalJobId: JOB_ID,
+    canonicalUrl: JOB_URL,
+    workspaceSourceId: SOURCE_ID,
+    stamp: STAMP,
+  };
+  const resolved = resolveBossJobDetails(data, options);
+  assert.deepEqual(data, original);
+  assert.deepEqual(resolved.sourceEvents, original.sourceEvents);
+  assert.equal(bossWaitingItems(resolved).length, 0);
+  assert.ok(
+    resolved.sourceApplications.every(
+      (row) =>
+        row.status === 'no_effect' &&
+        row.reason === 'user_confirmed_job_details' &&
+        row.resolutionSource === 'user',
+    ),
+  );
+  assert.deepEqual(
+    applyBossBatch(resolved, delivery, { workspaceSourceId: SOURCE_ID, stamp: STAMP }).data,
+    resolved,
+  );
+  assert.equal(resolved.opportunities[0].resumeState, '未知');
+  const currentWorkspace = initialWorkspace();
+  currentWorkspace.data = resolved;
+  const oldWorkspace = initialWorkspace();
+  oldWorkspace.data = original;
+  for (const mode of ['merge', 'snapshot']) {
+    const restored = restoreWorkspace(currentWorkspace, createBackup(oldWorkspace), mode);
+    assert.ok(
+      restored.data.sourceApplications.every((row) => row.reason === 'user_confirmed_job_details'),
+    );
+    assert.equal(bossWaitingItems(restored.data).length, 0);
+  }
+  const ignored = ignoreBossObservations(data, {
+    applicationIds: options.applicationIds,
+    workspaceSourceId: SOURCE_ID,
+    stamp: STAMP,
+  });
+  assert.throws(() => resolveBossJobDetails(ignored, options), /刷新/);
+  const wrong = structuredClone(data);
+  wrong.sourceApplications[0].reason = 'attribution_message_multiple_jobs';
+  assert.throws(() => resolveBossJobDetails(wrong, options));
+  const duplicate = structuredClone(data);
+  duplicate.opportunities.push({
+    ...duplicate.opportunities[0],
+    id: 'deleted-copy',
+    deletedAt: STAMP,
+  });
+  assert.throws(() => resolveBossJobDetails(duplicate, options));
+});
+
+test('关闭标识可保存在无岗位的观察，重放仍等待，消息分组隔离账号且冲突优先', async () => {
+  const { setBossJobState, groupBossObservations, propagatePlatformJobState } =
+    await import('../dist/boss-observations.js');
+  const observations = [
+    event({ jobName: '', intent: 'review' }),
+    event({
+      jobName: '',
+      intent: 'review',
+      messageDirection: 'unknown',
+      receiptStatus: 'unknown',
+      receiptSource: '',
+    }),
+  ];
+  const delivery = batch(observations);
+  const bound = bindBossAccount(emptyData(), ACCOUNT, SOURCE_ID, STAMP);
+  const data = applyBossBatch(bound, delivery, { workspaceSourceId: SOURCE_ID, stamp: STAMP }).data;
+  const items = bossWaitingItems(data);
+  const closed = setBossJobState(data, {
+    applicationIds: items.map((item) => item.applicationId),
+    externalJobId: JOB_ID,
+    canonicalUrl: JOB_URL,
+    state: 'closed',
+    workspaceSourceId: SOURCE_ID,
+    stamp: STAMP,
+  });
+  assert.equal(closed.opportunities.length, 0);
+  assert.equal(bossWaitingItems(closed).length, 2);
+  assert.ok(closed.sourceApplications.every((row) => row.platformJobState === 'closed'));
+  const replay = applyBossBatch(closed, delivery, {
+    workspaceSourceId: SOURCE_ID,
+    stamp: STAMP,
+  }).data;
+  assert.deepEqual(replay, closed);
+  const later = batch([event({ jobName: '', intent: 'review', messageId: 'later-message' })]);
+  const newMessage = applyBossBatch(closed, later, {
+    workspaceSourceId: SOURCE_ID,
+    stamp: STAMP,
+  }).data;
+  assert.equal(newMessage.sourceApplications.at(-1).platformJobState, 'closed');
+  assert.equal(newMessage.sourceApplications.at(-1).status, 'waiting');
+  const rows = items.map((item) => ({ ...item, status: 'waiting' }));
+  rows[0].status = 'review';
+  rows[0].reason = 'attribution_message_multiple_jobs';
+  const groups = groupBossObservations(rows, closed);
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0].status, 'review');
+  assert.equal(groups[0].waitingApplicationIds.length, 1);
+  const mixed = [
+    { ...rows[0], reason: 'identity_conflict' },
+    { ...rows[1], reason: 'attribution_evidence_missing' },
+  ];
+  for (const ordered of [mixed, [...mixed].reverse()]) {
+    assert.equal(groupBossObservations(ordered, closed)[0].status, 'review');
+    assert.equal(groupBossObservations(ordered, closed)[0].reason, 'identity_conflict');
+  }
+  assert.equal(groups[0].platformJobState, 'closed');
+  const extra = {
+    ...closed.sourceEvents[0],
+    id: 'synthetic-other',
+    accountNamespace: OTHER_ACCOUNT,
+  };
+  const otherApp = {
+    ...closed.sourceApplications[0],
+    id: 'synthetic-app',
+    factId: 'synthetic-fact',
+  };
+  extra.factId = otherApp.factId;
+  const separated = {
+    ...closed,
+    sourceEvents: [...closed.sourceEvents, extra],
+    sourceApplications: [...closed.sourceApplications, otherApp],
+  };
+  assert.equal(
+    groupBossObservations([...items, { ...items[0], applicationId: otherApp.id }], separated)
+      .length,
+    2,
+  );
+  const inconsistent = structuredClone(closed);
+  inconsistent.sourceApplications[0].platformJobState = 'open';
+  assert.equal(groupBossObservations(items, inconsistent)[0].platformJobState, 'conflict');
+  const before = structuredClone(closed);
+  before.opportunities.push({
+    id: 'target',
+    company: '公司',
+    role: '岗位',
+    stage: '面试中',
+    externalId: JOB_ID,
+    url: JOB_URL,
+  });
+  const next = structuredClone(before);
+  next.opportunities[0].platformJobState = 'closed';
+  propagatePlatformJobState(before, next, STAMP);
+  assert.equal(next.opportunities[0].stage, '面试中');
+});
+
+test('资料补齐与关闭命令遵守版本、原子失败和精确重试；同步冲突不能部分修改', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'boss-details-command-'));
+  let failStage = '';
+  const store = new WorkspaceStore(join(root, 'workspace'), {
+    now: () => STAMP,
+    beforeCommit: async (stage) => {
+      if (stage === failStage) {
+        failStage = '';
+        throw new Error('synthetic interruption');
+      }
+    },
+  });
+  t.after(async () => {
+    await store.close();
+    await rm(root, { recursive: true, force: true });
+  });
+  await store.initialize();
+  const workspaceId = (await store.read()).workspaceId;
+  const workspace = initialWorkspace();
+  workspace.data = applyBossBatch(
+    bindBossAccount(emptyData(), ACCOUNT, workspaceId, STAMP),
+    batch([event({ externalJobId: '', canonicalUrl: '', jobName: '', intent: 'review' })]),
+    { workspaceSourceId: workspaceId, stamp: STAMP },
+  ).data;
+  workspace.data.opportunities.push({
+    id: 'manual-target',
+    company: '人工公司',
+    role: '岗位',
+    stage: '已触达',
+    platform: 'BOSS',
+    externalId: '',
+    url: JOB_URL,
+  });
+  workspace.data.opportunities.push({
+    id: 'retired-target',
+    company: '人工公司',
+    role: '岗位',
+    stage: '已触达',
+    platform: 'BOSS',
+    externalId: JOB_ID,
+    url: JOB_URL,
+    deletedAt: STAMP,
+  });
+  const imported = await store.execute({
+    commandId: 'details-import',
+    expectedRevision: 0,
+    type: 'import_workspace',
+    payload: { workspace, reason: 'synthetic' },
+  });
+  const id = bossWaitingItems(imported.workspace.data)[0].applicationId;
+  const command = {
+    commandId: 'details-resolve',
+    expectedRevision: imported.revision,
+    type: 'resolve_boss_job_details',
+    payload: {
+      applicationIds: [id],
+      opportunityId: 'manual-target',
+      externalJobId: JOB_ID,
+      canonicalUrl: JOB_URL,
+      retiredOpportunityIds: ['retired-target'],
+    },
+  };
+  const { retiredOpportunityIds: _retired, ...unconfirmedPayload } = command.payload;
+  await assert.rejects(
+    store.execute({ ...command, commandId: 'retired-unconfirmed', payload: unconfirmedPayload }),
+    { code: 'BOSS_DETAILS_UNSAFE' },
+  );
+  await assert.rejects(store.execute({ ...command, commandId: 'stale', expectedRevision: 0 }), {
+    code: 'WORKSPACE_REVISION_CONFLICT',
+  });
+  await assert.rejects(
+    store.execute({
+      ...command,
+      commandId: 'unsafe',
+      payload: { ...command.payload, applicationIds: [id, `boss-application-${'f'.repeat(64)}`] },
+    }),
+    { code: 'BOSS_DETAILS_UNSAFE' },
+  );
+  assert.deepEqual((await store.read()).workspace, imported.workspace);
+  failStage = 'before_head';
+  await assert.rejects(store.execute(command), /synthetic interruption/);
+  assert.equal((await store.read()).revision, imported.revision);
+  assert.deepEqual((await store.read()).workspace, imported.workspace);
+  const completed = await store.execute(command);
+  assert.equal(completed.workspace.data.sourceApplications[0].reason, 'user_confirmed_job_details');
+  assert.equal(completed.workspace.data.opportunities[0].externalId, JOB_ID);
+  assert.deepEqual(
+    completed.workspace.data.opportunities[1],
+    imported.workspace.data.opportunities[1],
+  );
+  const retry = await store.execute(command);
+  assert.equal(retry.replayed, true);
+  assert.deepEqual(retry.workspace, completed.workspace);
+  assert.equal(retry.revision, completed.revision);
+  const pending = structuredClone(completed.workspace);
+  pending.pending = {
+    data: structuredClone(pending.data),
+    remote: structuredClone(pending.data),
+    conflicts: [],
+    generation: pending.generation,
+  };
+  const staged = await store.execute({
+    commandId: 'details-pending',
+    expectedRevision: completed.revision,
+    type: 'commit_workspace',
+    payload: { workspace: pending, reason: 'synthetic conflict' },
+  });
+  await assert.rejects(
+    store.execute({ ...command, commandId: 'pending-denied', expectedRevision: staged.revision }),
+    { code: 'SYNC_CONFLICT' },
+  );
+  assert.deepEqual((await store.read()).workspace, staged.workspace);
+});
+
+test('岗位详情按消息汇总普通观察和送达回执，底层事实仍独立保存', () => {
+  const data = applyBossBatch(
+    boundData(),
+    batch([
+      event(),
+      event({ messageDirection: 'unknown', receiptStatus: 'unknown', receiptSource: '' }),
+    ]),
+    { workspaceSourceId: SOURCE_ID, stamp: STAMP },
+  ).data;
+  const views = createViews(
+    () => ({ state: { data }, selected: data.opportunities[0].id }),
+    () => [],
+  );
+  assert.match(views.detail(), /1 条消息 · 2 项观察/);
+  assert.equal(data.sourceFacts.length, 2);
+  assert.match(views.detail(), /包含 2 项观察/);
 });

@@ -1,3 +1,4 @@
+import { parseBossJobUrl } from '../../dist/boss-job-url.js';
 export function unknownJob() {
   return { name: null, detailUrl: null, source: null };
 }
@@ -11,20 +12,9 @@ export function normalizeJobCandidate(candidate) {
   if (name.length > 300) return unknownJob();
   let detailUrl = null;
   if (typeof candidate.href === 'string' && candidate.href.trim()) {
-    try {
-      const url = new URL(candidate.href, 'https://www.zhipin.com');
-      if (
-        url.origin !== 'https://www.zhipin.com' ||
-        url.username ||
-        url.password ||
-        !/^\/job_detail\/[a-zA-Z0-9_-]+\.html$/.test(url.pathname)
-      )
-        return unknownJob();
-      // Keep the observed job path, but discard tracking/security query values.
-      detailUrl = url.origin + url.pathname;
-    } catch {
-      return unknownJob();
-    }
+    const parsed = parseBossJobUrl(candidate.href, { relative: true });
+    if (!parsed) return unknownJob();
+    detailUrl = parsed.canonicalUrl;
   }
   if (!name && !detailUrl) return unknownJob();
   return { name: name || null, detailUrl, source: candidate.source };

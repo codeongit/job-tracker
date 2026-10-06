@@ -1,10 +1,10 @@
+import { BOSS_JOB_ID, parseBossJobUrl, isCanonicalBossJobUrl } from '../../dist/boss-job-url.js';
 import { randomUUID } from 'node:crypto';
 
 export const MAX_DETAIL_ENRICH_JOBS = 20;
 export const DETAIL_NAVIGATION_DELAY_MS = 10_000;
 import { setTimeout as delay } from 'node:timers/promises';
 
-const DETAIL_URL = /^https:\/\/www\.zhipin\.com\/job_detail\/([A-Za-z0-9_-]+)\.html$/;
 const ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
 const LOGIN_OR_SECURITY =
   /(?:\/passport(?:\/|$)|\/login(?:\/|$)|\/security(?:\/|$)|\/captcha(?:\/|$)|\/web\/user(?:\/|$)|[?&][^#]*login)/i;
@@ -32,14 +32,14 @@ function time(value, path) {
 }
 
 function detailUrl(value, path) {
-  if (typeof value !== 'string' || !DETAIL_URL.test(value) || new URL(value).href !== value) {
+  if (typeof value !== 'string' || !isCanonicalBossJobUrl(value) || new URL(value).href !== value) {
     throw new TypeError(`${path} must be a canonical BOSS job-detail URL`);
   }
   return value;
 }
 
 function jobIdFromUrl(value) {
-  return DETAIL_URL.exec(value)?.[1] ?? null;
+  return parseBossJobUrl(value)?.jobId ?? null;
 }
 
 function safeCode(error, fallback) {
@@ -62,7 +62,7 @@ function normalizeCandidate(value, index) {
   object(value, path);
   const conversationKey = text(value.conversationKey, `${path}.conversationKey`, 1000);
   const jobId = text(value.jobId, `${path}.jobId`, 256);
-  if (!/^[A-Za-z0-9_-]+$/.test(jobId)) throw new TypeError(`${path}.jobId is invalid`);
+  if (!BOSS_JOB_ID.test(jobId)) throw new TypeError(`${path}.jobId is invalid`);
   const url = detailUrl(value.detailUrl, `${path}.detailUrl`);
   if (jobIdFromUrl(url) !== jobId) throw new TypeError(`${path}.jobId does not match detailUrl`);
   const company = text(value.company, `${path}.company`);
@@ -80,7 +80,7 @@ function normalizeEvidence(value, index) {
   const path = `knownEvidence[${index}]`;
   object(value, path);
   const jobId = text(value.jobId, `${path}.jobId`, 256);
-  if (!/^[A-Za-z0-9_-]+$/.test(jobId)) throw new TypeError(`${path}.jobId is invalid`);
+  if (!BOSS_JOB_ID.test(jobId)) throw new TypeError(`${path}.jobId is invalid`);
   const url = detailUrl(value.detailUrl, `${path}.detailUrl`);
   if (jobIdFromUrl(url) !== jobId) throw new TypeError(`${path}.jobId does not match detailUrl`);
   const name = text(value.name, `${path}.name`);
@@ -171,15 +171,7 @@ function classify(group, evidence, reused) {
       evidence: { ...evidence },
       reused,
     };
-    if (item.company === evidence.observedCompany) accepted.push({ ...common, status: 'accepted' });
-    else
-      candidates.push({
-        ...common,
-        expectedCompany: item.company,
-        observedCompany: evidence.observedCompany,
-        status: 'candidate',
-        reason: 'detail_company_mismatch',
-      });
+    accepted.push({ ...common, company: evidence.observedCompany, status: 'accepted' });
   }
   return { accepted, candidates };
 }

@@ -1,8 +1,14 @@
+import { parseBossJobUrl } from './boss-job-url.js';
+import { groupBossObservations } from './boss-observations.js';
 import { RESUME_STATES } from './resume-rules.js';
 import { createDraftManager } from './drafts.js';
 import { createDiskBackup } from './disk-backup.js';
 import { createBackupUI } from './backup-ui.js';
-import { settingsView } from './settings-view.js';
+import {
+  settingsView,
+  bossObservationReason,
+  reconcileBossIgnoreSelection,
+} from './settings-view.js';
 import { createBackup } from './workspace.js';
 import { APP_VERSION } from './version.js';
 import { MAX_BACKUP_BYTES, utf8Bytes } from './limits.js';
@@ -40,11 +46,16 @@ import {
   resolveSyncConflict,
   acknowledgeSync,
   bindBossSource,
+  ignoreBossObservations,
 } from './storage.js';
 import { githubClient, syncWorkspace, validateConfig } from './github.js';
 import { discoverLocalSsh, localSshClient } from './local-ssh.js';
 import { bindCommittedTextInput, trackComposition } from './text-input.js';
-import { createBossQueueConsumer } from './boss-integration.js';
+import {
+  createBossQueueConsumer,
+  bossWaitingReviewTarget,
+  bossWaitingReviewCandidates,
+} from './boss-integration.js';
 import { $, esc, options, download } from './ui.js';
 let state,
   view = 'today',
@@ -68,6 +79,9 @@ let state,
 let filteredRows = [],
   detailOrigin = null,
   renderedView = '';
+const settingsDisclosures = new Map();
+const bossIgnoreSelected = new Set();
+let bossIgnoreBusy = false;
 const scrollPositions = new Map(),
   expandedDetails = new Map(),
   boundEvents = new WeakMap(),
@@ -101,6 +115,7 @@ const { detail, todayView, jobsView, jobResults, detailDateRecords } = createVie
     filteredRows,
     detailDate,
     detailSections: expandedDetails.get(selected) || {},
+    detailBackLabel: view === 'settings' ? '返回观察列表' : '返回结果',
   }),
   pendingTasksForView,
 );
@@ -278,9 +293,11 @@ function openDetail(id, { trigger = document.activeElement, section, source } = 
           ? (detailOrigin?.scrollY ?? window.scrollY)
           : window.scrollY,
       trigger,
-      selector: attribute
-        ? `#page-surface [${attribute}="${CSS.escape(trigger.getAttribute(attribute))}"]`
-        : '',
+      selector: trigger?.id
+        ? `#${CSS.escape(trigger.id)}`
+        : attribute
+          ? `#page-surface [${attribute}="${CSS.escape(trigger.getAttribute(attribute))}"]`
+          : '',
     };
   }
   selected = id;
@@ -337,6 +354,20 @@ function applyJobFilters() {
     if ($('#detail-date-records')) $('#detail-date-records').innerHTML = detailDateRecords();
   }
 }
+function captureSettingsDisclosures() {
+  if (renderedView !== 'settings') return;
+  for (const section of document.querySelectorAll('#page-surface details[data-settings-details]'))
+    settingsDisclosures.set(section.dataset.settingsDetails, section.open);
+}
+
+function restoreSettingsDisclosures() {
+  if (view !== 'settings') return;
+  for (const section of document.querySelectorAll('#page-surface details[data-settings-details]')) {
+    if (settingsDisclosures.has(section.dataset.settingsDetails))
+      section.open = settingsDisclosures.get(section.dataset.settingsDetails);
+  }
+}
+
 function render(preserveDrafts = false) {
   if (!state) return;
   if (composition.active) {
@@ -345,6 +376,7 @@ function render(preserveDrafts = false) {
   }
   deferredRender = false;
   captureDetailSections();
+  captureSettingsDisclosures();
   const deletedSelection =
     selected && !live(state.data.opportunities).some((row) => row.id === selected);
   const deletedOrigin = deletedSelection ? detailOrigin : null;
@@ -352,7 +384,7 @@ function render(preserveDrafts = false) {
   refreshFilteredRows();
   const detailScroll = $('#detail-host')?.scrollTop || 0;
   const active = document.activeElement;
-  const focus = active?.matches('input,textarea,select')
+  const focus = active?.matches('input,textarea,select,summary')
     ? {
         id: active.id,
         form: active.form?.id,
@@ -392,6 +424,8 @@ function render(preserveDrafts = false) {
             diagnostic,
             backupStatus: diskBackup.status(),
             bossStatus,
+            bossIgnoreSelected,
+            bossIgnoreBusy,
           })
         : !live(state.data.opportunities).length && view !== 'list'
           ? emptyView()
@@ -399,6 +433,7 @@ function render(preserveDrafts = false) {
             ? todayView()
             : jobsView();
   renderedView = view;
+  restoreSettingsDisclosures();
   $('#detail-host').innerHTML = selected ? detail() : '';
   for (const form of preservedForms) {
     const replacement = document.getElementById(form.id);
@@ -648,7 +683,16 @@ function openEditor(id = '', source) {
       )
       .join(
         '',
-      )}<label>招聘阶段<select name="stage">${options(STAGES, o.stage)}</select></label><label>关注程度<select name="priority">${options(['普通', '重点', '暂缓'], o.priority)}</select></label><label>消息状态<select name="readState">${bossReadStateOption}${options(READ_STATES, o.readState)}</select></label><label>简历状态<select name="resumeState">${options(RESUME_STATES, o.resumeState)}</select></label><p class="span-2 note-summary" data-resume-linked-note hidden>BOSS 简历已发送或已接收时，消息联动为已读，已触达推进为沟通中；面试及后续阶段保留，保存后生效。</p><label>首次联系<input type="date" name="appliedAt" value="${esc(o.appliedAt)}"></label><label>结束原因<select name="endReason"><option value="">未结束 / 未填写</option>${options(['不匹配/拒绝', '职位关闭', '主动放弃', '已入职', '其他'], o.endReason)}</select></label>${[
+      )}<label>招聘阶段<select name="stage">${options(STAGES, o.stage)}</select></label><label>关注程度<select name="priority">${options(['普通', '重点', '暂缓'], o.priority)}</select></label><label>消息状态<select name="readState">${bossReadStateOption}${options(READ_STATES, o.readState)}</select></label><label>简历状态<select name="resumeState">${options(RESUME_STATES, o.resumeState)}</select></label><p class="span-2 note-summary" data-resume-linked-note hidden>BOSS 简历已发送或已接收时，消息联动为已读，已触达推进为沟通中；面试及后续阶段保留，保存后生效。</p><label>平台职位状态<select name="platformJobState">${options(
+      ['unknown', 'open', 'closed'].map((value) => value),
+      o.platformJobState || 'unknown',
+    )
+      .replaceAll('>unknown<', '>未知<')
+      .replaceAll('>open<', '>招聘中<')
+      .replaceAll(
+        '>closed<',
+        '>已关闭<',
+      )}</select></label><label>首次联系<input type="date" name="appliedAt" value="${esc(o.appliedAt)}"></label><label>结束原因<select name="endReason"><option value="">未结束 / 未填写</option>${options(['不匹配/拒绝', '职位关闭', '主动放弃', '已入职', '其他'], o.endReason)}</select></label>${[
       ['platform', '平台'],
       ['source', '来源类型（如猎头、内推）'],
       ['contact', '联系人'],
@@ -719,7 +763,16 @@ function openEditor(id = '', source) {
     const captured = drafts.capture(e.target);
     const input = Object.fromEntries(new FormData(e.target));
     for (const k in input) input[k] = input[k].trim();
-    Object.assign(input, getResumeLinkedStatus(input));
+    if (/^boss(?:直聘)?$/i.test((input.platform || '').replace(/\s/g, ''))) {
+      const link = parseBossJobUrl(input.url);
+      if (link) input.url = link.canonicalUrl;
+    }
+    const availabilityOnly =
+      original &&
+      (original.platformJobState || 'unknown') !== input.platformJobState &&
+      input.resumeState === original.resumeState &&
+      input.stage === getOpportunityStatus(original).stage;
+    if (!availabilityOnly) Object.assign(input, getResumeLinkedStatus(input));
     if (input.stage === '已结束' && !input.endReason) {
       $('#editor-error').textContent = '请选择结束原因。';
       return;
@@ -727,6 +780,10 @@ function openEditor(id = '', source) {
     if (input.stage !== '已结束') input.endReason = '';
     const stamp = new Date().toISOString(),
       jobId = id || uid();
+    if ((original?.platformJobState || 'unknown') !== input.platformJobState) {
+      input.platformJobStateSource = input.platformJobState === 'unknown' ? '' : 'user';
+      input.platformJobStateAt = input.platformJobState === 'unknown' ? '' : stamp;
+    }
     e.target.dataset.companyMatchExcludeId = jobId;
     try {
       const warning = await change(
@@ -1004,12 +1061,88 @@ async function synchronize(allowCreate = false) {
     await reload(true);
   }
 }
+document.addEventListener('change', (e) => {
+  const id = e.target.dataset?.bossIgnoreItem;
+  if (!id) return;
+  for (const applicationId of id.split(',').filter(Boolean)) {
+    if (e.target.checked) bossIgnoreSelected.add(applicationId);
+    else bossIgnoreSelected.delete(applicationId);
+  }
+  render(true);
+});
 document.addEventListener('click', async (e) => {
   const b = e.target.closest('button');
   if (!b) return;
   try {
     if (b.dataset.close) {
       document.getElementById(b.dataset.close).close();
+      return;
+    }
+    if (b.dataset.bossReview) {
+      const scrollY = window.scrollY;
+      state = await readState();
+      const target = b.dataset.bossCandidate
+        ? bossWaitingReviewCandidates(state.data, b.dataset.bossReview).find(
+            (row) => row.opportunityId === b.dataset.bossCandidate,
+          )
+        : bossWaitingReviewTarget(state.data, b.dataset.bossReview);
+      render(true);
+      if (!target) {
+        window.scrollTo(0, scrollY);
+        notify('观察或候选绑定已变化，未找到唯一目标，请重新核对列表。');
+        return;
+      }
+      const trigger = document.getElementById(b.id) || b;
+      openDetail(target.opportunityId, { trigger });
+      detailOrigin.scrollY = scrollY;
+      if (b.dataset.bossReviewAction === 'edit') {
+        openEditor(target.opportunityId);
+        $('#editor-form select[name="resumeState"]')?.focus();
+      }
+      return;
+    }
+    if (b.dataset.bossRefresh) {
+      await bossQueue?.run();
+      state = await readState();
+      render(true);
+      return;
+    }
+    if (b.dataset.bossIgnore) {
+      if (
+        bossIgnoreBusy ||
+        bossStatus.connectionStale ||
+        bossStatus.error ||
+        !bossStatus.serverManaged ||
+        state.pending
+      )
+        throw new Error('请先刷新本机状态并处理同步冲突。');
+      const items = (bossStatus.waitingItems || []).filter((item) =>
+        bossIgnoreSelected.has(item.applicationId),
+      );
+      if (!items.length) return;
+      const revision = bossStatus.revision;
+      if (
+        !confirm(
+          `确认忽略以下 ${groupBossObservations(items, state.data).length} 条消息 / ${items.length} 项观察？同一事实后续不再自动应用，原始观察保留。\n\n${items.map((item) => `${item.candidateCompany || '未知公司'} / ${item.candidate || '未取得岗位'} · ${bossObservationReason(item)} · ${item.applicationId.slice(-8)}`).join('\n')}`,
+        )
+      )
+        return;
+      bossIgnoreBusy = true;
+      render(true);
+      try {
+        state = await ignoreBossObservations(
+          items.map((item) => item.applicationId),
+          revision,
+        );
+        bossIgnoreSelected.clear();
+        channel?.postMessage('changed');
+        await bossQueue?.run();
+        notify(`已忽略 ${items.length} 条观察。`);
+      } finally {
+        bossIgnoreBusy = false;
+        state = await readState();
+        render(true);
+      }
       return;
     }
     if (b.dataset.bossBind) {
@@ -1276,6 +1409,11 @@ async function startWorkspace() {
       render(true);
     },
     onStatus: (next) => {
+      if (next.waitingItems && !next.connectionStale) {
+        const retained = reconcileBossIgnoreSelection(bossIgnoreSelected, next.waitingItems);
+        bossIgnoreSelected.clear();
+        for (const id of retained) bossIgnoreSelected.add(id);
+      }
       bossStatus = next;
       if (view === 'settings' && state) render(true);
     },

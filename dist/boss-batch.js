@@ -1,3 +1,4 @@
+import { BOSS_JOB_ID, isCanonicalBossJobUrl } from './boss-job-url.js';
 import { RESUME_SUMMARIES } from './resume-rules.js';
 import { validateAttributionEvidence } from './boss-attribution.js';
 const clone = structuredClone;
@@ -98,8 +99,10 @@ function validateEvent(event, batch) {
     eventType === 'resume_observed'
       ? [...baseFields, 'eventType', ...(batch.version >= 3 ? ['attribution'] : [])]
       : baseFields;
+  if (batch.version >= 4) fields.push('jobDetails');
   if (batch.version >= 3 && eventType === 'resume_observed')
     validateAttributionEvidence(event.attribution);
+  if (batch.version >= 4) validateJobDetails(event.jobDetails, event);
   if (!hasOnly(event, fields) || fields.some((field) => !(field in event)))
     throw integrationError('BOSS 批次事件结构无效。', 'BATCH_INVALID');
   if (!EVENT_ID.test(event.eventId))
@@ -122,7 +125,7 @@ function validateEvent(event, batch) {
     nameSource: 100,
   };
   for (const field of fields.filter(
-    (field) => !['sourceSequence', 'eventType', 'attribution'].includes(field),
+    (field) => !['sourceSequence', 'eventType', 'attribution', 'jobDetails'].includes(field),
   ))
     text(event[field], `events.${field}`, limits[field] || 1000);
   if (!['conversation_observed', 'resume_observed'].includes(eventType))
@@ -170,7 +173,7 @@ function validateEvent(event, batch) {
   if (Boolean(event.externalJobId) !== Boolean(event.canonicalUrl))
     throw integrationError('BOSS 岗位 ID 与链接必须同时存在。', 'BATCH_INVALID');
   if (event.externalJobId) {
-    if (!/^[A-Za-z0-9_-]{1,300}$/.test(event.externalJobId))
+    if (!BOSS_JOB_ID.test(event.externalJobId))
       throw integrationError('BOSS 岗位 ID 无效。', 'BATCH_INVALID');
     const expectedUrl = new URL(`/job_detail/${event.externalJobId}.html`, 'https://www.zhipin.com')
       .href;
@@ -222,7 +225,7 @@ export function validateBossBatch(input) {
     throw integrationError('BOSS 队列批次结构无效。', 'BATCH_INVALID');
   if (
     input.format !== 'job-tracker-boss-batch' ||
-    ![1, 2, 3].includes(input.version) ||
+    ![1, 2, 3, 4].includes(input.version) ||
     !BATCH_ID.test(input.batchId) ||
     input.platform !== 'boss' ||
     !ACCOUNT_NAMESPACE.test(input.accountNamespace) ||
@@ -339,6 +342,13 @@ export function bossEventDigestInput(batch, event) {
 }
 export function bossBatchDigestInput(batch) {
   return {
+    ...(batch.version >= 4
+      ? {
+          jobDetails: batch.events
+            .map((event) => ({ eventId: event.eventId, details: event.jobDetails }))
+            .sort((a, b) => a.eventId.localeCompare(b.eventId)),
+        }
+      : {}),
     policy: batch.policy.id,
     snapshotSha256: batch.source.snapshotSha256,
     accountNamespace: batch.accountNamespace,
@@ -349,8 +359,29 @@ export function bossBatchDigestInput(batch) {
             .filter((event) => event.eventType === 'resume_observed')
             .map((event) => ({ eventId: event.eventId, evidence: event.attribution }))
             .sort((a, b) => a.eventId.localeCompare(b.eventId)),
-          version: 3,
+          version: batch.version,
         }
       : {}),
   };
+}
+
+function validateJobDetails(details, event) {
+  if (details === null) return;
+  const fields = ['jobId', 'canonicalUrl', 'company', 'jobName', 'source'];
+  if (!hasOnly(details, fields) || fields.some((field) => !(field in details)))
+    throw integrationError('岗位详情结构无效。', 'BATCH_INVALID');
+  for (const field of fields)
+    text(details[field], field, field === 'canonicalUrl' ? 600 : 300, {
+      required: !(
+        ['jobName', 'company'].includes(field) && details.source === 'detail_page_conflict'
+      ),
+    });
+  if (
+    !['detail_page_title', 'detail_page_conflict'].includes(details.source) ||
+    !BOSS_JOB_ID.test(details.jobId) ||
+    !isCanonicalBossJobUrl(details.canonicalUrl, details.jobId) ||
+    details.jobId !== event.externalJobId ||
+    details.canonicalUrl !== event.canonicalUrl
+  )
+    throw integrationError('岗位详情身份不一致。', 'BATCH_INVALID');
 }

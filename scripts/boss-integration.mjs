@@ -1,3 +1,4 @@
+import { BOSS_JOB_ID } from '../dist/boss-job-url.js';
 import { BossIntegrationError, integrationFail } from './boss-integration-error.mjs';
 export { BossIntegrationError } from './boss-integration-error.mjs';
 import {
@@ -332,7 +333,7 @@ function validateRecord(record, accountNamespace) {
     integrationFail('BOSS_SNAPSHOT_STRUCTURE_INVALID', { fatal: true });
   if (jobId !== null) {
     if (
-      !requiredString(jobId, { max: 300, pattern: /^[A-Za-z0-9_-]+$/ }) ||
+      !requiredString(jobId, { max: 300, pattern: BOSS_JOB_ID }) ||
       detailUrl !== `https://www.zhipin.com/job_detail/${jobId}.html`
     )
       integrationFail('BOSS_SNAPSHOT_JOB_INVALID', { fatal: true });
@@ -442,7 +443,7 @@ function validateJobs(value, records, conversations) {
     plain(association);
     if (
       !requiredString(association.conversationKey, { max: 128 }) ||
-      !requiredString(association.jobId, { max: 300, pattern: /^[A-Za-z0-9_-]+$/ }) ||
+      !requiredString(association.jobId, { max: 300, pattern: BOSS_JOB_ID }) ||
       association.detailUrl !== `https://www.zhipin.com/job_detail/${association.jobId}.html` ||
       !['current', 'historical'].includes(association.status) ||
       !conversations.has(association.conversationKey)
@@ -470,7 +471,7 @@ function validateJobs(value, records, conversations) {
   for (const evidence of value.evidence) {
     plain(evidence);
     if (
-      !requiredString(evidence.jobId, { max: 300, pattern: /^[A-Za-z0-9_-]+$/ }) ||
+      !requiredString(evidence.jobId, { max: 300, pattern: BOSS_JOB_ID }) ||
       evidence.detailUrl !== `https://www.zhipin.com/job_detail/${evidence.jobId}.html` ||
       !requiredString(evidence.name, { max: 300 }) ||
       !['loaded_jobName', 'detail_page_title', 'legacy_named_job'].includes(evidence.source) ||
@@ -485,7 +486,7 @@ function validateJobs(value, records, conversations) {
       confirmation.status !== 'confirmed_user' ||
       !requiredString(confirmation.conversationKey, { max: 128 }) ||
       !conversations.has(confirmation.conversationKey) ||
-      !requiredString(confirmation.jobId, { max: 300, pattern: /^[A-Za-z0-9_-]+$/ }) ||
+      !requiredString(confirmation.jobId, { max: 300, pattern: BOSS_JOB_ID }) ||
       confirmation.detailUrl !== `https://www.zhipin.com/job_detail/${confirmation.jobId}.html`
     )
       integrationFail('BOSS_SNAPSHOT_JOB_INVALID', { fatal: true });
@@ -584,7 +585,7 @@ export function validateTrackerEnvelope(input) {
       (observation.externalJobId !== null &&
         !requiredString(observation.externalJobId, {
           max: 300,
-          pattern: /^[A-Za-z0-9_-]+$/,
+          pattern: BOSS_JOB_ID,
         })) ||
       !['strong', 'review'].includes(observation.status) ||
       (observation.status === 'strong') !==
