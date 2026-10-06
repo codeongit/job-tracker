@@ -4,12 +4,22 @@ import { bossBatchDigestInput } from '../dist/boss-batch.js';
 import { resumeRule, classifyResumeText, RESUME_RULES } from '../dist/resume-rules.js';
 import { BOSS_BATCH_FORMAT, BOSS_INTEGRATION_VERSION, validateBossBatch } from './boss-inbox.mjs';
 import { integrationFail } from './boss-integration-error.mjs';
+import { parseBossDetailTitle } from '../dist/boss-detail-title.js';
+import { parseBossJobUrl } from '../dist/boss-job-url.js';
 const HH_MM = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
 const INCREMENTAL_POLICY = 'boss-manual-check-v1';
 const RESUME_POLICY = 'boss-resume-observation-v3';
 const RESUME_STATUS_WORKFLOW = 'resume-status-linked-v2';
 const TIMEZONE = 'Asia/Shanghai';
 const YESTERDAY_LABEL = '昨天';
+function detailSignature(detail) {
+  const normalized = (value) =>
+    String(value ?? '')
+      .normalize('NFC')
+      .replace(/\s+/gu, ' ')
+      .trim();
+  return JSON.stringify([normalized(detail.name), normalized(detail.company)]);
+}
 function canonical(value) {
   if (Array.isArray(value)) return value.map(canonical);
   if (value && typeof value === 'object')
@@ -70,10 +80,75 @@ export function shanghaiDay(date) {
   const get = (type) => parts.find((part) => part.type === type)?.value;
   return `${get('year')}-${get('month')}-${get('day')}`;
 }
-export function resolveJobRows(envelope) {
+function retainedDetailRecords(envelope) {
+  if (envelope.snapshot.accountNamespace !== envelope.accountNamespace) return [];
+  const loadedKeys = new Set(envelope.snapshot.records.map((record) => record.key));
+  return (envelope.state?.records ?? [])
+    .filter((record) => {
+      if (loadedKeys.has(record.key)) return false;
+      const identity = record.platformIdentity;
+      if (
+        !identity ||
+        typeof identity.friendId !== 'string' ||
+        typeof identity.friendSource !== 'string' ||
+        identity.uniqueId !== `${identity.friendId}-${identity.friendSource}` ||
+        record.key !==
+          stableHash([
+            'boss',
+            envelope.accountNamespace,
+            identity.friendId,
+            identity.friendSource,
+          ]) ||
+        !Number.isFinite(Date.parse(record.lastObservedAt)) ||
+        !record.latestObservation
+      )
+        return false;
+      const associations = envelope.jobs.associations.filter(
+        (item) => item.status === 'current' && item.conversationKey === record.key,
+      );
+      if (associations.length !== 1) return false;
+      const association = associations[0],
+        parsedUrl = parseBossJobUrl(association.detailUrl);
+      if (
+        !parsedUrl ||
+        parsedUrl.jobId !== association.jobId ||
+        parsedUrl.canonicalUrl !== association.detailUrl
+      )
+        return false;
+      const details = envelope.jobs.evidence.filter(
+        (item) => item.jobId === association.jobId && item.source === 'detail_page_title',
+      );
+      if (!details.length) return false;
+      const signatures = new Set();
+      for (const detail of details) {
+        const parsed = parseBossDetailTitle(detail.title);
+        if (
+          detail.detailUrl !== association.detailUrl ||
+          !parsed ||
+          parsed.name !== detail.name ||
+          parsed.company !== detail.company
+        )
+          return false;
+        signatures.add(detailSignature(parsed));
+      }
+      return signatures.size === 1;
+    })
+    .map((record) => ({
+      key: record.key,
+      platformIdentity: record.platformIdentity,
+      contact: record.contact,
+      company: record.company,
+      title: record.title,
+      ...record.latestObservation,
+      observedJobName: null,
+      lastObservedAt: record.lastObservedAt,
+    }));
+}
+
+export function resolveJobRows(envelope, { includeRetainedDetails = false } = {}) {
   const rank = new Map([
-    ['loaded_jobName', 3],
-    ['detail_page_title', 2],
+    ['loaded_jobName', includeRetainedDetails ? 2 : 3],
+    ['detail_page_title', includeRetainedDetails ? 3 : 2],
     ['legacy_named_job', 1],
   ]);
   const currentByConversation = new Map(
@@ -81,7 +156,10 @@ export function resolveJobRows(envelope) {
       .filter((item) => item.status === 'current')
       .map((item) => [item.conversationKey, item]),
   );
-  return envelope.snapshot.records.map((record) => {
+  const records = includeRetainedDetails
+    ? [...envelope.snapshot.records, ...retainedDetailRecords(envelope)]
+    : envelope.snapshot.records;
+  return records.map((record) => {
     const association = currentByConversation.get(record.key) ?? null;
     const evidence = association
       ? envelope.jobs.evidence
@@ -94,14 +172,23 @@ export function resolveJobRows(envelope) {
               Date.parse(b.observedAt) - Date.parse(a.observedAt),
           )
       : [];
-    // A job id can have evidence collected from several conversations. A title
-    // observed under another company is only a candidate, never an auto-fill.
+    const details = evidence.filter((item) => item.source === 'detail_page_title');
+    const detailConflict = includeRetainedDetails
+      ? new Set(details.map(detailSignature)).size > 1
+      : details.some(
+          (item) => item.name !== details[0].name || item.company !== details[0].company,
+        );
+    // Keep the legacy fact mapping for resume IDs. Detail delivery uses the
+    // verified employer, which can differ from the company in the chat list.
     const company = record.company.trim();
-    const nameConflict = evidence.some(
-      (item) => item.company.trim() && item.company.trim() !== company,
-    );
-    const selected =
-      evidence.find((item) => !item.company.trim() || item.company.trim() === company) ?? null;
+    const nameConflict = includeRetainedDetails
+      ? detailConflict
+      : evidence.some((item) => item.company.trim() && item.company.trim() !== company);
+    const selected = includeRetainedDetails
+      ? detailConflict
+        ? null
+        : (evidence[0] ?? null)
+      : (evidence.find((item) => !item.company.trim() || item.company.trim() === company) ?? null);
     const confirmed = association
       ? envelope.jobs.confirmations.some(
           (item) =>
@@ -114,14 +201,8 @@ export function resolveJobRows(envelope) {
     return {
       record,
       jobDetails: (() => {
-        const details = evidence.filter((item) => item.source === 'detail_page_title');
         if (!details.length) return null;
-        if (
-          details.some(
-            (item) => item.name !== details[0].name || item.company !== details[0].company,
-          ) ||
-          !details[0].company?.trim()
-        )
+        if (detailConflict || !details[0].company?.trim())
           return {
             jobId: association.jobId,
             canonicalUrl: association.detailUrl,
@@ -139,8 +220,16 @@ export function resolveJobRows(envelope) {
       })(),
       externalJobId: association?.jobId ?? '',
       canonicalUrl: association?.detailUrl ?? '',
-      jobName: selected?.name ?? record.observedJobName ?? '',
-      nameSource: selected?.source ?? (record.observedJobName ? 'loaded_jobName' : ''),
+      jobName:
+        selected?.name ??
+        (includeRetainedDetails && nameConflict ? '' : (record.observedJobName ?? '')),
+      nameSource:
+        selected?.source ??
+        (includeRetainedDetails && nameConflict
+          ? ''
+          : record.observedJobName
+            ? 'loaded_jobName'
+            : ''),
       nameConflict,
       linkConfirmation: confirmed ? 'confirmed_user' : 'unverified',
     };
@@ -183,11 +272,13 @@ export function eventFacts(row, accountNamespace) {
 
 export function createEvents(
   envelope,
-  { sourceSequence, evidenceDate = '', appliedAtForNew = '' },
+  { sourceSequence, evidenceDate = '', appliedAtForNew = '', includeRetainedDetails = false },
 ) {
-  const rows = resolveJobRows(envelope);
+  const rows = resolveJobRows(envelope, { includeRetainedDetails });
+  const loadedKeys = new Set(envelope.snapshot.records.map((record) => record.key));
   return rows.map((row) => {
     const facts = eventFacts(row, envelope.accountNamespace);
+    const retained = !loadedKeys.has(row.record.key);
     return {
       eventId: `boss-event-${stableHash(facts)}`,
       conversationKey: facts.conversationKey,
@@ -200,17 +291,17 @@ export function createEvents(
       company: facts.company,
       contact: facts.contact,
       summary: facts.summary,
-      timeLabel: row.record.timeLabel,
+      timeLabel: retained ? '' : row.record.timeLabel,
       messageId: facts.messageId,
       messageDirection: facts.messageDirection,
       receiptStatus: facts.receiptStatus,
       receiptSource: facts.receiptSource,
-      observedAt: envelope.snapshot.capturedAt,
-      evidenceDate,
+      observedAt: retained ? row.record.lastObservedAt : envelope.snapshot.capturedAt,
+      evidenceDate: retained ? '' : evidenceDate,
       nameSource: facts.nameSource,
       linkConfirmation: facts.linkConfirmation,
       intent: facts.intent,
-      appliedAtForNew,
+      appliedAtForNew: retained ? '' : appliedAtForNew,
       sourceSequence,
     };
   });
@@ -387,7 +478,11 @@ export function createBatch({
   sourceSequence,
   policy,
   events,
+  includeRetainedDetails = false,
 }) {
+  const rows = new Map(
+    resolveJobRows(envelope, { includeRetainedDetails }).map((row) => [row.record.key, row]),
+  );
   const batch = {
     format: BOSS_BATCH_FORMAT,
     version: BOSS_INTEGRATION_VERSION,
@@ -403,7 +498,7 @@ export function createBatch({
     },
     coverage: coverageOf(envelope),
     events: events.map((event) => {
-      const row = resolveJobRows(envelope).find((row) => row.record.key === event.conversationKey);
+      const row = rows.get(event.conversationKey);
       return {
         ...(event.eventType === 'resume_observed'
           ? { ...structuredClone(event), attribution: event.attribution ?? null }
@@ -452,10 +547,12 @@ export function createIncrementalBatch(
 ) {
   const eventsFor = (snapshot) => {
     const captureDay = shanghaiDay(new Date(snapshot.envelope.snapshot.capturedAt));
-    return createEvents(snapshot.envelope, { sourceSequence }).map((event) =>
-      HH_MM.test(event.timeLabel)
-        ? { ...event, evidenceDate: captureDay, appliedAtForNew: captureDay }
-        : event,
+    const loadedKeys = new Set(snapshot.envelope.snapshot.records.map((record) => record.key));
+    return createEvents(snapshot.envelope, { sourceSequence, includeRetainedDetails: true }).map(
+      (event) =>
+        loadedKeys.has(event.conversationKey) && HH_MM.test(event.timeLabel)
+          ? { ...event, evidenceDate: captureDay, appliedAtForNew: captureDay }
+          : event,
     );
   };
   const previousIds = new Set(
@@ -485,5 +582,6 @@ export function createIncrementalBatch(
     sourceSequence,
     policy,
     events,
+    includeRetainedDetails: true,
   });
 }

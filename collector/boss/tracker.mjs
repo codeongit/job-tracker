@@ -459,6 +459,7 @@ export function fairDetailInputs(
     selectedIds,
     candidates: selectedIds.flatMap((id) => eligible.filter((item) => item.jobId === id)),
     knownEvidence: input.knownEvidence,
+    eligibleJobIds: jobs.map((item) => item.jobId),
     pendingJobs: jobs.length,
     deferredJobs: jobs.filter((item) => dispositions.get(item.jobId) === 'backoff').length,
     isolatedJobs: jobs.filter((item) => dispositions.get(item.jobId) === 'isolated').length,
@@ -471,12 +472,24 @@ function completedDetailCursor(input, collected, priorCursor) {
   return attempted ? input.selectedIds[attempted - 1] : priorCursor;
 }
 
+function currentDetailSummary(envelope, runtime, now = new Date().toISOString()) {
+  const input =
+    envelope && [2, 3, 4].includes(envelope.version)
+      ? fairDetailInputs(envelope, { limit: 1, runtime, now })
+      : null;
+  return detailRuntimeSummary(runtime, {
+    pending: input?.pendingJobs ?? 0,
+    eligibleJobIds: input?.eligibleJobIds ?? [],
+    now,
+  });
+}
+
 const accountDetailFailure = (code) =>
   /(?:VERIFICATION|LOGIN|LOGGED|ACCOUNT|IDENTITY|BROWSER_INSTANCE|CONNECTION_REBIND|TASK_TARGET|SECURITY)/.test(
     code ?? '',
   );
 
-function updateDetailRuntime(runtime, input, collected, at) {
+function updateDetailRuntime(runtime, collected, at, envelope) {
   let next = runtime;
   const completed = new Set(
     [...collected.observations, ...collected.candidates].map((item) => item.jobId),
@@ -507,7 +520,7 @@ function updateDetailRuntime(runtime, input, collected, at) {
   }
   return {
     runtime: next,
-    summary: detailRuntimeSummary(next, { pending: input.pendingJobs, now: at }),
+    summary: currentDetailSummary(envelope, next, at),
   };
 }
 
@@ -886,16 +899,7 @@ export async function main(argv = process.argv.slice(2)) {
             file: saved?.path ?? null,
             runtime: runtime.lastRun,
             cdpRetry: runtime.cdpRetry,
-            detailEnrichment: detailRuntimeSummary(runtime, {
-              pending:
-                saved && [2, 3, 4].includes(saved.envelope.version)
-                  ? fairDetailInputs(saved.envelope, {
-                      limit: 1,
-                      runtime,
-                      now: new Date().toISOString(),
-                    }).pendingJobs
-                  : 0,
-            }),
+            detailEnrichment: currentDetailSummary(saved?.envelope, runtime),
             history: { ...historySummary(runtime.history), backfillCursor: runtime.cursors.resume },
             dom,
           },
@@ -912,17 +916,13 @@ export async function main(argv = process.argv.slice(2)) {
       sharedRuntime = resumeDetailState(sharedRuntime, { updatedAt: new Date().toISOString() });
       await saveRuntimeState(directory, sharedRuntime);
       const current = await latest(directory);
-      const pending =
-        current && [2, 3, 4].includes(current.envelope.version)
-          ? fairDetailInputs(current.envelope, {
-              limit: 1,
-              runtime: sharedRuntime,
-              now: new Date().toISOString(),
-            }).pendingJobs
-          : 0;
       console.log(
         JSON.stringify(
-          { ok: true, account, detailEnrichment: detailRuntimeSummary(sharedRuntime, { pending }) },
+          {
+            ok: true,
+            account,
+            detailEnrichment: currentDetailSummary(current?.envelope, sharedRuntime),
+          },
           null,
           2,
         ),
@@ -1121,6 +1121,7 @@ export async function main(argv = process.argv.slice(2)) {
               error: 'DETAIL_ENRICHMENT_BLOCKED',
               detailEnrichment: detailRuntimeSummary(runtime, {
                 pending: input.pendingJobs,
+                eligibleJobIds: input.eligibleJobIds,
                 now: detailAt,
               }),
               usage: {
@@ -1151,7 +1152,12 @@ export async function main(argv = process.argv.slice(2)) {
       } else {
         await exportCurrent(directory, applied.envelope);
       }
-      const detailUpdate = updateDetailRuntime(runtime, input, collected, new Date().toISOString());
+      const detailUpdate = updateDetailRuntime(
+        runtime,
+        collected,
+        new Date().toISOString(),
+        applied.envelope,
+      );
       runtime = {
         ...detailUpdate.runtime,
         cursors: {
@@ -1521,9 +1527,9 @@ export async function main(argv = process.argv.slice(2)) {
         }
         const detailUpdate = updateDetailRuntime(
           runtime,
-          input,
           detailCollected,
           new Date().toISOString(),
+          envelope,
         );
         runtime = detailUpdate.runtime;
         sharedRuntime = runtime;
@@ -1557,13 +1563,7 @@ export async function main(argv = process.argv.slice(2)) {
         },
       };
       const finalDetailSummary =
-        detailCollected.detailEnrichment ??
-        detailRuntimeSummary(runtime, {
-          pending: [2, 3, 4].includes(envelope.version)
-            ? fairDetailInputs(envelope, { limit: 1, runtime, now: finishedAt }).pendingJobs
-            : 0,
-          now: finishedAt,
-        });
+        detailCollected.detailEnrichment ?? currentDetailSummary(envelope, runtime, finishedAt);
       runtime = completeRun(runtime, {
         runId,
         startedAt,

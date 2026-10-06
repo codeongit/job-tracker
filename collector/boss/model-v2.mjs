@@ -1,4 +1,5 @@
 import { BOSS_JOB_ID, parseBossJobUrl, isCanonicalBossJobUrl } from '../../dist/boss-job-url.js';
+import { parseBossDetailTitle } from '../../dist/boss-detail-title.js';
 import { validateAttributionEvidence } from '../../dist/boss-attribution.js';
 import { RESUME_KINDS, RESUME_STATUS_KINDS } from '../../dist/resume-rules.js';
 import { createHash } from 'node:crypto';
@@ -383,11 +384,24 @@ function validateEvidence(record, kind, path) {
     string(record.observedCompany, `${path}.observedCompany`, { max: 500 });
     string(record.expectedCompany, `${path}.expectedCompany`, { empty: true, max: 500 });
   }
+  if (record.source === 'detail_page_title')
+    validateDetailTitle(
+      record.title,
+      record.name,
+      kind === 'candidate' ? record.observedCompany : record.company,
+      path,
+    );
   if (record.legacyKey !== undefined) string(record.legacyKey, `${path}.legacyKey`, { max: 200 });
   const facts = Object.fromEntries(
     Object.entries(record).filter(([key]) => !['id', 'attribution'].includes(key)),
   );
   if (record.id !== evidenceId(kind, facts)) fail(`${path}.id does not match its evidence facts`);
+}
+
+function validateDetailTitle(title, name, company, path) {
+  const parsed = parseBossDetailTitle(title);
+  if (!parsed || parsed.name !== name || parsed.company !== company)
+    fail(`${path}.title does not match its job name and observed company`);
 }
 
 function validateConfirmation(record, path) {
@@ -1209,14 +1223,34 @@ export function createEnvelopeV2(snapshot) {
   return compareLoadedSnapshotsV2(null, snapshot);
 }
 
+// Detail facts outrank loaded labels; conflicting detail facts stay unresolved.
+function rankedJobEvidence(envelope, association) {
+  const sourceRank = new Map([
+    ['detail_page_title', 3],
+    ['loaded_jobName', 2],
+    ['legacy_named_job', 1],
+  ]);
+  const evidence = association
+    ? envelope.jobs.evidence
+        .filter(
+          (item) => item.jobId === association.jobId && item.detailUrl === association.detailUrl,
+        )
+        .sort(
+          (a, b) =>
+            (sourceRank.get(b.source) ?? 0) - (sourceRank.get(a.source) ?? 0) ||
+            Date.parse(b.observedAt) - Date.parse(a.observedAt),
+        )
+    : [];
+  const details = evidence.filter((item) => item.source === 'detail_page_title');
+  const conflict =
+    new Set(details.map((item) => JSON.stringify([normText(item.name), normText(item.company)])))
+      .size > 1;
+  return { evidence, conflict };
+}
+
 /** Resolve a stable, privacy-minimal export/status view without mutating input. */
 export function resolveJobRowsV2(inputEnvelope) {
   const envelope = validateEnvelope(inputEnvelope);
-  const sourceRank = new Map([
-    ['loaded_jobName', 3],
-    ['detail_page_title', 2],
-    ['legacy_named_job', 1],
-  ]);
   return envelope.state.records
     .map((conversation) => {
       const associations = envelope.jobs.associations
@@ -1227,19 +1261,8 @@ export function resolveJobRowsV2(inputEnvelope) {
             Date.parse(b.lastObservedAt) - Date.parse(a.lastObservedAt),
         );
       const association = associations[0] ?? null;
-      const evidence = association
-        ? envelope.jobs.evidence
-            .filter(
-              (item) =>
-                item.jobId === association.jobId && item.detailUrl === association.detailUrl,
-            )
-            .sort(
-              (a, b) =>
-                (sourceRank.get(b.source) ?? 0) - (sourceRank.get(a.source) ?? 0) ||
-                Date.parse(b.observedAt) - Date.parse(a.observedAt),
-            )
-        : [];
-      const selected = evidence[0] ?? null;
+      const { evidence, conflict } = rankedJobEvidence(envelope, association);
+      const selected = conflict ? null : (evidence[0] ?? null);
       const confirmed = association
         ? envelope.jobs.confirmations.some(
             (item) =>
@@ -1268,7 +1291,7 @@ export function resolveJobRowsV2(inputEnvelope) {
       return {
         conversationKey: conversation.key,
         contact: conversation.contact,
-        company: conversation.company,
+        company: selected?.source === 'detail_page_title' ? selected.company : conversation.company,
         jobId: association?.jobId ?? null,
         detailUrl: association?.detailUrl ?? null,
         associationStatus: association?.status ?? null,
@@ -1290,9 +1313,7 @@ export function listEnrichmentTargetsV2(inputEnvelope) {
     .map((association) => {
       const conversation = conversations.get(association.conversationKey);
       if (!conversation) return null;
-      const evidence = envelope.jobs.evidence.filter(
-        (item) => item.jobId === association.jobId && item.detailUrl === association.detailUrl,
-      );
+      const { evidence, conflict } = rankedJobEvidence(envelope, association);
       const candidates = envelope.jobs.candidates
         .filter(
           (item) =>
@@ -1314,7 +1335,7 @@ export function listEnrichmentTargetsV2(inputEnvelope) {
         jobId: association.jobId,
         detailUrl: association.detailUrl,
         associationStatus: association.status,
-        knownEvidence: evidence.map((item) => ({
+        knownEvidence: (conflict ? [] : evidence).map((item) => ({
           name: item.name,
           company: item.company,
           title: item.title ?? null,
@@ -1362,8 +1383,9 @@ function detailInput(value, path) {
 
 /**
  * Add independently timed detail-page results without changing snapshot/state.
- * A mismatched company is always stored as a candidate and can never become
- * accepted evidence. Exact association identity is required for every result.
+ * Verified detail evidence supplies its observed employer; the conversation
+ * retains the recruiter. Explicit legacy candidates remain candidates.
+ * Exact association identity is required for every result.
  */
 export function applyDetailEvidenceV2(inputEnvelope, result, appliedAt) {
   const envelope = upgradeEnvelope(inputEnvelope);
@@ -1401,31 +1423,12 @@ export function applyDetailEvidenceV2(inputEnvelope, result, appliedAt) {
     const item = detailInput(value, path);
     if (Date.parse(item.observedAt) > Date.parse(appliedAt))
       fail(`${path}.observedAt is later than appliedAt`);
-    const { conversation } = associationFor(item, path);
+    associationFor(item, path);
     if (item.source !== 'detail_page_title') fail(`${path}.source must be detail_page_title`);
     if (item.title === null) fail(`${path}.title is required for detail-page evidence`);
     const observedCompany = string(value.company, `${path}.company`, { empty: true, max: 500 });
-    if (normText(observedCompany) !== normText(conversation.company)) {
-      const expectedTitle = `「${item.name}招聘」_${observedCompany}招聘-BOSS直聘`;
-      if (item.title !== expectedTitle)
-        fail(`${path}.title does not match its job name and observed company`);
-      const candidate = {
-        ...item,
-        company: conversation.company,
-        expectedCompany: conversation.company,
-        observedCompany,
-        reason: 'detail_company_mismatch',
-      };
-      candidate.id = evidenceId('candidate', candidate);
-      const before = envelope.jobs.candidates.length;
-      addUnique(envelope.jobs.candidates, candidate);
-      counts[envelope.jobs.candidates.length > before ? 'candidateSaved' : 'duplicates'] += 1;
-      counts.companyMismatch += 1;
-      continue;
-    }
-    const expectedTitle = `「${item.name}招聘」_${conversation.company}招聘-BOSS直聘`;
-    if (item.title !== expectedTitle) fail(`${path}.title does not match its job name and company`);
-    const evidence = { ...item, company: conversation.company };
+    validateDetailTitle(item.title, item.name, observedCompany, path);
+    const evidence = { ...item, company: observedCompany };
     evidence.id = evidenceId('accepted', evidence);
     const before = envelope.jobs.evidence.length;
     addUnique(envelope.jobs.evidence, evidence);
@@ -1450,9 +1453,7 @@ export function applyDetailEvidenceV2(inputEnvelope, result, appliedAt) {
       fail(`${path} is not a company-mismatch candidate`);
     const reason = string(value.reason, `${path}.reason`, { max: 200 });
     if (reason !== 'detail_company_mismatch') fail(`${path}.reason is invalid`);
-    const expectedTitle = `「${item.name}招聘」_${observedCompany}招聘-BOSS直聘`;
-    if (item.title !== expectedTitle)
-      fail(`${path}.title does not match its job name and observed company`);
+    validateDetailTitle(item.title, item.name, observedCompany, path);
     const candidate = {
       ...item,
       company: conversation.company,
@@ -1474,7 +1475,7 @@ export function applyDetailEvidenceV2(inputEnvelope, result, appliedAt) {
       counts,
       warnings: [
         'Detail evidence was stored separately; snapshot/state and message observation timestamps were not changed.',
-        'Company-mismatch observations remain candidates and do not supply the resolved job name.',
+        'Detail evidence supplies the employer; the conversation retains the recruiter and explicit legacy candidates remain unchanged.',
       ],
     },
   };

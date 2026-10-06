@@ -250,14 +250,27 @@ export function resumeDetailState(state, { updatedAt = new Date().toISOString() 
   });
 }
 
-export function detailRuntimeSummary(state, { pending = 0, now = new Date().toISOString() } = {}) {
+export function detailRuntimeSummary(
+  state,
+  { pending = 0, eligibleJobIds = null, now = new Date().toISOString() } = {},
+) {
   const current = normalizeRuntimeState(state);
   if (!Number.isSafeInteger(pending) || pending < 0 || !iso(now))
     throw new Error('DETAIL_RETRY_INPUT_INVALID');
-  const deferred = current.detail.tasks.filter(
+  if (
+    eligibleJobIds !== null &&
+    (!Array.isArray(eligibleJobIds) ||
+      eligibleJobIds.some((id) => typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,300}$/.test(id)))
+  )
+    throw new Error('DETAIL_RETRY_INPUT_INVALID');
+  const eligible = eligibleJobIds === null ? null : new Set(eligibleJobIds);
+  const tasks = current.detail.tasks.filter(
+    (task) => eligible === null || eligible.has(task.jobId),
+  );
+  const deferred = tasks.filter(
     (task) => task.status === 'backoff' && Date.parse(task.nextRetryAt) > Date.parse(now),
   );
-  const isolated = current.detail.tasks.filter((task) => task.status === 'isolated');
+  const isolated = tasks.filter((task) => task.status === 'isolated');
   return {
     status: current.detail.blocked ? 'blocked' : deferred.length ? 'waiting_retry' : 'active',
     pending,
@@ -266,9 +279,8 @@ export function detailRuntimeSummary(state, { pending = 0, now = new Date().toIS
     nextRetryAt: deferred.map((task) => task.nextRetryAt).sort()[0] ?? null,
     lastError:
       current.detail.blockCode ??
-      [...current.detail.tasks].sort((left, right) =>
-        right.lastAttemptAt.localeCompare(left.lastAttemptAt),
-      )[0]?.lastError ??
+      [...tasks].sort((left, right) => right.lastAttemptAt.localeCompare(left.lastAttemptAt))[0]
+        ?.lastError ??
       null,
   };
 }

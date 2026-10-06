@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createCdpController } from './cdp-browser.mjs';
+import { createCdpController, DETAIL_PAGE_STATE_EXPRESSION } from './cdp-browser.mjs';
 
 const url = 'https://www.zhipin.com/web/geek/chat';
 
@@ -181,6 +181,7 @@ test('resume refuses a restarted browser instance and never navigates', async ()
 
 test('CDP detail adapter creates, navigates, reads and closes only its owned target', async () => {
   const calls = [];
+  const document = { readyState: 'loading', timeOrigin: 1000, documentUrl: null };
   const targets = [{ id: 'task-page', type: 'page', url, webSocketDebuggerUrl: 'ws://task-page' }];
   const fetchImpl = async (request) => {
     const requestUrl = String(request),
@@ -221,8 +222,15 @@ test('CDP detail adapter creates, navigates, reads and closes only its owned tar
     },
     async evaluate(expression) {
       if (expression === 'IDENTITY') return { ok: true, url, accountId: '12345' };
+      assert.equal(expression, DETAIL_PAGE_STATE_EXPRESSION);
       const target = targets.find((item) => item.webSocketDebuggerUrl === endpoint);
-      return { url: target.url, title: '「平台工程师招聘」_公司甲招聘-BOSS直聘' };
+      return {
+        url: target.url,
+        title: '「平台工程师招聘」_公司甲招聘-BOSS直聘',
+        readyState: document.readyState,
+        timeOrigin: document.timeOrigin,
+        documentUrl: document.documentUrl ?? target.url,
+      };
     },
     async close() {},
   });
@@ -241,13 +249,33 @@ test('CDP detail adapter creates, navigates, reads and closes only its owned tar
   const first = 'https://www.zhipin.com/job_detail/job_a.html';
   const second = 'https://www.zhipin.com/job_detail/job_b.html';
   const handle = await adapter.createOwnedTab({ ownerToken: 'owner-1', initialUrl: first });
-  assert.equal((await adapter.readOwnedTab(handle)).url, first);
+  const loading = await adapter.readOwnedTab(handle);
+  assert.equal(loading.url, first);
+  assert.equal(loading.documentReady, false);
+  document.readyState = 'complete';
+  document.documentUrl = second;
+  assert.equal((await adapter.readOwnedTab(handle)).documentReady, false);
+  document.documentUrl = first;
+  assert.equal((await adapter.readOwnedTab(handle)).documentReady, true);
   await adapter.navigateOwnedTab(handle, {
     ownerToken: 'owner-1',
     expectedUrl: first,
     nextUrl: second,
   });
-  assert.equal((await adapter.readOwnedTab(handle)).url, second);
+  document.documentUrl = second;
+  const oldDocument = await adapter.readOwnedTab(handle);
+  assert.equal(oldDocument.url, second);
+  assert.equal(oldDocument.documentReady, false);
+  document.timeOrigin = 2000;
+  const newDocument = await adapter.readOwnedTab(handle);
+  assert.equal(newDocument.documentReady, true);
+  assert.equal(newDocument.title, oldDocument.title);
+  document.timeOrigin = undefined;
+  await assert.rejects(() => adapter.readOwnedTab(handle), /DETAIL_TAB_READ_INVALID/);
+  document.timeOrigin = 2000;
+  document.readyState = 'unknown';
+  await assert.rejects(() => adapter.readOwnedTab(handle), /DETAIL_TAB_READ_INVALID/);
+  document.readyState = 'complete';
   await adapter.closeOwnedTab(handle, { ownerToken: 'owner-1', expectedUrl: second });
   assert.equal(
     targets.some((target) => target.id === 'detail-page'),

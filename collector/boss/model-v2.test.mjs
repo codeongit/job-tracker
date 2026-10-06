@@ -1,5 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { collectDetailTitleEvidence } from './detail-enrich.mjs';
+import { detailInputs } from './tracker.mjs';
 import {
   applyDetailEvidenceV2,
   canonicalJobUrlV2,
@@ -334,7 +336,7 @@ test('legacy import maps only a unique compatible name/company pair and quaranti
   assert.deepEqual(again.envelope, migrated.envelope);
 });
 
-test('detail evidence is exact, idempotent and company mismatch remains a candidate', () => {
+test('detail evidence is exact and idempotent while explicit legacy candidates stay candidates', () => {
   const job = { jobId: 'detail-job', detailUrl: canonicalJobUrlV2('detail-job') };
   const baseline = compareLoadedSnapshotsV2(
     null,
@@ -353,17 +355,20 @@ test('detail evidence is exact, idempotent and company mismatch remains a candid
         observedAt: at(1),
         source: 'detail_page_title',
       },
+    ],
+    candidates: [
       {
         conversationKey: row('a').key,
         ...job,
         name: '另一个岗位',
-        company: '页面另一公司',
+        expectedCompany: '公司甲',
+        observedCompany: '页面另一公司',
         title: '「另一个岗位招聘」_页面另一公司招聘-BOSS直聘',
         observedAt: at(1),
         source: 'detail_page_title',
+        reason: 'detail_company_mismatch',
       },
     ],
-    candidates: [],
   };
   const applied = applyDetailEvidenceV2(baseline, result, at(2));
   assert.equal(applied.report.counts.accepted, 1);
@@ -392,6 +397,231 @@ test('detail evidence is exact, idempotent and company mismatch remains a candid
       ),
     TypeError,
   );
+});
+
+test('observed SEO detail titles survive apply, validation and resolver without rewriting', () => {
+  const job = { jobId: 'synthetic-seo-job', detailUrl: canonicalJobUrlV2('synthetic-seo-job') };
+  const baseline = compareLoadedSnapshotsV2(
+    null,
+    snapshot([
+      row('seo', {
+        company: '示例科技',
+        jobAssociation: job,
+      }),
+    ]),
+  ).envelope;
+  for (const [name, title] of [
+    ['示例研发负责人', '示例研发负责人怎么样_示例科技2026年示例研发负责人前景怎么样-BOSS直聘'],
+    ['示例 架构岗位', '示例 架构岗位招聘工资_示例科技2026年示例 架构岗位工资待遇-BOSS直聘'],
+    ['示例研发负责人', '示例研发负责人就业前景_示例科技2026年示例研发负责人招聘工资-BOSS直聘'],
+    ['示例研发负责人', '示例研发负责人工作内容_示例科技2026年示例研发负责人工作要求-BOSS直聘'],
+    ['示例研发负责人', '「什么是示例研发负责人」示例科技2026年示例研发负责人岗位职责-BOSS直聘'],
+  ]) {
+    const observation = {
+      conversationKey: row('seo').key,
+      ...job,
+      name,
+      title,
+      company: '示例科技',
+      source: 'detail_page_title',
+      observedAt: at(1),
+    };
+    const result = { observations: [observation], candidates: [] };
+    const applied = applyDetailEvidenceV2(baseline, result, at(2));
+    const reloaded = validateCurrentEnvelope(JSON.parse(JSON.stringify(applied.envelope)));
+    assert.equal(applied.report.counts.accepted, 1);
+    assert.equal(reloaded.jobs.evidence[0].title, title);
+    assert.equal(resolveJobRowsV2(reloaded)[0].jobName, name);
+    assert.deepEqual(reloaded.snapshot, baseline.snapshot);
+    assert.deepEqual(reloaded.state, baseline.state);
+    assert.deepEqual(applyDetailEvidenceV2(reloaded, result, at(3)).envelope, reloaded);
+    const invalid = structuredClone(reloaded);
+    invalid.jobs.evidence[0].title = title.replace(name, '不同岗位');
+    assert.throws(() => validateCurrentEnvelope(invalid), /title does not match/);
+  }
+});
+
+test('a new title observation accepts its employer while old explicit candidates remain unchanged', () => {
+  const job = { jobId: 'synthetic-candidate', detailUrl: canonicalJobUrlV2('synthetic-candidate') };
+  const baseline = compareLoadedSnapshotsV2(
+    null,
+    snapshot([
+      row('seo', {
+        company: '示例招聘方',
+        jobAssociation: job,
+      }),
+    ]),
+  ).envelope;
+  const observed = {
+    conversationKey: row('seo').key,
+    ...job,
+    name: '示例岗位',
+    title: '示例岗位招聘工资_示例雇主2026年示例岗位工资待遇-BOSS直聘',
+    company: '示例雇主',
+    source: 'detail_page_title',
+    observedAt: at(1),
+  };
+  const results = [
+    { observations: [observed], candidates: [] },
+    {
+      observations: [],
+      candidates: [
+        {
+          ...observed,
+          expectedCompany: '示例招聘方',
+          observedCompany: '示例雇主',
+          reason: 'detail_company_mismatch',
+        },
+      ],
+    },
+  ];
+  for (const [index, result] of results.entries()) {
+    const applied = applyDetailEvidenceV2(baseline, result, at(2));
+    const reloaded = validateCurrentEnvelope(JSON.parse(JSON.stringify(applied.envelope)));
+    assert.equal(applied.report.counts.accepted, index === 0 ? 1 : 0);
+    assert.equal(reloaded.jobs.evidence.length, index === 0 ? 1 : 0);
+    const saved = index === 0 ? reloaded.jobs.evidence[0] : reloaded.jobs.candidates[0];
+    assert.equal(saved.title, observed.title);
+    assert.equal(reloaded.state.records[0].company, '示例招聘方');
+    assert.equal(resolveJobRowsV2(reloaded)[0].jobName, index === 0 ? observed.name : null);
+    assert.equal(resolveJobRowsV2(reloaded)[0].company, index === 0 ? '示例雇主' : '示例招聘方');
+    const invalid = structuredClone(reloaded);
+    if (index === 0) invalid.jobs.evidence[0].company = '不同公司';
+    else invalid.jobs.candidates[0].observedCompany = '不同公司';
+    assert.throws(() => validateCurrentEnvelope(invalid), /title does not match/);
+  }
+  const legacy = applyDetailEvidenceV2(baseline, results[1], at(2)).envelope;
+  const candidateIds = legacy.jobs.candidates.map((item) => item.id);
+  const afterFreshRead = applyDetailEvidenceV2(legacy, results[0], at(3)).envelope;
+  assert.deepEqual(
+    afterFreshRead.jobs.candidates.map((item) => item.id),
+    candidateIds,
+  );
+});
+
+test('recruiter detail collection accepts employer evidence, prioritizes it and reuses the exact title', async () => {
+  const job = {
+    jobId: 'synthetic-recruiter-job',
+    detailUrl: canonicalJobUrlV2('synthetic-recruiter-job'),
+  };
+  const capture = snapshot([row('recruiter', { company: '示例招聘方', jobAssociation: job })]);
+  const baseline = compareLoadedSnapshotsV2(null, capture).envelope;
+  const title = '示例工程岗位招聘工资_某示例用人公司2026年示例工程岗位工资待遇-BOSS直聘';
+  const candidates = [
+    { conversationKey: row('recruiter').key, ...job, company: '示例招聘方', jobName: null },
+  ];
+  const options = {
+    limit: 1,
+    stableReads: 2,
+    maxReads: 2,
+    pollMs: 0,
+    wait: async () => {},
+    now: () => at(1),
+    makeOwnerToken: () => 'synthetic-owner',
+  };
+  let reads = 0;
+  const adapter = {
+    createOwnedTab: async ({ ownerToken }) => ({
+      ownerToken,
+      tabId: 'synthetic-detail',
+      windowId: 'synthetic-window',
+    }),
+    readOwnedTab: async (handle) => {
+      reads++;
+      return { ...handle, url: job.detailUrl, title, documentReady: true };
+    },
+    navigateOwnedTab: async () => assert.fail('unexpected navigation'),
+    closeOwnedTab: async () => {},
+  };
+  const collected = await collectDetailTitleEvidence({ ...options, candidates, adapter });
+  assert.equal(reads, 2);
+  const applied = applyDetailEvidenceV2(baseline, collected, at(2));
+  assert.equal(applied.report.counts.accepted, 1);
+  assert.equal(applied.report.counts.candidateSaved, 0);
+  const reloaded = validateCurrentEnvelope(JSON.parse(JSON.stringify(applied.envelope)));
+  assert.equal(reloaded.jobs.evidence[0].company, '某示例用人公司');
+  assert.equal(reloaded.jobs.evidence[0].title, title);
+  assert.equal(reloaded.state.records[0].company, '示例招聘方');
+  const withListName = compareLoadedSnapshotsV2(
+    reloaded,
+    snapshot(
+      [
+        row('recruiter', {
+          company: '示例招聘方',
+          jobAssociation: job,
+          observedJobName: '列表中的简称',
+        }),
+      ],
+      4,
+    ),
+  ).envelope;
+  const view = resolveJobRowsV2(withListName)[0];
+  assert.equal(view.jobName, '示例工程岗位');
+  assert.equal(view.company, '某示例用人公司');
+  assert.equal(view.nameSource, 'detail_page_title');
+  assert.equal(
+    listEnrichmentTargetsV2(withListName).targets[0].knownEvidence[0].source,
+    'detail_page_title',
+  );
+  const reused = await collectDetailTitleEvidence({
+    ...options,
+    candidates,
+    knownEvidence: detailInputs(withListName).knownEvidence,
+    adapter: {
+      createOwnedTab: async () => assert.fail('must reuse'),
+      readOwnedTab: async () => assert.fail('must reuse'),
+      navigateOwnedTab: async () => assert.fail('must reuse'),
+      closeOwnedTab: async () => assert.fail('must reuse'),
+    },
+  });
+  assert.equal(reused.observations[0].reused, true);
+  assert.equal(reused.observations[0].title, title);
+  assert.equal(reused.observations[0].company, '某示例用人公司');
+  assert.deepEqual(withListName.jobs.confirmations, reloaded.jobs.confirmations);
+});
+
+test('contradictory same-job detail facts remain stored without selecting the newest or falling back', () => {
+  const job = { jobId: 'synthetic-conflict', detailUrl: canonicalJobUrlV2('synthetic-conflict') };
+  const baseline = compareLoadedSnapshotsV2(
+    null,
+    snapshot([
+      row('conflict', {
+        company: '示例招聘方',
+        jobAssociation: job,
+        observedJobName: '列表名称',
+      }),
+    ]),
+  ).envelope;
+  const observations = [
+    {
+      name: '示例岗位甲',
+      company: '示例公司甲',
+      title: '「示例岗位甲招聘」_示例公司甲招聘-BOSS直聘',
+      observedAt: at(1),
+    },
+    {
+      name: '示例岗位乙',
+      company: '示例公司乙',
+      title: '「示例岗位乙招聘」_示例公司乙招聘-BOSS直聘',
+      observedAt: at(2),
+    },
+  ].map((item) => ({
+    ...item,
+    ...job,
+    conversationKey: row('conflict').key,
+    source: 'detail_page_title',
+  }));
+  const applied = applyDetailEvidenceV2(baseline, { observations, candidates: [] }, at(3)).envelope;
+  assert.equal(
+    applied.jobs.evidence.filter((item) => item.source === 'detail_page_title').length,
+    2,
+  );
+  const view = resolveJobRowsV2(applied)[0];
+  assert.equal(view.jobName, null);
+  assert.equal(view.company, '示例招聘方');
+  const target = listEnrichmentTargetsV2(applied).targets[0];
+  assert.deepEqual(target.knownEvidence, []);
+  assert.deepEqual(detailInputs(applied).knownEvidence, []);
 });
 
 test('synthetic legacy batch migrates 39 names, one candidate and one exact confirmation', () => {

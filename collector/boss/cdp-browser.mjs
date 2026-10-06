@@ -1,4 +1,7 @@
 import { BOSS_JOB_ID, parseBossJobUrl, isCanonicalBossJobUrl } from '../../dist/boss-job-url.js';
+
+export const DETAIL_PAGE_STATE_EXPRESSION =
+  '({url:location.href,title:document.title,readyState:document.readyState,timeOrigin:performance.timeOrigin,documentUrl:document.URL})';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
@@ -489,7 +492,9 @@ export function createCdpController({
   function createDetailAdapter(connectionValue) {
     const connection = normalizeConnection(connectionValue);
     let ownedTargetId = null,
-      owner = null;
+      owner = null,
+      expectedDetailUrl = null,
+      previousDocumentTimeOrigin = null;
     const verifyHandle = (handle, ownerToken) => {
       if (
         !handle ||
@@ -512,6 +517,20 @@ export function createCdpController({
       if (!target) throw coded('DETAIL_TAB_MISSING');
       return { currentEndpoint, target };
     };
+    const readDocument = async (target) => {
+      const value = await evaluateTarget(target, DETAIL_PAGE_STATE_EXPRESSION);
+      if (
+        !value ||
+        typeof value.url !== 'string' ||
+        typeof value.title !== 'string' ||
+        typeof value.documentUrl !== 'string' ||
+        !['loading', 'interactive', 'complete'].includes(value.readyState) ||
+        !Number.isFinite(value.timeOrigin) ||
+        value.timeOrigin <= 0
+      )
+        throw coded('DETAIL_TAB_READ_INVALID');
+      return value;
+    };
     return {
       async createOwnedTab({ ownerToken, initialUrl }) {
         if (ownedTargetId || !isCanonicalBossJobUrl(initialUrl))
@@ -519,24 +538,43 @@ export function createCdpController({
         const binding = await boundTarget(connection);
         owner = ownerToken;
         ownedTargetId = await createTarget(binding.endpoint, initialUrl);
+        expectedDetailUrl = initialUrl;
+        previousDocumentTimeOrigin = null;
         await waitForTarget(binding.endpoint.port, ownedTargetId, initialUrl);
         return { ownerToken, tabId: ownedTargetId, windowId: connection.browserInstanceId };
       },
       async readOwnedTab(handle) {
         verifyHandle(handle, handle?.ownerToken);
         const { target } = await ownedTarget();
-        const value = await evaluateTarget(target, '({url:location.href,title:document.title})');
-        if (!value || typeof value.url !== 'string' || typeof value.title !== 'string')
-          throw coded('DETAIL_TAB_READ_INVALID');
-        return { ...handle, url: value.url, title: value.title.replace(/\s+/g, ' ').trim() };
+        const value = await readDocument(target);
+        return {
+          ...handle,
+          url: value.url,
+          title: value.title.replace(/\s+/g, ' ').trim(),
+          readyState: value.readyState,
+          timeOrigin: value.timeOrigin,
+          documentUrl: value.documentUrl,
+          documentReady:
+            value.readyState === 'complete' &&
+            value.url === expectedDetailUrl &&
+            value.documentUrl === expectedDetailUrl &&
+            (previousDocumentTimeOrigin === null ||
+              value.timeOrigin !== previousDocumentTimeOrigin),
+        };
       },
       async navigateOwnedTab(handle, { ownerToken, expectedUrl, nextUrl }) {
         verifyHandle(handle, ownerToken);
         if (!isCanonicalBossJobUrl(expectedUrl) || !isCanonicalBossJobUrl(nextUrl))
           throw coded('INVALID_DETAIL_URL');
         const { target } = await ownedTarget();
-        if (target.url !== expectedUrl) throw coded('DETAIL_TAB_CHANGED');
+        if (target.url !== expectedUrl || expectedDetailUrl !== expectedUrl)
+          throw coded('DETAIL_TAB_CHANGED');
+        const prior = await readDocument(target);
+        if (prior.url !== expectedUrl || prior.documentUrl !== expectedUrl)
+          throw coded('DETAIL_TAB_CHANGED');
+        previousDocumentTimeOrigin = prior.timeOrigin;
         await navigate(target, nextUrl);
+        expectedDetailUrl = nextUrl;
       },
       async closeOwnedTab(handle, { ownerToken, expectedUrl }) {
         verifyHandle(handle, ownerToken);
@@ -551,6 +589,8 @@ export function createCdpController({
         });
         ownedTargetId = null;
         owner = null;
+        expectedDetailUrl = null;
+        previousDocumentTimeOrigin = null;
       },
     };
   }

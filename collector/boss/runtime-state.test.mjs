@@ -124,6 +124,61 @@ test('detail ownership block requires explicit detail resume without clearing jo
   assert.equal(detailTaskDisposition(state, 'job_a', '2026-09-21T10:01:00.000Z'), 'backoff');
 });
 
+test('detail summary excludes completed jobs without deleting their retry history', () => {
+  let state = normalizeRuntimeState({
+    version: 1,
+    cursors: { resume: null, detail: null },
+    lastRun: null,
+    updatedAt: null,
+  });
+  for (let attempt = 0; attempt < 4; attempt += 1)
+    state = recordDetailFailure(state, {
+      jobId: 'completed_job',
+      error: 'DETAIL_TITLE_NOT_READY',
+      stage: 'read',
+      at: `2026-09-${21 + attempt}T10:00:00.000Z`,
+    });
+  state = recordDetailFailure(state, {
+    jobId: 'missing_job',
+    error: 'DETAIL_TAB_CHANGED',
+    stage: 'navigate',
+    at: '2026-09-24T09:59:00.000Z',
+  });
+  const before = structuredClone(state);
+  assert.deepEqual(
+    detailRuntimeSummary(state, {
+      pending: 1,
+      eligibleJobIds: ['missing_job'],
+      now: '2026-09-24T10:00:00.000Z',
+    }),
+    {
+      status: 'waiting_retry',
+      pending: 1,
+      deferred: 1,
+      isolated: 0,
+      nextRetryAt: '2026-09-24T10:29:00.000Z',
+      lastError: 'DETAIL_TAB_CHANGED',
+    },
+  );
+  assert.equal(detailRuntimeSummary(state, { eligibleJobIds: [] }).lastError, null);
+  for (const eligibleJobIds of [[123], [{}], ['']])
+    assert.throws(
+      () => detailRuntimeSummary(state, { eligibleJobIds }),
+      /DETAIL_RETRY_INPUT_INVALID/,
+    );
+  assert.deepEqual(state, before);
+  state = recordDetailFailure(state, {
+    jobId: 'completed_job',
+    error: 'DETAIL_TAB_OWNERSHIP_MISMATCH',
+    stage: 'close',
+    at: '2026-09-24T10:01:00.000Z',
+    block: true,
+  });
+  const blocked = detailRuntimeSummary(state, { eligibleJobIds: [] });
+  assert.equal(blocked.status, 'blocked');
+  assert.equal(blocked.lastError, 'DETAIL_TAB_OWNERSHIP_MISMATCH');
+});
+
 test('CDP transport retry uses only the persisted 2s, 10s and 30s allowance', async () => {
   const waits = [],
     saved = [];

@@ -1,4 +1,6 @@
 import { BOSS_JOB_ID, parseBossJobUrl, isCanonicalBossJobUrl } from '../../dist/boss-job-url.js';
+import { parseBossDetailTitle } from '../../dist/boss-detail-title.js';
+export { parseBossDetailTitle };
 import { randomUUID } from 'node:crypto';
 
 export const MAX_DETAIL_ENRICH_JOBS = 20;
@@ -117,21 +119,14 @@ function normalizeRead(value, handle) {
       code: 'DETAIL_TAB_OWNERSHIP_MISMATCH',
     });
   }
-  if (typeof value.url !== 'string' || typeof value.title !== 'string') {
+  if (
+    typeof value.url !== 'string' ||
+    typeof value.title !== 'string' ||
+    (Object.hasOwn(value, 'documentReady') && typeof value.documentReady !== 'boolean')
+  ) {
     throw Object.assign(new Error('DETAIL_TAB_READ_INVALID'), { code: 'DETAIL_TAB_READ_INVALID' });
   }
-  return { url: value.url, title: value.title };
-}
-
-/** Parse only the complete BOSS detail-title shape; partial titles are unknown. */
-export function parseBossDetailTitle(title) {
-  if (typeof title !== 'string' || title.length > 1000) return null;
-  const match = /^「(.+)招聘」_(.+)招聘-BOSS直聘$/.exec(title);
-  if (!match) return null;
-  const name = match[1].trim();
-  const company = match[2].trim();
-  if (!name || name.length > 300 || !company || company.length > 300) return null;
-  return { name, company };
+  return { url: value.url, title: value.title, documentReady: value.documentReady !== false };
 }
 
 function groupCandidates(candidates) {
@@ -207,6 +202,11 @@ async function stableEvidence({
         state,
         owned: true,
       };
+    }
+    if (!state.documentReady) {
+      previousTitle = null;
+      repeats = 0;
+      continue;
     }
     const parsed = parseBossDetailTitle(state.title);
     if (!parsed) {

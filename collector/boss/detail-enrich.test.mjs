@@ -29,7 +29,7 @@ function adapterFixture(pages, options = {}) {
       const page = pages[index++] ?? pages.at(-1);
       if (options.wrongOwnerAt === index)
         return { ...identity, ownerToken: 'somebody-else', ...page };
-      return { ...identity, ownerToken: handle.ownerToken, ...page };
+      return { ...identity, ownerToken: handle.ownerToken, documentReady: true, ...page };
     },
     async navigateOwnedTab(handle, { ownerToken, expectedUrl, nextUrl }) {
       calls.push(['navigate', expectedUrl, nextUrl]);
@@ -113,6 +113,94 @@ test('creates one task-owned tab, reads stable titles serially and closes it', a
   assert.deepEqual(calls.at(-1), ['close', url('bbb')]);
 });
 
+test('new URL with the previous document title cannot supply detail evidence', async () => {
+  const previousTitle = '「旧岗位招聘」_示例公司招聘-BOSS直聘';
+  const nextTitle = '「新岗位招聘」_示例公司招聘-BOSS直聘';
+  const { adapter, calls } = adapterFixture([
+    { url: url('aaa'), title: previousTitle },
+    { url: url('aaa'), title: previousTitle },
+    { url: url('bbb'), title: previousTitle, documentReady: false },
+    { url: url('bbb'), title: previousTitle, documentReady: false },
+    { url: url('bbb'), title: nextTitle, documentReady: true },
+    { url: url('bbb'), title: nextTitle, documentReady: true },
+  ]);
+  const result = await collectDetailTitleEvidence({
+    ...runOptions(adapter),
+    candidates: [
+      candidate('conversation-a', 'aaa', '示例公司'),
+      candidate('conversation-b', 'bbb', '示例公司'),
+    ],
+  });
+  assert.deepEqual(
+    result.observations.map((item) => [item.jobId, item.name]),
+    [
+      ['aaa', '旧岗位'],
+      ['bbb', '新岗位'],
+    ],
+  );
+  assert.equal(calls.filter((call) => call[0] === 'read').length, 6);
+});
+
+test('a document not ready resets title stability, while a new ready document may share the title', async () => {
+  const title = '「同名岗位招聘」_示例公司招聘-BOSS直聘';
+  const { adapter, calls } = adapterFixture([
+    { url: url('aaa'), title, documentReady: false },
+    { url: url('aaa'), title, documentReady: true },
+    { url: url('aaa'), title, documentReady: false },
+    { url: url('aaa'), title, documentReady: true },
+    { url: url('aaa'), title, documentReady: true },
+    { url: url('bbb'), title, documentReady: false },
+    { url: url('bbb'), title, documentReady: true },
+    { url: url('bbb'), title, documentReady: true },
+  ]);
+  const result = await collectDetailTitleEvidence({
+    ...runOptions(adapter),
+    candidates: [
+      candidate('conversation-a', 'aaa', '示例公司'),
+      candidate('conversation-b', 'bbb', '示例公司'),
+    ],
+  });
+  assert.equal(result.observations.length, 2);
+  assert.equal(calls.filter((call) => call[0] === 'read').length, 8);
+});
+
+test('an unready detail document never becomes successful through repeated parseable titles', async () => {
+  const { adapter } = adapterFixture([
+    { url: url('aaa'), title: '「旧岗位招聘」_示例公司招聘-BOSS直聘', documentReady: false },
+  ]);
+  const result = await collectDetailTitleEvidence({
+    ...runOptions(adapter),
+    candidates: [candidate('conversation-a', 'aaa', '示例公司')],
+  });
+  assert.equal(result.observations.length, 0);
+  assert.equal(result.failures[0].code, 'DETAIL_TITLE_NOT_READY');
+  assert.equal(result.cleanup.status, 'closed');
+});
+
+test('legacy injected reads remain compatible, while a provided readiness flag must be boolean', async () => {
+  for (const legacy of [true, false]) {
+    const { adapter } = adapterFixture([
+      { url: url('aaa'), title: '「平台工程师招聘」_示例公司招聘-BOSS直聘' },
+    ]);
+    const read = adapter.readOwnedTab;
+    adapter.readOwnedTab = async (handle) => {
+      const value = await read(handle);
+      if (legacy) delete value.documentReady;
+      else value.documentReady = 'true';
+      return value;
+    };
+    const result = await collectDetailTitleEvidence({
+      ...runOptions(adapter),
+      candidates: [candidate('conversation-a', 'aaa', '示例公司')],
+    });
+    if (legacy) assert.equal(result.observations.length, 1);
+    else {
+      assert.equal(result.observations.length, 0);
+      assert.equal(result.halted.code, 'DETAIL_TAB_READ_INVALID');
+    }
+  }
+});
+
 test('waits for the configured human-paced interval before navigating to another detail', async () => {
   const pages = [
     { url: url('aaa'), title: '「平台工程师招聘」_公司甲招聘-BOSS直聘' },
@@ -185,6 +273,7 @@ test('login/security halts safely and returns earlier partial results', async ()
   ];
   // Use an explicit security URL that must be detected before title parsing.
   pages[2].url = 'https://www.zhipin.com/security/captcha';
+  pages[2].documentReady = false;
   const { adapter } = adapterFixture(pages);
   const result = await collectDetailTitleEvidence({
     ...runOptions(adapter),
