@@ -89,15 +89,18 @@ const dataMigrations = new Map([
 ]);
 export function migrateData(input, options) {
   let data = clone(input);
+  let ledgerAdapted = false;
   if (!Number.isInteger(data?.schemaVersion) || data.schemaVersion > DATA_VERSION) {
     throw new Error('数据来自不支持的版本，请更新工作台后再打开；原数据未改动。');
   }
   while (data.schemaVersion < DATA_VERSION) {
-    const migrate = dataMigrations.get(data.schemaVersion);
+    const version = data.schemaVersion;
+    const migrate = dataMigrations.get(version);
     if (!migrate) throw new Error('缺少此版本的数据迁移步骤，已保留原数据。');
     data = migrate(data);
+    ledgerAdapted = version === 3 && data.schemaVersion === DATA_VERSION;
   }
-  data = upgradeSourceLedger(data);
+  if (!ledgerAdapted) data = upgradeSourceLedger(data);
   return validateData(data, options);
 }
 

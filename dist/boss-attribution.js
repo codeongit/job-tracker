@@ -1,4 +1,5 @@
 import { BOSS_JOB_ID } from './boss-job-url.js';
+import { bossFactId, hasBossFactIdentity } from './source-identity.js';
 // Evidence is carried only by private snapshots/batches. Shared data stores the decision.
 export const ATTRIBUTION_REASONS = Object.freeze({
   attribution_evidence_missing: '缺少独立归属依据',
@@ -14,27 +15,42 @@ export const ATTRIBUTION_REASONS = Object.freeze({
 });
 
 // Ephemeral candidate associations, never proof of message/job ownership.
-export function buildBossAttributionContext(events) {
+export function buildBossAttributionContext(events, { observations = [] } = {}) {
   const messageJobs = new Map(),
-    conversationJobs = new Map();
+    conversationJobs = new Map(),
+    factObservations = new Map(),
+    factAssociations = new Map();
   const add = (map, account, identity, job) => {
     if (!identity) return;
     const key = JSON.stringify([account, identity]);
     if (!map.has(key)) map.set(key, new Set());
     map.get(key).add(job);
   };
-  for (const event of events) {
-    if (
-      event.deletedAt ||
-      (event.platform && event.platform !== 'boss') ||
-      !event.accountNamespace ||
-      !event.externalJobId
-    )
+  for (const event of [...events, ...observations]) {
+    if (event.deletedAt || (event.platform && event.platform !== 'boss') || !event.accountNamespace)
       continue;
+    if (event.eventType === 'resume_observed' && hasBossFactIdentity(event)) {
+      const factId = bossFactId(event);
+      if (!factAssociations.has(factId)) factAssociations.set(factId, []);
+      factAssociations.get(factId).push(event);
+    }
+    if (!event.externalJobId) continue;
     add(messageJobs, event.accountNamespace, event.messageId, event.externalJobId);
     add(conversationJobs, event.accountNamespace, event.conversationKey, event.externalJobId);
   }
-  return { messageJobs, conversationJobs };
+  for (const event of observations) {
+    if (
+      event.deletedAt ||
+      (event.platform && event.platform !== 'boss') ||
+      event.eventType !== 'resume_observed' ||
+      !hasBossFactIdentity(event)
+    )
+      continue;
+    const factId = bossFactId(event);
+    if (!factObservations.has(factId)) factObservations.set(factId, []);
+    factObservations.get(factId).push(event);
+  }
+  return { messageJobs, conversationJobs, factObservations, factAssociations };
 }
 const fields = [
   'version',
@@ -74,7 +90,7 @@ export function validateAttributionEvidence(value) {
   return structuredClone(value);
 }
 
-export function assessBossAttribution(accountNamespace, event, context = null) {
+function assessObservation(accountNamespace, event, context = null) {
   const evidence = validateAttributionEvidence(event.attribution ?? null);
   const result = (status, reason) => ({
     status,
@@ -132,6 +148,88 @@ export function assessBossAttribution(accountNamespace, event, context = null) {
     'verified',
     evidence.messageJobId ? 'attribution_verified' : 'attribution_conversation_association',
   );
+}
+
+const insufficientPriority = Object.freeze({
+  attribution_evidence_missing: 0,
+  attribution_conversation_missing: 1,
+  attribution_participants_missing: 2,
+  attribution_job_missing: 3,
+  attribution_conversation_job_changed: 4,
+});
+const conflictPriority = Object.freeze({
+  attribution_message_multiple_jobs: 0,
+  attribution_binding_conflict: 1,
+  attribution_contact_conflict: 2,
+  attribution_participant_conflict: 3,
+  attribution_job_conflict: 4,
+});
+
+// Each observation retains its own identity chain. Values from different samples
+// are never combined to manufacture one complete chain.
+function sampleConflict(observations, associations = []) {
+  const differs = (values) => new Set(values.filter(Boolean)).size > 1;
+  const rawObservations = [...observations, ...associations];
+  const evidences = observations.map((event) =>
+    validateAttributionEvidence(event.attribution ?? null),
+  );
+  if (
+    ['friendId', 'friendSource', 'uniqueId'].some((field) =>
+      differs(rawObservations.map((event) => event[field])),
+    ) ||
+    ['requestedBossId', 'responseFriendId', 'responseFriendSource', 'responseBossId'].some(
+      (field) => differs(evidences.map((evidence) => evidence?.[field])),
+    )
+  )
+    return 'attribution_contact_conflict';
+  if (
+    ['selfId', 'senderId', 'recipientId'].some((field) =>
+      differs(evidences.map((evidence) => evidence?.[field])),
+    )
+  )
+    return 'attribution_participant_conflict';
+  if (
+    differs(rawObservations.map((event) => event.externalJobId)) ||
+    differs(evidences.map((evidence) => evidence?.messageJobId))
+  )
+    return 'attribution_job_conflict';
+  return '';
+}
+
+export function assessBossAttribution(accountNamespace, event, context = null) {
+  const identity = { ...event, platform: 'boss', accountNamespace };
+  const candidates = hasBossFactIdentity(identity)
+    ? context?.factObservations?.get(bossFactId(identity))
+    : null;
+  if (!candidates?.length) return assessObservation(accountNamespace, event, context);
+  const observations = [...candidates, identity];
+  const results = observations.map((candidate) =>
+    assessObservation(accountNamespace, candidate, context),
+  );
+  const contradiction = sampleConflict(
+    observations,
+    context.factAssociations?.get(bossFactId(identity)),
+  );
+  if (contradiction) results.push({ status: 'conflict', reason: contradiction, externalJobId: '' });
+  const conflicts = results.filter((result) => result.status === 'conflict');
+  if (conflicts.length)
+    return conflicts.sort(
+      (left, right) =>
+        conflictPriority[left.reason] - conflictPriority[right.reason] ||
+        left.reason.localeCompare(right.reason),
+    )[0];
+  const verified = results.filter((result) => result.status === 'verified');
+  if (verified.length)
+    return verified.sort(
+      (left, right) =>
+        Number(right.reason === 'attribution_verified') -
+          Number(left.reason === 'attribution_verified') || left.reason.localeCompare(right.reason),
+    )[0];
+  return results.sort(
+    (left, right) =>
+      insufficientPriority[right.reason] - insufficientPriority[left.reason] ||
+      left.reason.localeCompare(right.reason),
+  )[0];
 }
 
 // Query current decisions, never historical diagnostic-file counts.

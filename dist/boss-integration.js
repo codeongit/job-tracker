@@ -386,7 +386,11 @@ function resolveResumeEvent(data, batch, event, context) {
       applicationStatus: attribution.status === 'conflict' ? 'review' : 'waiting',
       reason: attribution.reason,
     };
-  if (!event.externalJobId || !event.canonicalUrl)
+  const externalJobId = attribution.externalJobId;
+  const canonicalUrl = externalJobId
+    ? new URL(`/job_detail/${externalJobId}.html`, 'https://www.zhipin.com').href
+    : '';
+  if (!externalJobId || !canonicalUrl)
     return {
       status: 'review',
       targetId: '',
@@ -398,7 +402,7 @@ function resolveResumeEvent(data, batch, event, context) {
       binding.kind === 'opportunity' &&
       binding.platform === 'boss' &&
       binding.accountNamespace === batch.accountNamespace &&
-      binding.externalJobId === event.externalJobId,
+      binding.externalJobId === externalJobId,
   );
   if (bindings.length !== 1)
     return {
@@ -412,8 +416,10 @@ function resolveResumeEvent(data, batch, event, context) {
   if (
     !opportunity ||
     opportunity.deletedAt ||
-    binding.canonicalUrl !== event.canonicalUrl ||
-    opportunity.url !== event.canonicalUrl
+    !isBossPlatform(opportunity.platform || '') ||
+    (opportunity.externalId && opportunity.externalId !== externalJobId) ||
+    binding.canonicalUrl !== canonicalUrl ||
+    opportunity.url !== canonicalUrl
   )
     return {
       status: 'review',
@@ -421,7 +427,13 @@ function resolveResumeEvent(data, batch, event, context) {
       applicationStatus: opportunity?.deletedAt ? 'protected' : 'review',
       reason: opportunity?.deletedAt ? 'opportunity_deleted' : 'job_identity_conflict',
     };
-  return { status: 'recorded', targetId: opportunity.id, attributionReason: attribution.reason };
+  return {
+    status: 'recorded',
+    targetId: opportunity.id,
+    attributionReason: attribution.reason,
+    attributionJobId: externalJobId,
+    attributionBindingId: binding.id,
+  };
 }
 
 function applyResumeStatus(data, result, event, stamp) {
@@ -435,10 +447,7 @@ function applyResumeStatus(data, result, event, stamp) {
     return;
   }
   const binding = live(data.sourceBindings).find(
-    (row) =>
-      row.kind === 'opportunity' &&
-      row.opportunityId === opportunity.id &&
-      row.externalJobId === event.externalJobId,
+    (row) => row.kind === 'opportunity' && row.id === result.attributionBindingId,
   );
   if (!binding) return;
   const owned = splitAutoFields(binding);
@@ -875,7 +884,14 @@ function resolveEvent(data, batch, event, stamp) {
 export function applyBossBatch(
   inputData,
   inputBatch,
-  { workspaceSourceId, stamp, allowEventRestore = false, blockedOpportunityIds = [] },
+  {
+    workspaceSourceId,
+    stamp,
+    allowEventRestore = false,
+    blockedOpportunityIds = [],
+    attributionObservations = [],
+    attributionContextEvents = [],
+  },
 ) {
   const batch = validateBossBatch(inputBatch);
   if (!UUID.test(workspaceSourceId))
@@ -892,10 +908,14 @@ export function applyBossBatch(
     throw integrationError('此 BOSS 账号尚未绑定到当前浏览器工作区。', 'SOURCE_NOT_BOUND');
 
   const counts = { added: 0, linked: 0, observed: 0, reviewed: 0, skipped: 0 };
-  const attributionContext = buildBossAttributionContext([
-    ...data.sourceEvents,
-    ...batch.events.map((event) => ({ ...event, accountNamespace: batch.accountNamespace })),
-  ]);
+  const attributionContext = buildBossAttributionContext(
+    [
+      ...data.sourceEvents,
+      ...attributionContextEvents,
+      ...batch.events.map((event) => ({ ...event, accountNamespace: batch.accountNamespace })),
+    ],
+    { observations: attributionObservations },
+  );
   for (const event of batch.events) {
     const identity = { ...event, platform: 'boss', accountNamespace: batch.accountNamespace },
       completeFactIdentity = hasBossFactIdentity(identity),
@@ -1009,11 +1029,20 @@ export function applyBossBatch(
                     : event,
                   stamp,
                 );
+    if (result.targetId && blockedOpportunityIds.includes(result.targetId))
+      Object.assign(result, {
+        status: 'review',
+        targetId: '',
+        applicationStatus: 'waiting',
+        reason: 'entity_sync_conflict',
+      });
     if (
       event.eventType !== 'resume_observed' &&
       event.jobDetails &&
       (!event.jobName.trim() || !event.company.trim())
     )
+      result.evidenceStatus = 'review';
+    if (event.eventType === 'resume_observed' && (!event.externalJobId || !event.canonicalUrl))
       result.evidenceStatus = 'review';
     if (result.added) counts.added++;
     if (result.linked) counts.linked++;

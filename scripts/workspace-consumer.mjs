@@ -1,4 +1,5 @@
 import { bossObservationGroups } from '../dist/boss-observations.js';
+import { parseBossJobUrl } from '../dist/boss-job-url.js';
 import { bossAttributionSummary, buildBossAttributionContext } from '../dist/boss-attribution.js';
 import { recordAttributionDiagnostic } from './boss-attribution-diagnostics.mjs';
 import { readdir } from 'node:fs/promises';
@@ -76,6 +77,46 @@ function preserveUnchangedDecisionTimes(before, after) {
   }
 }
 
+const batchObservations = (batch) =>
+  batch.events.map((event) => ({
+    ...event,
+    platform: 'boss',
+    accountNamespace: batch.accountNamespace,
+  }));
+
+function opportunityBlocked(data, event, scope) {
+  return (
+    data.sourceBindings.some(
+      (binding) =>
+        !binding.deletedAt &&
+        binding.kind === 'opportunity' &&
+        binding.accountNamespace === event.accountNamespace &&
+        binding.externalJobId === event.externalJobId &&
+        scope.opportunityIds.includes(binding.opportunityId),
+    ) ||
+    data.opportunities.some(
+      (opportunity) =>
+        scope.opportunityIds.includes(opportunity.id) &&
+        (opportunity.externalId === event.externalJobId ||
+          parseBossJobUrl(opportunity.url)?.jobId === event.externalJobId),
+    )
+  );
+}
+
+function observationDeletedOrMissing(data, batch, event) {
+  const stored = data.sourceEvents.find((row) => row.id === event.eventId);
+  const identity = { ...event, platform: 'boss', accountNamespace: batch.accountNamespace };
+  const factId = hasBossFactIdentity(identity) ? bossFactId(identity) : '';
+  return Boolean(
+    (stored && (stored.deletedAt || bossReceiptGap(data, { ...batch, events: [event] }))) ||
+    (factId &&
+      (data.sourceFacts.some((row) => row.id === factId && row.deletedAt) ||
+        data.sourceApplications.some(
+          (row) => row.id === bossApplicationId(factId) && row.deletedAt,
+        ))),
+  );
+}
+
 // Draining the private inbox is a local operation and never connects to the recruitment site.
 export function createWorkspaceInboxConsumer({
   workspaceStore,
@@ -105,10 +146,7 @@ export function createWorkspaceInboxConsumer({
     sourceSequence: batch.sourceSequence,
   });
   let last = { processed: 0, waiting: 0, isolated: [], restoreReview: [], lastRunAt: '' };
-  async function drain() {
-    const initial = await workspaceStore.read();
-    const summary = { processed: 0, waiting: 0, isolated: [], restoreReview: [], lastRunAt: now() };
-    if (!initial.workspace || !inbox) return (last = summary);
+  async function readBatches(summary) {
     await inbox.initialize();
     const batches = [];
     for (const filename of (await readdir(inbox.inbox)).sort()) {
@@ -126,6 +164,234 @@ export function createWorkspaceInboxConsumer({
         a.sourceSequence - b.sourceSequence ||
         a.batchId.localeCompare(b.batchId),
     );
+    return batches;
+  }
+
+  function freshAttributionPool(current, batch, pool, { allowEventRestore = false } = {}) {
+    const scope = workspaceConflictScope(current.workspace);
+    const blockedAccounts = new Set();
+    const eligible = [];
+    for (const candidate of pool.candidateBatches) {
+      const restoring = allowEventRestore && candidate.batchId === batch.batchId;
+      if (
+        !accountBound(current, candidate) ||
+        (blockedAccounts.has(candidate.accountNamespace) && !restoring)
+      )
+        continue;
+      if (
+        scope.unscoped ||
+        scope.accountNamespaces.has(candidate.accountNamespace) ||
+        (!restoring &&
+          ((pool.processedBatchIds.has(candidate.batchId) &&
+            bossReceiptGap(current.workspace.data, candidate)) ||
+            candidate.events.some((event) =>
+              observationDeletedOrMissing(current.workspace.data, candidate, event),
+            )))
+      ) {
+        blockedAccounts.add(candidate.accountNamespace);
+        continue;
+      }
+      eligible.push(candidate);
+      if (
+        restoring &&
+        pool.processedBatchIds.has(candidate.batchId) &&
+        bossReceiptGap(current.workspace.data, candidate)
+      )
+        blockedAccounts.add(candidate.accountNamespace);
+    }
+    const restoringEventIds = new Set(
+      allowEventRestore ? batch.events.map((event) => event.eventId) : [],
+    );
+    const contextEvents = eligible.flatMap(batchObservations).filter((event) => {
+      if (restoringEventIds.has(event.eventId)) return true;
+      const application = hasBossFactIdentity(event)
+        ? current.workspace.data.sourceApplications.find(
+            (row) => row.id === bossApplicationId(bossFactId(event)),
+          )
+        : null;
+      return (
+        !application ||
+        (!application.deletedAt && ['waiting', 'review'].includes(application.status))
+      );
+    });
+    return { contextEvents, observations: contextEvents };
+  }
+
+  async function saveDiagnostics(current, batch, pool, blockedOpportunityIds, options = {}) {
+    const fresh = freshAttributionPool(current, batch, pool, options);
+    const observations = fresh.observations.filter(
+      (event) =>
+        !opportunityBlocked(current.workspace.data, event, {
+          opportunityIds: blockedOpportunityIds,
+        }),
+    );
+    const context = buildBossAttributionContext(
+      [...current.workspace.data.sourceEvents, ...fresh.contextEvents, ...batchObservations(batch)],
+      { observations },
+    );
+    for (const event of batch.events)
+      if (event.eventType === 'resume_observed')
+        await recordAttributionDiagnostic(
+          inbox.root,
+          batch.accountNamespace,
+          event,
+          'consume',
+          context,
+        );
+    return { observations, contextEvents: fresh.contextEvents };
+  }
+
+  // Both the in-memory eligibility pass and the real command prepare changes
+  // through this one application/rebase path. No preview commits or receipts.
+  async function prepareBatch(current, batch, pool, stamp, { allowEventRestore = false } = {}) {
+    const scope = workspaceConflictScope(current.workspace);
+    const apply = async (blockedOpportunityIds) => {
+      const fresh = await saveDiagnostics(current, batch, pool, blockedOpportunityIds, {
+        allowEventRestore,
+      });
+      const applied = applyBossBatch(current.workspace.data, batch, {
+        workspaceSourceId: current.workspaceId,
+        stamp,
+        allowEventRestore,
+        blockedOpportunityIds,
+        attributionObservations: fresh.observations,
+        attributionContextEvents: fresh.contextEvents,
+      });
+      preserveUnchangedDecisionTimes(current.workspace.data, applied.data);
+      return applied;
+    };
+    let applied = await apply(scope.opportunityIds);
+    const next = {
+      ...current.workspace,
+      data: validateData(applied.data),
+      generation: current.workspace.generation + 1,
+    };
+    if (current.workspace.pending) {
+      let merged = mergeData(current.workspace.data, next.data, current.workspace.pending.data);
+      if (merged.conflicts.length) {
+        const discovered = workspaceConflictScope({
+          data: next.data,
+          pending: { conflicts: merged.conflicts },
+        });
+        if (discovered.unscoped || discovered.accountNamespaces.has(batch.accountNamespace)) {
+          const error = new Error('待处理同步内容与本批账号身份产生新冲突。');
+          error.code = 'WORKSPACE_PENDING_REBASE_CONFLICT';
+          throw error;
+        }
+        applied = await apply([
+          ...new Set([...scope.opportunityIds, ...discovered.opportunityIds]),
+        ]);
+        next.data = validateData(applied.data);
+        merged = mergeData(current.workspace.data, next.data, current.workspace.pending.data);
+        if (merged.conflicts.length) {
+          const error = new Error('待处理同步内容与本批导入产生无法隔离的新冲突。');
+          error.code = 'WORKSPACE_PENDING_REBASE_CONFLICT';
+          throw error;
+        }
+      }
+      next.pending = {
+        ...current.workspace.pending,
+        data: merged.data,
+        generation: next.generation,
+      };
+    }
+    return { applied, next };
+  }
+
+  // Private material is eligible only within the same serial recovery boundary
+  // as normal consumption. Receipts never stand in for the workspace's facts.
+  async function attributionPool(current, batches, { restoringBatchId = '' } = {}) {
+    const scope = workspaceConflictScope(current.workspace);
+    const blockedAccounts = new Set();
+    const failures = new Map();
+    const processedBatchIds = new Set();
+    let eligible = [];
+    for (const batch of batches) {
+      const restoring = batch.batchId === restoringBatchId;
+      if (
+        !accountBound(current, batch) ||
+        (blockedAccounts.has(batch.accountNamespace) && !restoring)
+      )
+        continue;
+      try {
+        const receipt = await inbox.readReceipt(batch.batchId, current.workspaceId);
+        if (receipt?.status === 'processed') processedBatchIds.add(batch.batchId);
+        if (
+          (!restoring &&
+            receipt?.status === 'processed' &&
+            bossReceiptGap(current.workspace.data, batch)) ||
+          receipt?.status === 'blocked' ||
+          scope.unscoped ||
+          scope.accountNamespaces.has(batch.accountNamespace) ||
+          (!restoring &&
+            batch.events.some((event) =>
+              observationDeletedOrMissing(current.workspace.data, batch, event),
+            ))
+        ) {
+          blockedAccounts.add(batch.accountNamespace);
+          continue;
+        }
+        // A completed receipt is only skippable after its facts were checked.
+        // Completed/manual applications need no private evidence replay; their
+        // shared source records remain in the cross-job context.
+        if (
+          receipt?.status === 'processed' &&
+          !batch.events.some((event) =>
+            current.workspace.data.sourceApplications.some(
+              (application) =>
+                application.id === applicationIdFor(batch, event) &&
+                !application.deletedAt &&
+                ['waiting', 'review'].includes(application.status),
+            ),
+          ) &&
+          !restoring
+        )
+          continue;
+        eligible.push(batch);
+        if (
+          restoring &&
+          receipt?.status === 'processed' &&
+          bossReceiptGap(current.workspace.data, batch)
+        )
+          blockedAccounts.add(batch.accountNamespace);
+      } catch (error) {
+        failures.set(batch.batchId, error);
+        blockedAccounts.add(batch.accountNamespace);
+      }
+    }
+    for (;;) {
+      const pool = { candidateBatches: eligible, processedBatchIds };
+      let preview = current;
+      let failedIndex = -1;
+      for (let index = 0; index < eligible.length; index++) {
+        const batch = eligible[index];
+        try {
+          const { next } = await prepareBatch(preview, batch, pool, now(), {
+            allowEventRestore: batch.batchId === restoringBatchId,
+          });
+          preview = { ...preview, workspace: next };
+        } catch (error) {
+          failures.set(batch.batchId, error);
+          failedIndex = index;
+          break;
+        }
+      }
+      if (failedIndex < 0) return { ...pool, failures };
+      const failedAccount = eligible[failedIndex].accountNamespace;
+      // Remove the failed batch and later batches of that account, then save
+      // diagnostics again using exactly the reduced material set to be applied.
+      eligible = eligible.filter(
+        (batch, index) => index < failedIndex || batch.accountNamespace !== failedAccount,
+      );
+    }
+  }
+
+  async function drain() {
+    const initial = await workspaceStore.read();
+    const summary = { processed: 0, waiting: 0, isolated: [], restoreReview: [], lastRunAt: now() };
+    if (!initial.workspace || !inbox) return (last = summary);
+    const batches = await readBatches(summary);
+    const pool = await attributionPool(initial, batches);
     const blockedAccounts = new Set();
     // Unknown corrupt files cannot establish an account/dependency identity. Keep evidence
     // isolated, and do not interpret or repair their contents in the consumer.
@@ -135,6 +401,7 @@ export function createWorkspaceInboxConsumer({
         continue;
       }
       try {
+        if (pool.failures.has(batch.batchId)) throw pool.failures.get(batch.batchId);
         const current = await workspaceStore.read();
         if (!accountBound(current, batch)) {
           summary.waiting++;
@@ -168,19 +435,6 @@ export function createWorkspaceInboxConsumer({
           blockedAccounts.add(batch.accountNamespace);
           continue;
         }
-        const attributionContext = buildBossAttributionContext([
-          ...current.workspace.data.sourceEvents,
-          ...batch.events.map((event) => ({ ...event, accountNamespace: batch.accountNamespace })),
-        ]);
-        for (const event of batch.events)
-          if (event.eventType === 'resume_observed')
-            await recordAttributionDiagnostic(
-              inbox.root,
-              batch.accountNamespace,
-              event,
-              'consume',
-              attributionContext,
-            );
         const replaying = receipt?.status === 'processed';
         const commandId = replaying
             ? `boss-replay:${batch.batchId}:${current.revision}`
@@ -189,59 +443,10 @@ export function createWorkspaceInboxConsumer({
         let result = saved?.result;
         if (!saved) {
           const stamp = now();
-          let applied = applyBossBatch(current.workspace.data, batch, {
-            workspaceSourceId: current.workspaceId,
-            stamp,
-            blockedOpportunityIds: scope.opportunityIds,
-          });
-          preserveUnchangedDecisionTimes(current.workspace.data, applied.data);
+          const { applied, next } = await prepareBatch(current, batch, pool, stamp);
           if (replaying && equal(applied.data, current.workspace.data)) {
             summary.waiting++;
             continue;
-          }
-          const next = {
-            ...current.workspace,
-            data: validateData(applied.data),
-            generation: current.workspace.generation + 1,
-          };
-          if (current.workspace.pending) {
-            let merged = mergeData(
-              current.workspace.data,
-              next.data,
-              current.workspace.pending.data,
-            );
-            if (merged.conflicts.length) {
-              const discovered = workspaceConflictScope({
-                data: next.data,
-                pending: { conflicts: merged.conflicts },
-              });
-              if (discovered.unscoped || discovered.accountNamespaces.has(batch.accountNamespace)) {
-                const error = new Error('待处理同步内容与本批账号身份产生新冲突。');
-                error.code = 'WORKSPACE_PENDING_REBASE_CONFLICT';
-                throw error;
-              }
-              const blockedOpportunityIds = [
-                ...new Set([...scope.opportunityIds, ...discovered.opportunityIds]),
-              ];
-              applied = applyBossBatch(current.workspace.data, batch, {
-                workspaceSourceId: current.workspaceId,
-                stamp,
-                blockedOpportunityIds,
-              });
-              preserveUnchangedDecisionTimes(current.workspace.data, applied.data);
-              next.data = validateData(applied.data);
-              merged = mergeData(current.workspace.data, next.data, current.workspace.pending.data);
-              if (merged.conflicts.length) {
-                const error = new Error('待处理同步内容与本批导入产生无法隔离的新冲突。');
-                error.code = 'WORKSPACE_PENDING_REBASE_CONFLICT';
-                throw error;
-              }
-            }
-            next.pending = {
-              ...current.workspace.pending,
-              data: merged.data,
-              generation: next.generation,
-            };
           }
           const applicationStates = {
             applied: 0,
@@ -268,7 +473,9 @@ export function createWorkspaceInboxConsumer({
             },
             { result },
           );
+          pool.processedBatchIds.add(batch.batchId);
         }
+        if (saved) await saveDiagnostics(current, batch, pool, scope.opportunityIds);
         if (!replaying)
           await inbox.acknowledge(batch.batchId, {
             format: 'job-tracker-boss-receipt',
@@ -352,30 +559,13 @@ export function createWorkspaceInboxConsumer({
     const receipt = await inbox.readReceipt(batchId, current.workspaceId);
     if (receipt?.status !== 'processed' || !bossReceiptGap(current.workspace.data, batch))
       throw new WorkspaceStoreError('REPLAY_NOT_REQUIRED', '此批次没有待确认的恢复缺口。');
-    const attributionContext = buildBossAttributionContext([
-      ...current.workspace.data.sourceEvents,
-      ...batch.events.map((event) => ({ ...event, accountNamespace: batch.accountNamespace })),
-    ]);
-    for (const event of batch.events)
-      if (event.eventType === 'resume_observed')
-        await recordAttributionDiagnostic(
-          inbox.root,
-          batch.accountNamespace,
-          event,
-          'consume',
-          attributionContext,
-        );
+    const batches = await readBatches({ isolated: [] });
+    const pool = await attributionPool(current, batches, { restoringBatchId: batchId });
+    if (pool.failures.has(batchId)) throw pool.failures.get(batchId);
     const stamp = now();
-    const applied = applyBossBatch(current.workspace.data, batch, {
-      workspaceSourceId: current.workspaceId,
-      stamp,
+    const { applied, next: workspace } = await prepareBatch(current, batch, pool, stamp, {
       allowEventRestore: true,
     });
-    const workspace = {
-      ...current.workspace,
-      data: applied.data,
-      generation: current.workspace.generation + 1,
-    };
     const result = { batchId, counts: applied.counts, processedAt: stamp };
     const committed = await workspaceStore.execute(
       {

@@ -1372,7 +1372,7 @@ test('同批跨岗位重复先扫描全部候选，事件顺序不影响拦截�
     );
     assert.equal(one.status, 'review');
     assert.equal(one.reason, 'attribution_message_multiple_jobs');
-    assert.equal(one.ruleVersion, 'boss-application-v9');
+    assert.equal(one.ruleVersion, 'boss-application-v10');
     assert.equal(data.opportunities.find((o) => o.externalId === JOB_ID).resumeState, '未知');
     assert.equal(
       data.opportunities.find((o) => o.externalId === 'second-job').resumeState,
@@ -1514,7 +1514,7 @@ test('缺少消息岗位身份时依据会话应用新消息和历史等待项�
     applied.sourceApplications.at(-1).reason,
     'resume_status_advanced_conversation_association',
   );
-  assert.equal(applied.sourceApplications.at(-1).ruleVersion, 'boss-application-v9');
+  assert.equal(applied.sourceApplications.at(-1).ruleVersion, 'boss-application-v10');
   assert.deepEqual(applySynthetic(applied, input), applied);
   const restored = structuredClone(waiting);
   restored.sourceFacts.pop();

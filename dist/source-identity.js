@@ -80,7 +80,7 @@ export function hasBossFactIdentity(event) {
   ].every((value) => typeof value === 'string' && value.trim());
 }
 
-export function bossFactId(event) {
+function factIdentityKey(event) {
   const factType = event.factType || bossFactType(event);
   if (!hasBossFactIdentity({ ...event, factType }))
     throw new Error('BOSS_FACT_IDENTITY_INCOMPLETE');
@@ -92,8 +92,56 @@ export function bossFactId(event) {
     event.messageId || '',
     factType,
   ];
-  return `boss-fact-${sha256Hex(JSON.stringify(identity))}`;
+  return JSON.stringify(identity);
 }
+
+// Reuse a pure calculation only. Every caller still validates its actual record;
+// a supplied fact ID is never a cache key or a trusted result.
+export function createBossFactIdResolver({ maxEntries = 4096, maxBytes = 4 * 1024 * 1024 } = {}) {
+  if (
+    !Number.isSafeInteger(maxEntries) ||
+    maxEntries < 0 ||
+    !Number.isSafeInteger(maxBytes) ||
+    maxBytes < 0
+  )
+    throw new Error('BOSS_FACT_CACHE_LIMIT_INVALID');
+  const cache = new Map();
+  let bytes = 0,
+    hits = 0,
+    misses = 0,
+    evictions = 0;
+  return {
+    factId(event) {
+      const key = factIdentityKey(event);
+      const found = cache.get(key);
+      if (found) {
+        cache.delete(key);
+        cache.set(key, found);
+        hits++;
+        return found.id;
+      }
+      misses++;
+      const id = `boss-fact-${sha256Hex(key)}`;
+      // Conservative UTF-16 string storage accounting, independent of input encoding.
+      const size = (key.length + id.length) * 2;
+      if (maxEntries && size <= maxBytes) {
+        while (cache.size >= maxEntries || bytes + size > maxBytes) {
+          const oldestKey = cache.keys().next().value;
+          bytes -= cache.get(oldestKey).size;
+          cache.delete(oldestKey);
+          evictions++;
+        }
+        cache.set(key, { id, size });
+        bytes += size;
+      }
+      return id;
+    },
+    stats: () => ({ entries: cache.size, bytes, hits, misses, evictions }),
+  };
+}
+
+const factIdResolver = createBossFactIdResolver();
+export const bossFactId = (event) => factIdResolver.factId(event);
 
 export const bossApplicationId = (factId) =>
   `boss-application-${String(factId).replace(/^boss-fact-/, '')}`;
