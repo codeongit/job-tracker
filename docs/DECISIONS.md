@@ -39,7 +39,7 @@
 | [D023](adr/0023-boss-private-queue-integration.md)             | BOSS 私有队列接入与 2026-09-18 首批规则            | 首批规则有效；运行/存储由 D026 替代              | 用户确认完整实施计划并要求执行             |
 | [D024](adr/0024-boss-date-label-import.md)                     | BOSS 日期标签的用户确认补录规则                    | 日期规则有效；预算由 D026 调整                   | 用户指定“昨天”为 2026-09-20 并要求导入     |
 | [D025](adr/0025-controlled-conversation-detail-read.md)        | 允许受控读取会话详情并设计简历状态采集             | 有效；状态映射由 D030 恢复；归属前提由 D033 收紧 | 用户取消禁止切换聊天并要求分析             |
-| [D026](adr/0026-local-authoritative-workspace.md)              | 本机权威工作区与显式持续跟踪                       | 已实现；真实迁移待人工验收                       | 用户确认关页录入、两种模式与手动启动       |
+| [D026](adr/0026-local-authoritative-workspace.md)              | 本机权威工作区与显式持续跟踪                       | 已实现；启动校验范围由 D041 调整                 | 用户确认关页录入、两种模式与手动启动       |
 | [D027](adr/0027-collector-source-colocation.md)                | 采集器源码与工作台同仓、私有状态分离               | 有效                                             | 用户要求继续迁移并减少外部目录依赖         |
 | [D028](adr/0028-change-driven-history.md)                      | 历史采集默认变化驱动、手动保留公平回填             | 已实现；真实浏览器待验收                         | 用户确认新旧模式并要求实施                 |
 | [D029](adr/0029-resume-request-is-not-sent.md)                 | 附件简历请求不等于简历已发送                       | 已由 D030 替代                                   | 曾误读平台文案                             |
@@ -53,11 +53,16 @@
 | [D037](adr/0037-boss-existing-job-details.md)                  | 复用精确匹配的本机岗位资料与就地核对               | 已实现；资料及展示由 D038 调整                   | 用户要求自动补齐已有资料并改善跳转         |
 | [D038](adr/0038-boss-job-details-and-observation-groups.md)    | 详情页补齐岗位、消息汇总与平台状态                 | 已实现；人工指定目标边界由 D039 调整             | 用户确认完整实施计划                       |
 | [D039](adr/0039-boss-manual-retired-job-resolution.md)         | 人工指定现存岗位处理旧观察                         | 已实施；真实界面待人工验收                       | 用户确认定点补齐及保留删除重复记录         |
-| [D040](adr/0040-boss-repeated-work-and-stable-reevaluation.md) | 减少重复计算并稳定同事实重评                       | 已实施并核对启动及重复消费；界面待人工验收       | 用户同意三个保留安全校验的优化措施         |
+| [D040](adr/0040-boss-repeated-work-and-stable-reevaluation.md) | 减少重复计算并稳定同事实重评                       | 已实施；完整启动审计约束由 D041 调整             | 用户同意三个保留安全校验的优化措施         |
+| [D041](adr/0041-workspace-startup-catalog.md)                  | 提交索引与旧历史按需校验                           | 已实施；启动已核对，界面待人工验收               | 用户接受旧历史异常发现时机延后并确认实施   |
+
+## D041：提交索引与旧历史按需校验
+
+完整记录见 [ADR-0041](adr/0041-workspace-startup-catalog.md)。正常启动完整校验当前提交和 HEAD 绑定的 catalog，旧历史在访问或显式完整审计时严格校验；首次旧 HEAD v1 完整审计后转换。该决定明确调整 D026/D040 的启动发现范围，保留单写者、原子提交、幂等与恢复事实检查。应用 0.10.3、HEAD v2、catalog v1；完整非浏览器检查、首次转换及普通冷进程启动已核对，转换前后正式 revision 与工作区摘要相同，真实界面待人工验收。
 
 ## D040：减少重复计算并稳定同事实重评
 
-完整记录见 [ADR-0040](adr/0040-boss-repeated-work-and-stable-reevaluation.md)。完整历史校验保留，进程内复用纯身份计算，去除重复账本适配，并按全部独立候选稳定重评同一事实。应用 0.10.2、规则 v10，数据 v4 不变。
+完整记录见 [ADR-0040](adr/0040-boss-repeated-work-and-stable-reevaluation.md)。v0.10.2 保留完整历史校验，进程内复用纯身份计算，去除重复账本适配，并按全部独立候选稳定重评同一事实。每次启动完整历史审计及不引入持久索引的约束由 D041 调整；纯计算与同事实重评规则继续有效。规则 v10，数据 v4 不变。
 
 ## D039：人工指定现存岗位处理旧观察
 

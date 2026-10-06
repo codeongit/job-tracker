@@ -5,7 +5,7 @@ import { BackupError } from './disk-backups.mjs';
 import { BossInboxError } from './boss-inbox.mjs';
 import { handleWorkspaceApi } from './workspace-api.mjs';
 import { handleBossControllerApi } from './boss-controller-api.mjs';
-import { WorkspaceStoreError } from './workspace-store.mjs';
+import { WorkspaceStoreError, WORKSPACE_STORAGE_VERSION } from './workspace-store.mjs';
 const json = (res, status, body) => {
   res.writeHead(status, { 'Content-Type': 'application/json;charset=utf-8' });
   res.end(JSON.stringify(body));
@@ -74,7 +74,7 @@ export async function handleLocalApi(
       target: bridge ? target : undefined,
       localWorkspaceEnabled: !!workspaceStore,
       protocolVersion: 1,
-      storageVersion: 1,
+      storageVersion: WORKSPACE_STORAGE_VERSION,
       instanceId,
       workspaceId: workspaceStore?.workspaceId,
       ...versions,

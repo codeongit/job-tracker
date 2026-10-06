@@ -39,6 +39,12 @@ async function historyFixture(t) {
     type: 'import_workspace',
     payload: { workspace, reason: 'Synthetic import' },
   });
+  const firstCommand = {
+    commandId: 'synthetic-import',
+    expectedRevision: 0,
+    type: 'import_workspace',
+    payload: { workspace, reason: 'Synthetic import' },
+  };
   const next = structuredClone(first.workspace);
   next.generation++;
   next.data.opportunities[0].notes = 'Synthetic latest notes';
@@ -52,7 +58,7 @@ async function historyFixture(t) {
   const latest = await json(join(root, 'commits', head.file));
   const oldest = await json(join(root, 'commits', latest.previous.file));
   await store.close();
-  return { root, head, latest, oldest, reopened };
+  return { root, head, latest, oldest, reopened, firstCommand };
 }
 
 async function replaceConsistentHistory({ root, head, latest }, modifiedOldest) {
@@ -61,9 +67,30 @@ async function replaceConsistentHistory({ root, head, latest }, modifiedOldest) 
     ...latest,
     previous: { file: filename(oldest), hash: oldest.hash },
   });
-  const nextHead = { ...head, file: filename(child), hash: child.hash };
+  const catalog = {
+    catalogVersion: 1,
+    workspaceId: head.workspaceId,
+    head: { revision: child.revision, file: filename(child), hash: child.hash },
+    entries: [oldest, child].map((commit) => ({
+      commandId: commit.command.commandId,
+      digest: commit.command.digest,
+      revision: commit.revision,
+      file: filename(commit),
+      hash: commit.hash,
+    })),
+  };
+  const catalogHash = workspaceDigest(catalog);
+  const catalogFile = `catalog-${catalogHash}.json`;
+  const nextHead = {
+    ...head,
+    storageVersion: 2,
+    file: filename(child),
+    hash: child.hash,
+    catalog: { file: catalogFile, hash: catalogHash },
+  };
   await writeFile(join(root, 'commits', filename(oldest)), JSON.stringify(oldest), { mode: 0o600 });
   await writeFile(join(root, 'commits', filename(child)), JSON.stringify(child), { mode: 0o600 });
+  await writeFile(join(root, 'catalogs', catalogFile), JSON.stringify(catalog), { mode: 0o600 });
   await writeFile(join(root, 'HEAD.json'), JSON.stringify(nextHead));
   assert.equal(child.previous.file, filename(oldest));
   assert.equal(child.previous.hash, oldest.hash);
@@ -73,38 +100,70 @@ async function replaceConsistentHistory({ root, head, latest }, modifiedOldest) 
   return { oldest, child, nextHead };
 }
 
-test('a valid latest workspace cannot hide an unknown field in digest-valid migrated history', async (t) => {
+test('catalog startup defers unknown older fields until command-result lookup and then isolates writes', async (t) => {
   const fixture = await historyFixture(t);
   const modified = structuredClone(fixture.oldest);
   modified.workspace.data.schemaVersion = 3;
   modified.workspace.data.opportunities[0].futureField = 'Synthetic unknown value';
   const { oldest, nextHead } = await replaceConsistentHistory(fixture, modified);
-  await assert.rejects(fixture.reopened.initialize(), /未知字段/);
+  await fixture.reopened.initialize();
+  assert.equal((await fixture.reopened.read()).revision, 2);
+  await assert.rejects(fixture.reopened.commandResult('synthetic-import'), /未知字段/);
+  await assert.rejects(fixture.reopened.execute(fixture.firstCommand), {
+    code: 'WORKSPACE_WRITER_CLOSED',
+  });
   assert.deepEqual(await json(join(fixture.root, 'HEAD.json')), nextHead);
   assert.deepEqual(await json(join(fixture.root, 'commits', filename(oldest))), oldest);
-  assert.equal(fixture.reopened.owned, false);
+  assert.equal(fixture.reopened.closed, true);
 });
 
-test('a valid latest workspace cannot hide a future schema in a digest-valid earlier commit', async (t) => {
+test('catalog startup defers a future older schema until exact retry and then isolates writes', async (t) => {
   const fixture = await historyFixture(t);
   const modified = structuredClone(fixture.oldest);
   modified.workspace.data.schemaVersion++;
   const { oldest, nextHead } = await replaceConsistentHistory(fixture, modified);
-  await assert.rejects(fixture.reopened.initialize(), /不支持的版本/);
+  await fixture.reopened.initialize();
+  await assert.rejects(fixture.reopened.execute(fixture.firstCommand), /不支持的版本/);
+  await assert.rejects(fixture.reopened.execute(fixture.firstCommand), {
+    code: 'WORKSPACE_WRITER_CLOSED',
+  });
   assert.deepEqual(await json(join(fixture.root, 'HEAD.json')), nextHead);
   assert.deepEqual(await json(join(fixture.root, 'commits', filename(oldest))), oldest);
-  assert.equal(fixture.reopened.owned, false);
+  assert.equal(fixture.reopened.closed, true);
 });
 
-test('tampering with an earlier commit without repairing its digest still stops initialization', async (t) => {
+test('an explicit audit detects an older damaged digest and isolates the writer without changing files', async (t) => {
   const fixture = await historyFixture(t);
   const modified = structuredClone(fixture.oldest);
   modified.workspace.data.opportunities[0].role = 'Synthetic tampered role';
   const path = join(fixture.root, 'commits', fixture.latest.previous.file);
   await writeFile(path, JSON.stringify(modified));
   assert.deepEqual(migrateWorkspace(fixture.latest.workspace), fixture.latest.workspace);
-  await assert.rejects(fixture.reopened.initialize(), { code: 'WORKSPACE_CORRUPT' });
+  await fixture.reopened.initialize();
+  await assert.rejects(fixture.reopened.auditHistory(), { code: 'WORKSPACE_CORRUPT' });
+  await assert.rejects(fixture.reopened.execute(fixture.firstCommand), {
+    code: 'WORKSPACE_WRITER_CLOSED',
+  });
   assert.deepEqual(await json(join(fixture.root, 'HEAD.json')), fixture.head);
   assert.deepEqual(await json(path), modified);
-  assert.equal(fixture.reopened.owned, false);
+  assert.equal(fixture.reopened.closed, true);
 });
+
+for (const kind of ['unknown field', 'future schema']) {
+  test(`legacy HEAD initialization fully audits ${kind} before publishing a catalog`, async (t) => {
+    const fixture = await historyFixture(t);
+    const modified = structuredClone(fixture.oldest);
+    if (kind === 'unknown field')
+      modified.workspace.data.opportunities[0].futureField = 'Synthetic';
+    else modified.workspace.data.schemaVersion++;
+    const { nextHead } = await replaceConsistentHistory(fixture, modified);
+    const { catalog: _catalog, ...legacyHead } = { ...nextHead, storageVersion: 1 };
+    await writeFile(join(fixture.root, 'HEAD.json'), JSON.stringify(legacyHead));
+    await assert.rejects(
+      fixture.reopened.initialize(),
+      kind === 'unknown field' ? /未知字段/ : /不支持的版本/,
+    );
+    assert.deepEqual(await json(join(fixture.root, 'HEAD.json')), legacyHead);
+    assert.equal(fixture.reopened.owned, false);
+  });
+}

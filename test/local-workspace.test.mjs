@@ -17,6 +17,7 @@ function fixture({
   custom,
   brokenCache = false,
   authorityValue = '',
+  storageVersion = 1,
 } = {}) {
   let workspace = copy(initial),
     revision = initial ? 1 : 0,
@@ -28,7 +29,7 @@ function fixture({
   if (authorityValue) metadata.set('job-tracker-local-authority-v1', authorityValue);
   const envelope = () => ({
     protocolVersion: 1,
-    storageVersion: 1,
+    storageVersion,
     workspaceId: '00000000-0000-4000-8000-000000000001',
     revision,
     hash: workspace ? 'a'.repeat(64) : '',
@@ -108,6 +109,27 @@ function populatedWorkspace() {
   });
   return value;
 }
+
+test('客户端接受存储版本2，读写继续使用协议1并缓存正式结果', async () => {
+  const value = fixture({ storageVersion: 2 });
+  assert.deepEqual(await value.client.read(), initialWorkspace());
+  const saved = await value.client.editData((data) => {
+    data.opportunities.push({
+      id: 'catalog-job',
+      company: '合成目录公司',
+      role: '合成目录岗位',
+      stage: '已触达',
+    });
+    return data;
+  });
+  assert.equal(saved.data.opportunities[0].id, 'catalog-job');
+  assert.deepEqual(value.cache, saved);
+  assert.equal(value.envelope().storageVersion, 2);
+  assert.equal(value.envelope().revision, 2);
+  const command = value.calls.find((call) => call.method === 'POST');
+  assert.equal(command.headers['X-Job-Tracker-Protocol'], '1');
+  assert.equal(command.parsed.expectedRevision, 1);
+});
 
 test('首次迁移需要显式操作，重复初始化只读取服务且不覆盖正式数据', async () => {
   const value = fixture({ initial: null, cached: populatedWorkspace() });
@@ -433,6 +455,24 @@ test('未来服务协议拒绝正式读写；静态域不访问本机服务', as
   assert.equal(await website.client.read(), null);
   assert.equal(await website.client.update((value) => value), null);
   assert.equal(website.calls.length, 0);
+});
+
+test('未知存储版本拒绝读取和修改，不覆盖缓存或退回静态写入', async () => {
+  const cached = populatedWorkspace();
+  const value = fixture({ storageVersion: 3, cached });
+  await assert.rejects(value.client.read(), { code: 'LOCAL_WORKSPACE_PROTOCOL' });
+  let transformed = false;
+  await assert.rejects(
+    value.client.editData((data) => {
+      transformed = true;
+      return data;
+    }),
+    { code: 'LOCAL_WORKSPACE_PROTOCOL' },
+  );
+  assert.equal(transformed, false);
+  assert.deepEqual(value.cache, cached);
+  assert.equal(value.calls.filter((call) => call.method === 'POST').length, 0);
+  assert.equal(value.client.mode(), 'local');
 });
 
 test('忽略命令绑定已核对版本，丢失回复重用同一请求，不盲目跟随新版本', async () => {

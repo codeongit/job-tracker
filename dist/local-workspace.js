@@ -127,7 +127,7 @@ export function createLocalWorkspaceClient({
       );
     if (
       value.protocolVersion !== 1 ||
-      value.storageVersion !== 1 ||
+      ![1, 2].includes(value.storageVersion) ||
       typeof value.workspaceId !== 'string' ||
       !Number.isSafeInteger(value.revision) ||
       value.revision < 0 ||

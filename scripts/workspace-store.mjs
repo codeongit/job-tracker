@@ -3,7 +3,17 @@ import {
   setBossJobState,
   propagatePlatformJobState,
 } from '../dist/boss-observations.js';
-import { mkdir, open, readFile, rename, unlink, lstat, rmdir, chmod } from 'node:fs/promises';
+import {
+  mkdir,
+  open,
+  readFile,
+  rename,
+  unlink,
+  lstat,
+  rmdir,
+  chmod,
+  readdir,
+} from 'node:fs/promises';
 import { join, isAbsolute, dirname } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { migrateWorkspace, restoreWorkspace } from '../dist/workspace.js';
@@ -26,10 +36,11 @@ import {
 import { MAX_BACKUP_BYTES } from '../dist/limits.js';
 
 export const WORKSPACE_PROTOCOL_VERSION = 1;
-export const WORKSPACE_STORAGE_VERSION = 1;
+export const WORKSPACE_STORAGE_VERSION = 2;
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
 const HASH = /^[a-f0-9]{64}$/;
 const COMMIT_FILE = /^\d{12}-[a-f0-9]{64}\.json$/;
+const CATALOG_FILE = /^catalog-[a-f0-9]{64}\.json$/;
 const COMMAND_ID = /^[A-Za-z0-9][A-Za-z0-9:_.-]{0,199}$/;
 const SYNC_TRANSACTION_ID =
   /^sync-[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
@@ -155,6 +166,56 @@ async function replaceJson(directory, filename, value, sync = syncDirectory) {
   }
 }
 
+function validateHead(value, workspaceId) {
+  if (![1, WORKSPACE_STORAGE_VERSION].includes(value?.storageVersion))
+    fail('WORKSPACE_VERSION_UNSUPPORTED', '工作区提交指针版本不受支持。');
+  const head = object(value, [
+    'storageVersion',
+    'workspaceId',
+    'revision',
+    'hash',
+    'file',
+    ...(value.storageVersion === 2 ? ['catalog'] : []),
+  ]);
+  if (
+    head.workspaceId !== workspaceId ||
+    !Number.isSafeInteger(head.revision) ||
+    head.revision < 1 ||
+    typeof head.hash !== 'string' ||
+    !HASH.test(head.hash) ||
+    head.file !== `${String(head.revision).padStart(12, '0')}-${head.hash}.json`
+  )
+    fail('WORKSPACE_CORRUPT', '工作区提交指针无效。', 500);
+  if (head.storageVersion === 2) {
+    const reference = object(head.catalog, ['file', 'hash']);
+    if (
+      typeof reference.hash !== 'string' ||
+      !HASH.test(reference.hash) ||
+      reference.file !== `catalog-${reference.hash}.json`
+    )
+      fail('WORKSPACE_CORRUPT', '工作区命令索引指针无效。', 500);
+  }
+  return head;
+}
+
+const commandEntry = (commit) => ({
+  digest: commit.command.digest,
+  file: `${String(commit.revision).padStart(12, '0')}-${commit.hash}.json`,
+  revision: commit.revision,
+  hash: commit.hash,
+});
+
+function catalogFor(index, head) {
+  return {
+    catalogVersion: 1,
+    workspaceId: head.workspaceId,
+    head: { revision: head.revision, file: head.file, hash: head.hash },
+    entries: [...index]
+      .map(([commandId, entry]) => ({ commandId, ...entry }))
+      .sort((a, b) => a.revision - b.revision),
+  };
+}
+
 function pendingConflictScope(workspace) {
   const opportunityIds = new Set(),
     dataSets = [workspace.data, workspace.pending?.data, workspace.pending?.remote].filter(Boolean),
@@ -264,21 +325,25 @@ export class WorkspaceStore {
       now = () => new Date().toISOString(),
       beforeCommit = async () => {},
       syncHeadDirectory = syncDirectory,
+      onProgress = async () => {},
     } = {},
   ) {
     if (!isAbsolute(root) || !UUID.test(instanceId))
       fail('WORKSPACE_CONFIG_INVALID', '工作区存储配置无效。', 500);
     this.root = root;
     this.commits = join(root, 'commits');
+    this.catalogs = join(root, 'catalogs');
     this.lock = join(root, 'writer.lock');
     this.instanceId = instanceId;
     this.now = now;
     this.beforeCommit = beforeCommit;
     this.syncHeadDirectory = syncHeadDirectory;
+    this.onProgress = onProgress;
     this.queue = Promise.resolve();
     this.commandIndex = new Map();
     this.syncTransactions = new Map();
     this.head = null;
+    this.diskHead = null;
     this.workspaceId = '';
     this.owned = false;
     this.closed = false;
@@ -297,6 +362,7 @@ export class WorkspaceStore {
   async initializeOnce() {
     await privateDirectory(this.root);
     await privateDirectory(this.commits);
+    await privateDirectory(this.catalogs);
     try {
       await mkdir(this.lock, { mode: 0o700 });
     } catch (error) {
@@ -341,44 +407,211 @@ export class WorkspaceStore {
       fail('WORKSPACE_VERSION_UNSUPPORTED', '工作区存储版本不受支持。');
     this.workspaceId = identity.workspaceId;
     const headPath = join(this.root, 'HEAD.json');
-    if (!(await regular(headPath, { missing: true }))) return;
-    const head = object(await readJson(headPath), [
-      'storageVersion',
-      'workspaceId',
-      'revision',
-      'hash',
-      'file',
-    ]);
-    if (
-      head.storageVersion !== 1 ||
-      head.workspaceId !== this.workspaceId ||
-      !COMMIT_FILE.test(head.file) ||
-      !HASH.test(head.hash)
-    )
-      fail('WORKSPACE_CORRUPT', '工作区提交指针无效。', 500);
+    if (!(await regular(headPath, { missing: true }))) {
+      if ((await readdir(this.commits)).length || (await readdir(this.catalogs)).length)
+        fail('WORKSPACE_CORRUPT', '工作区已有历史材料但缺少正式提交指针，请保留原件核对。', 500);
+      return;
+    }
+    const head = validateHead(await readJson(headPath), this.workspaceId);
+    this.diskHead = copy(head);
+    if (head.storageVersion === 1) {
+      const audited = await this.scanHistory(head);
+      this.head = audited.latest;
+      this.commandIndex = audited.index;
+      await this.assertDiskHead();
+      const originalPath = join(this.root, `migration-head-${workspaceDigest(head)}.json`);
+      await this.writeImmutable(originalPath, head);
+      await syncDirectory(this.root);
+      const catalog = await this.writeCatalog(this.commandIndex, head);
+      const next = { ...head, storageVersion: WORKSPACE_STORAGE_VERSION, catalog };
+      await this.publishHead(next);
+      this.diskHead = next;
+      await this.cleanupCatalogs();
+    } else {
+      await this.onProgress({ stage: 'head_validation' });
+      const latest = await this.readCommit(head.file);
+      if (latest.revision !== head.revision || latest.hash !== head.hash)
+        fail('WORKSPACE_CORRUPT', '当前工作区与正式指针不一致。', 500);
+      await this.onProgress({ stage: 'catalog_validation' });
+      this.commandIndex = await this.readCatalog(head, latest);
+      this.head = latest;
+      await this.assertDiskHead();
+    }
+  }
+  async scanHistory(head, onProgress = this.onProgress) {
+    const index = new Map();
+    let latest = null;
     let file = head.file,
       expectedRevision = head.revision,
       expectedHash = head.hash;
+    await onProgress({ stage: 'history_validation', completed: 0, total: head.revision });
     while (file) {
       const commit = await this.readCommit(file);
       if (commit.revision !== expectedRevision || commit.hash !== expectedHash)
         fail('WORKSPACE_CORRUPT', '工作区提交链不连续。', 500);
-      if (!this.head) this.head = commit;
-      if (this.commandIndex.has(commit.command.commandId))
+      if (!latest) latest = commit;
+      if (index.has(commit.command.commandId))
         fail('WORKSPACE_CORRUPT', '工作区命令重复提交。', 500);
-      this.commandIndex.set(commit.command.commandId, {
-        digest: commit.command.digest,
-        file,
-        revision: commit.revision,
-        hash: commit.hash,
-        result: copy(commit.command.result ?? null),
-      });
+      index.set(commit.command.commandId, commandEntry(commit));
       expectedRevision--;
       file = commit.previous?.file || '';
       expectedHash = commit.previous?.hash || '';
       if ((!file && expectedRevision !== 0) || (file && !COMMIT_FILE.test(file)))
         fail('WORKSPACE_CORRUPT', '工作区历史提交缺失。', 500);
+      const completed = head.revision - expectedRevision;
+      if (completed % 50 === 0 || !file)
+        await onProgress({ stage: 'history_validation', completed, total: head.revision });
     }
+    return { latest, index };
+  }
+  async readCatalog(head, latest) {
+    const catalog = object(await readJson(join(this.catalogs, head.catalog.file)), [
+      'catalogVersion',
+      'workspaceId',
+      'head',
+      'entries',
+    ]);
+    if (catalog.catalogVersion !== 1)
+      fail('WORKSPACE_VERSION_UNSUPPORTED', '工作区命令索引版本不受支持。');
+    object(catalog.head, ['revision', 'file', 'hash']);
+    if (
+      workspaceDigest(catalog) !== head.catalog.hash ||
+      catalog.workspaceId !== this.workspaceId ||
+      !equal(catalog.head, { revision: head.revision, file: head.file, hash: head.hash }) ||
+      !Array.isArray(catalog.entries) ||
+      catalog.entries.length !== head.revision
+    )
+      fail('WORKSPACE_CORRUPT', '工作区命令索引无法对应当前提交。', 500);
+    const index = new Map();
+    for (let i = 0; i < catalog.entries.length; i++) {
+      const entry = object(catalog.entries[i], ['commandId', 'digest', 'revision', 'file', 'hash']);
+      if (
+        typeof entry.commandId !== 'string' ||
+        !COMMAND_ID.test(entry.commandId) ||
+        typeof entry.digest !== 'string' ||
+        !HASH.test(entry.digest) ||
+        typeof entry.hash !== 'string' ||
+        !HASH.test(entry.hash) ||
+        entry.revision !== i + 1 ||
+        entry.file !== `${String(entry.revision).padStart(12, '0')}-${entry.hash}.json` ||
+        index.has(entry.commandId)
+      )
+        fail('WORKSPACE_CORRUPT', '工作区命令索引不完整或存在重复。', 500);
+      const { commandId, ...locator } = entry;
+      index.set(commandId, locator);
+    }
+    if (!equal(index.get(latest.command.commandId), commandEntry(latest)))
+      fail('WORKSPACE_CORRUPT', '工作区命令索引与最新命令不一致。', 500);
+    const previous = catalog.entries.at(-2);
+    if (previous && !equal(latest.previous, { file: previous.file, hash: previous.hash }))
+      fail('WORKSPACE_CORRUPT', '工作区命令索引与当前前序提交不一致。', 500);
+    return index;
+  }
+  async writeImmutable(path, value) {
+    try {
+      await writeExclusive(path, value);
+    } catch (error) {
+      if (
+        error.code !== 'EEXIST' ||
+        workspaceDigest(await readJson(path)) !== workspaceDigest(value)
+      )
+        throw error;
+      // A previous file fsync may have failed after making bytes visible.
+      // Reusing an exact candidate must establish file durability again.
+      const handle = await open(path, 'r');
+      try {
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+    }
+  }
+  async writeCatalog(index, head) {
+    const value = catalogFor(index, head),
+      hash = workspaceDigest(value);
+    const file = `catalog-${hash}.json`;
+    await this.writeImmutable(join(this.catalogs, file), value);
+    await syncDirectory(this.catalogs);
+    return { file, hash };
+  }
+  async publishHead(next) {
+    try {
+      await replaceJson(this.root, 'HEAD.json', next, this.syncHeadDirectory);
+    } catch (error) {
+      const persisted = await readJson(join(this.root, 'HEAD.json')).catch(() => null);
+      if (!equal(persisted, next)) throw error;
+      let durable = false;
+      for (let attempt = 0; attempt < 2 && !durable; attempt++)
+        try {
+          await this.syncHeadDirectory(this.root);
+          durable = true;
+        } catch {}
+      if (!durable) {
+        this.closed = true;
+        fail(
+          'WORKSPACE_DURABILITY_UNCERTAIN',
+          '正式提交指针已可见但无法确认持久化；已隔离写者，请重启服务后读取核对。',
+          503,
+        );
+      }
+    }
+  }
+  async assertDiskHead() {
+    try {
+      const path = join(this.root, 'HEAD.json');
+      const actual = (await regular(path, { missing: true })) ? await readJson(path) : null;
+      if (!equal(actual, this.diskHead)) {
+        this.closed = true;
+        fail('WORKSPACE_HEAD_CHANGED', '工作区提交指针在服务外发生变化，已停止写入。');
+      }
+    } catch (error) {
+      this.closed = true;
+      throw error;
+    }
+  }
+  async cleanupCatalogs(previous = null) {
+    const keep = new Set([this.diskHead?.catalog?.file, previous?.catalog?.file].filter(Boolean));
+    try {
+      for (const file of await readdir(this.catalogs)) {
+        if (!CATALOG_FILE.test(file) || keep.has(file)) continue;
+        const path = join(this.catalogs, file);
+        await regular(path);
+        await unlink(path);
+      }
+      await syncDirectory(this.catalogs);
+      this.catalogCleanupFailed = false;
+    } catch {
+      this.catalogCleanupFailed = true;
+    }
+  }
+  async auditHistory({ onProgress = async () => {} } = {}) {
+    const task = this.queue.then(async () => {
+      await this.initialize();
+      if (this.closed || !this.owned) fail('WORKSPACE_WRITER_CLOSED', '工作区服务正在停止。', 503);
+      try {
+        await this.assertDiskHead();
+        if (!this.head) return { revision: 0, commits: 0, commands: 0 };
+        const audited = await this.scanHistory(this.diskHead, onProgress);
+        if (
+          !equal(
+            catalogFor(audited.index, this.diskHead),
+            catalogFor(this.commandIndex, this.diskHead),
+          )
+        )
+          fail('WORKSPACE_CORRUPT', '工作区命令索引与完整历史不一致。', 500);
+        await this.assertDiskHead();
+        return {
+          revision: this.head.revision,
+          commits: audited.index.size,
+          commands: audited.index.size,
+        };
+      } catch (error) {
+        this.closed = true;
+        throw error;
+      }
+    });
+    this.queue = task.catch(() => {});
+    return task;
   }
   async readCommit(file) {
     const commit = object(await readJson(join(this.commits, file)), [
@@ -397,21 +630,39 @@ export class WorkspaceStore {
       body.workspaceId !== this.workspaceId ||
       !Number.isSafeInteger(body.revision) ||
       body.revision < 1 ||
+      typeof hash !== 'string' ||
       !HASH.test(hash) ||
       workspaceDigest(body) !== hash ||
       `${String(body.revision).padStart(12, '0')}-${hash}.json` !== file
     )
       fail('WORKSPACE_CORRUPT', '工作区提交内容校验失败。', 500);
     object(body.command, ['commandId', 'digest', 'type', 'result']);
-    if (!COMMAND_ID.test(body.command.commandId) || !HASH.test(body.command.digest))
+    if (
+      typeof body.command.commandId !== 'string' ||
+      !COMMAND_ID.test(body.command.commandId) ||
+      typeof body.command.digest !== 'string' ||
+      !HASH.test(body.command.digest) ||
+      !COMMAND_TYPES.has(body.command.type)
+    )
       fail('WORKSPACE_CORRUPT', '工作区命令记录无效。', 500);
+    if (body.revision === 1) {
+      if (body.previous !== null) fail('WORKSPACE_CORRUPT', '工作区初始提交关联无效。', 500);
+    } else {
+      const previous = object(body.previous, ['file', 'hash']);
+      if (
+        typeof previous.hash !== 'string' ||
+        !HASH.test(previous.hash) ||
+        previous.file !== `${String(body.revision - 1).padStart(12, '0')}-${previous.hash}.json`
+      )
+        fail('WORKSPACE_CORRUPT', '工作区前序提交关联无效。', 500);
+    }
     migrateWorkspace(body.workspace);
     return commit;
   }
   envelope(commit = this.head) {
     return {
       protocolVersion: 1,
-      storageVersion: 1,
+      storageVersion: WORKSPACE_STORAGE_VERSION,
       workspaceId: this.workspaceId,
       revision: commit?.revision || 0,
       hash: commit?.hash || '',
@@ -541,6 +792,7 @@ export class WorkspaceStore {
     const task = this.queue.then(async () => {
       await this.initialize();
       if (this.closed || !this.owned) fail('WORKSPACE_WRITER_CLOSED', '工作区服务正在停止。', 503);
+      await this.assertDiskHead();
       const command = object(input, ['commandId', 'expectedRevision', 'type', 'payload']);
       if (
         typeof command.commandId !== 'string' ||
@@ -564,18 +816,6 @@ export class WorkspaceStore {
         };
       }
       const current = this.envelope();
-      const headPath = join(this.root, 'HEAD.json');
-      const diskHead = (await regular(headPath, { missing: true }))
-        ? await readJson(headPath)
-        : null;
-      if (
-        (this.head &&
-          (diskHead?.hash !== this.head.hash ||
-            diskHead?.revision !== this.head.revision ||
-            diskHead?.workspaceId !== this.workspaceId)) ||
-        (!this.head && diskHead)
-      )
-        fail('WORKSPACE_HEAD_CHANGED', '工作区提交指针在服务外发生变化，已停止写入。');
       if (command.expectedRevision !== current.revision)
         fail('WORKSPACE_REVISION_CONFLICT', '正式工作区已变化，请读取最新版本后重新核对。');
       let workspace,
@@ -944,67 +1184,30 @@ export class WorkspaceStore {
       const commit = { ...body, hash: workspaceDigest(body) },
         file = this.filename(commit);
       await this.beforeCommit('before_commit_file', commit);
-      try {
-        await writeExclusive(join(this.commits, file), commit);
-      } catch (error) {
-        if (
-          error.code !== 'EEXIST' ||
-          workspaceDigest(await readJson(join(this.commits, file))) !== workspaceDigest(commit)
-        )
-          throw error;
-      }
+      await this.writeImmutable(join(this.commits, file), commit);
       await syncDirectory(this.commits);
-      await this.beforeCommit('before_head', commit);
-      try {
-        await replaceJson(
-          this.root,
-          'HEAD.json',
-          {
-            storageVersion: 1,
-            workspaceId: this.workspaceId,
-            revision: commit.revision,
-            hash: commit.hash,
-            file,
-          },
-          this.syncHeadDirectory,
-        );
-      } catch (error) {
-        // A directory fsync can report failure after rename made the new HEAD
-        // visible. Visibility alone is not a durable commit point: retry the
-        // exact directory sync a bounded number of times. If durability still
-        // cannot be established, quarantine this writer and do not let a queue
-        // receipt or browser success escape.
-        const persisted = await readJson(join(this.root, 'HEAD.json')).catch(() => null);
-        if (persisted?.hash === commit.hash && persisted.file === file) {
-          let durable = false;
-          for (let attempt = 0; attempt < 2 && !durable; attempt++)
-            try {
-              await this.syncHeadDirectory(this.root);
-              durable = true;
-            } catch {
-              // Retry only the local durability barrier, never the business
-              // command, rename, platform request or remote upload.
-            }
-          if (!durable) {
-            this.closed = true;
-            fail(
-              'WORKSPACE_DURABILITY_UNCERTAIN',
-              '正式提交指针已可见但无法确认持久化；已隔离写者，请重启服务后读取核对。',
-              503,
-            );
-          }
-        } else throw error;
-      }
-      this.head = commit;
-      this.commandIndex.set(command.commandId, {
-        digest,
-        file: this.filename(commit),
+      const previousRoot = this.diskHead;
+      const candidateIndex = new Map(this.commandIndex);
+      candidateIndex.set(command.commandId, commandEntry(commit));
+      const candidateHead = {
+        storageVersion: WORKSPACE_STORAGE_VERSION,
+        workspaceId: this.workspaceId,
         revision: commit.revision,
         hash: commit.hash,
-        result: copy(commit.command.result ?? null),
-      });
+        file,
+      };
+      await this.beforeCommit('before_catalog_file', commit);
+      const catalog = await this.writeCatalog(candidateIndex, candidateHead);
+      const nextRoot = { ...candidateHead, catalog };
+      await this.beforeCommit('before_head', commit);
+      await this.assertDiskHead();
+      await this.publishHead(nextRoot);
+      this.head = commit;
+      this.diskHead = nextRoot;
+      this.commandIndex = candidateIndex;
       if (consumedSyncTransaction) consumedSyncTransaction.state = 'consumed';
       await this.beforeCommit('after_head', commit);
+      await this.cleanupCatalogs(previousRoot);
       return {
         ...copy(this.envelope()),
         commandId: command.commandId,
@@ -1019,22 +1222,38 @@ export class WorkspaceStore {
     return `${String(commit.revision).padStart(12, '0')}-${commit.hash}.json`;
   }
   async indexedCommit(commandId, stored) {
-    const commit = await this.readCommit(stored.file);
-    if (
-      commit.revision !== stored.revision ||
-      commit.hash !== stored.hash ||
-      commit.command.commandId !== commandId ||
-      commit.command.digest !== stored.digest
-    )
-      fail('WORKSPACE_CORRUPT', '工作区幂等提交校验失败。', 500);
-    return commit;
+    try {
+      await this.assertDiskHead();
+      const commit = await this.readCommit(stored.file);
+      if (
+        commit.revision !== stored.revision ||
+        commit.hash !== stored.hash ||
+        commit.command.commandId !== commandId ||
+        commit.command.digest !== stored.digest
+      )
+        fail('WORKSPACE_CORRUPT', '工作区幂等提交校验失败。', 500);
+      return commit;
+    } catch (error) {
+      this.closed = true;
+      throw error;
+    }
   }
   async commandResult(commandId) {
-    await this.initialize();
-    const stored = this.commandIndex.get(commandId);
-    return stored
-      ? { revision: stored.revision, hash: stored.hash, result: copy(stored.result) }
-      : null;
+    const task = this.queue.then(async () => {
+      await this.initialize();
+      if (this.closed || !this.owned) fail('WORKSPACE_WRITER_CLOSED', '工作区服务正在停止。', 503);
+      await this.assertDiskHead();
+      const stored = this.commandIndex.get(commandId);
+      if (!stored) return null;
+      const commit = await this.indexedCommit(commandId, stored);
+      return {
+        revision: commit.revision,
+        hash: commit.hash,
+        result: copy(commit.command.result ?? null),
+      };
+    });
+    this.queue = task.catch(() => {});
+    return task;
   }
   async recordImportDiagnostic(summary) {
     await this.initialize();
