@@ -1,7 +1,8 @@
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { readFile } from 'node:fs/promises';
+import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { resolve, extname, sep } from 'node:path';
@@ -14,6 +15,7 @@ import { WORKSPACE_VERSION } from '../dist/version.js';
 const { chromium } = createRequire(import.meta.url)('playwright');
 const appRoot = process.env.JOB_TRACKER_APP_ROOT || fileURLToPath(new URL('../', import.meta.url));
 const publicRoot = resolve(appRoot, 'dist');
+const failureRoot = resolve(process.env.JOB_TRACKER_BROWSER_RESULTS || 'test-results/browser');
 const config = { owner: 'example', repo: 'browser-regression', path: 'fixtures/data.json' };
 const fakeToken = 'browser-regression-fake-token';
 const clone = (value) => structuredClone(value);
@@ -112,9 +114,95 @@ before(
 );
 
 after(async () => {
-  await browser?.close();
-  if (server?.listening) await new Promise((resolveClose) => server.close(resolveClose));
+  try {
+    await browser?.close();
+  } finally {
+    if (server?.listening) await new Promise((resolveClose) => server.close(resolveClose));
+  }
 });
+
+function diagnosticText(value) {
+  return String(value ?? '')
+    .replaceAll(fakeToken, '[synthetic token omitted]')
+    .slice(0, 2000);
+}
+
+async function appStartupSummary(page) {
+  const summary = await page.evaluate(() => ({
+    appState: document.documentElement.dataset.appState || 'missing',
+    documentState: document.readyState,
+    title: document.querySelector('#page-title')?.textContent || '',
+    localStatus: document.querySelector('#local-status')?.textContent || '',
+    notice: document.querySelector('#notice')?.textContent || '',
+    startupError:
+      document.documentElement.dataset.appState === 'failed'
+        ? document.querySelector('#app-content > .panel.empty > p')?.textContent || ''
+        : '',
+  }));
+  return Object.fromEntries(
+    Object.entries(summary).map(([key, value]) => [key, diagnosticText(value)]),
+  );
+}
+
+async function waitForAppReady(page) {
+  try {
+    await page.waitForFunction(() =>
+      ['ready', 'failed'].includes(document.documentElement.dataset.appState),
+    );
+  } catch (error) {
+    let summary;
+    try {
+      summary = await appStartupSummary(page);
+    } catch (summaryError) {
+      summary = { unavailable: diagnosticText(summaryError.message) };
+    }
+    throw new Error(`App startup did not finish: ${JSON.stringify(summary)}`, { cause: error });
+  }
+  const summary = await appStartupSummary(page);
+  assert.equal(summary.appState, 'ready', `App startup failed: ${JSON.stringify(summary)}`);
+}
+
+async function saveBrowserFailure(t, context, failures) {
+  const name = t.fullName,
+    slug = name.replace(/[^a-zA-Z0-9_-]+/g, '-').slice(0, 60) || 'browser-test',
+    hash = createHash('sha256').update(name).digest('hex').slice(0, 12),
+    directory = resolve(failureRoot, `${slug}-${hash}`);
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  const pages = [];
+  for (const [index, page] of context.pages().entries()) {
+    const information = { page: index + 1 };
+    try {
+      information.startup = await appStartupSummary(page);
+    } catch (error) {
+      information.startupError = diagnosticText(error.message);
+    }
+    try {
+      const path = resolve(directory, `page-${index + 1}.png`);
+      await page.screenshot({ path, timeout: 5000 });
+      await chmod(path, 0o600);
+    } catch (error) {
+      information.screenshotError = diagnosticText(error.message);
+    }
+    pages.push(information);
+  }
+  // Only this test's temporary context is inspected. Never record request headers,
+  // response bodies, storage contents, browser profiles, or the user's workspace.
+  await writeFile(
+    resolve(directory, 'failure.json'),
+    JSON.stringify(
+      {
+        test: name,
+        error: t.error ? { name: t.error.name, message: diagnosticText(t.error.message) } : null,
+        pageErrors: failures.map(diagnosticText),
+        pages,
+      },
+      null,
+      2,
+    ) + '\n',
+    { mode: 0o600 },
+  );
+  t.diagnostic(`Synthetic browser failure evidence: ${directory}`);
+}
 
 function githubMock(initialRemote, { readGate, readStarted } = {}) {
   const state = { remote: clone(initialRemote), sha: 'fixture-sha-1', writes: [], reads: 0 };
@@ -169,6 +257,20 @@ async function isolatedContext(t, api, contextOptions = {}) {
   context.setDefaultTimeout(10000);
   const failures = [];
   context.on('page', (page) => page.on('pageerror', (error) => failures.push(error.message)));
+  t.after(async () => {
+    try {
+      if (!t.passed || failures.length) {
+        try {
+          await saveBrowserFailure(t, context, failures);
+        } catch (error) {
+          t.diagnostic(`Could not save browser failure evidence: ${diagnosticText(error.message)}`);
+        }
+      }
+    } finally {
+      await context.close();
+    }
+    assert.deepEqual(failures, [], 'No page errors or unexpected external requests');
+  });
   await context.route('**/*', async (route) => {
     const request = route.request(),
       url = new URL(request.url());
@@ -193,19 +295,13 @@ async function isolatedContext(t, api, contextOptions = {}) {
       await route.abort('blockedbyclient');
     }
   });
-  t.after(async () => {
-    await context.close();
-    assert.deepEqual(failures, [], 'No page errors or unexpected external requests');
-  });
   return context;
 }
 
 async function openPage(context) {
   const page = await context.newPage();
   await page.goto(origin);
-  await page.waitForFunction(() =>
-    document.querySelector('#local-status')?.textContent.includes('浏览器已保存'),
-  );
+  await waitForAppReady(page);
   return page;
 }
 
@@ -215,9 +311,7 @@ async function seed(page, state = fixtureState()) {
     await updateState(() => state);
   }, state);
   await page.reload();
-  await page.waitForFunction(() =>
-    document.querySelector('#local-status')?.textContent.includes('浏览器已保存'),
-  );
+  await waitForAppReady(page);
 }
 
 async function savedState(page) {
@@ -317,6 +411,23 @@ async function assertCurrentFocusedInput(input) {
     'The original search input remains connected and focused',
   );
 }
+
+test('启动冒烟：静态工作台可初始化', { timeout: 20000 }, async (t) => {
+  const context = await isolatedContext(t),
+    page = await openPage(context);
+  const startup = await page.evaluate(async () => {
+    const { readState, storageStatus } = await import('/storage.js');
+    return {
+      appState: document.documentElement.dataset.appState,
+      workspaceVersion: (await readState()).workspaceVersion,
+      persistence: storageStatus(),
+    };
+  });
+  assert.equal(startup.appState, 'ready');
+  assert.equal(startup.workspaceVersion, WORKSPACE_VERSION);
+  assert.deepEqual(startup.persistence, { local: false, offline: false });
+  await page.locator('nav [data-view="list"]').waitFor();
+});
 
 test('今日行动列出未设下一步岗位，今日新增置顶且可原地安排', { timeout: 45000 }, async (t) => {
   const context = await isolatedContext(t),
@@ -1231,9 +1342,7 @@ test(
     );
 
     await page.reload();
-    await page.waitForFunction(() =>
-      document.querySelector('#local-status')?.textContent.includes('浏览器已保存'),
-    );
+    await waitForAppReady(page);
     await organize(page);
     assert.equal(await suggestionButton('double-suggestion-job', 'resume', 'done').count(), 0);
     assert.equal(await suggestionButton('double-suggestion-job', 'leadership', 'done').count(), 0);
@@ -1335,9 +1444,7 @@ test(
     );
     const saved = await savedState(page);
     await page.reload();
-    await page.waitForFunction(() =>
-      document.querySelector('#local-status')?.textContent.includes('浏览器已保存'),
-    );
+    await waitForAppReady(page);
     assert.equal(await suggestionButton('complete-resume-suggestion', 'resume', 'done').count(), 0);
     assert.equal(
       await suggestionButton('complete-leadership-suggestion', 'leadership', 'done').count(),
@@ -1415,9 +1522,7 @@ test('另一标签已完成核实后，旧标签的相反选择不能覆盖结�
     'A stale opposite choice must not add a task or change the confirmed result',
   );
   await first.reload();
-  await first.waitForFunction(() =>
-    document.querySelector('#local-status')?.textContent.includes('浏览器已保存'),
-  );
+  await waitForAppReady(first);
   await organize(first);
   assert.equal(await stalePending.count(), 0);
 });
@@ -1552,9 +1657,7 @@ test('打开新增表单时，另一标签新增同公司会刷新提示', { tim
     second = await openPage(context);
   await seed(first, fixtureState(emptyData()));
   await second.reload();
-  await second.waitForFunction(() =>
-    document.querySelector('#local-status')?.textContent.includes('浏览器已保存'),
-  );
+  await waitForAppReady(second);
   await first.locator('#new-button').click();
   await first.locator('#editor-form input[name="company"]').fill('跨标签公司');
   assert.equal(await first.locator('[data-company-match-hint]').isHidden(), true);
@@ -1827,6 +1930,7 @@ test('删除后通过快照恢复并再次同步，自动备份和远端状态�
     document.querySelector('#notice')?.textContent.includes('岗位已删除'),
   );
   await configureToken(page);
+  await page.locator('[data-settings-details="backup-files"] > summary').click();
   await page.locator('[data-action="snapshots"]').click();
   await page.locator('[data-snapshot-restore]').first().click();
   await page.locator('#restore-snapshot').click();

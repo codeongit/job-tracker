@@ -725,6 +725,95 @@ label textarea {
 .settings small {
   color: var(--muted);
 }
+.settings details {
+  margin-top: 18px;
+}
+.settings summary {
+  font-weight: 650;
+  cursor: pointer;
+  padding: 8px 0;
+}
+.settings h3 {
+  font-size: 0.95rem;
+  margin: 0 0 12px;
+}
+.settings-issue,
+.settings-waiting,
+.settings-result {
+  background: var(--soft);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 16px;
+  margin: 16px 0;
+}
+.settings-issue {
+  border-left: 3px solid var(--accent);
+}
+.settings .settings-healthy,
+.settings .settings-result {
+  color: var(--text);
+}
+.issue-steps {
+  display: grid;
+  grid-template-columns: 6em minmax(0, 1fr);
+  gap: 8px 12px;
+  margin: 12px 0;
+  font-size: 0.875rem;
+  line-height: 1.6;
+}
+.issue-steps dt {
+  color: var(--muted);
+}
+.issue-steps dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.settings .boss-resolution-blocked {
+  margin: 12px 0;
+}
+.sync-conflict-table-wrap {
+  overflow-x: auto;
+}
+.sync-conflict-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 0.875rem;
+}
+.sync-conflict-table th,
+.sync-conflict-table td {
+  text-align: left;
+  vertical-align: top;
+  padding: 10px;
+  border-bottom: 1px solid var(--line);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.sync-conflict-result {
+  margin: 12px 0;
+  padding: 12px;
+  background: var(--soft);
+  border-radius: 8px;
+}
+.conflict-item details pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 240px;
+  overflow: auto;
+  font-size: 0.8125rem;
+}
+@media (max-width: 600px) {
+  .settings .panel-body {
+    padding: 16px;
+  }
+  .issue-steps {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+  .issue-steps dd {
+    margin-bottom: 8px;
+  }
+}
 .dialog {
   width: min(620px, calc(100% - 28px));
   padding: 0;

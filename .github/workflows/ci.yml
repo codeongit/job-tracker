@@ -24,6 +24,34 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm exec playwright install --with-deps chromium
-      - run: pnpm verify
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Unit and service tests
+        run: pnpm test
+      - name: Static checks
+        run: pnpm check
+      - name: Formatting checks
+        run: pnpm format:check
+      - name: Install test browser
+        run: pnpm exec playwright install --with-deps chromium
+      - name: Browser startup smoke test
+        id: browser_smoke
+        env:
+          JOB_TRACKER_BROWSER_RESULTS: test-results/browser-smoke
+        run: node --test --test-name-pattern='^启动冒烟：静态工作台可初始化$' test/browser-regression.mjs
+      - name: Browser regression tests
+        id: browser_regression
+        env:
+          JOB_TRACKER_BROWSER_RESULTS: test-results/browser-regression
+        run: pnpm test:browser
+      - name: Upload synthetic browser failure evidence
+        if: ${{ failure() && (steps.browser_smoke.outcome == 'failure' || steps.browser_regression.outcome == 'failure') }}
+        uses: actions/upload-artifact@v7
+        continue-on-error: true
+        with:
+          name: browser-failure-evidence
+          path: |
+            test-results/browser-smoke/
+            test-results/browser-regression/
+          if-no-files-found: warn
+          retention-days: 7

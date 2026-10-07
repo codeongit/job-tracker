@@ -332,6 +332,23 @@ export function createLocalWorkspaceClient({
     return job;
   }
 
+  async function readForReview() {
+    if (!(await active()))
+      throw failure('核对资料需要连接本机工作区服务。', 'LOCAL_WORKSPACE_REQUIRED');
+    const job = chain.then(async () => {
+      // One authoritative response binds reviewed data to its revision. Offline
+      // cache is useful for browsing, but cannot authorize a new mutation.
+      const envelope = await load();
+      return {
+        state: envelope.workspace,
+        revision: envelope.revision,
+        workspaceId: envelope.workspaceId,
+      };
+    });
+    chain = job.catch(() => {});
+    return job;
+  }
+
   async function submit(type, payload, expectedRevision) {
     if (!(await active())) return null;
     const execute = async () => {
@@ -454,6 +471,7 @@ export function createLocalWorkspaceClient({
 
   return {
     read,
+    readForReview,
     update,
     editData,
     setSyncConfig: (config) => submit('set_sync_config', { config }),
@@ -467,6 +485,8 @@ export function createLocalWorkspaceClient({
       submit('bind_boss_account', { accountNamespace, restore }),
     ignoreBossObservations: (applicationIds, expectedRevision) =>
       submit('ignore_boss_observations', { applicationIds }, expectedRevision),
+    resolveBossJobDetails: (payload, expectedRevision) =>
+      submit('resolve_boss_job_details', payload, expectedRevision),
     active,
     prepareImport,
     importCurrent,

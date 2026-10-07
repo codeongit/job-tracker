@@ -1838,7 +1838,7 @@ test('等待项核对只读选择精确绑定目标，人工控制标识与实�
   assert.match(html, /编辑岗位状态/);
   assert.match(html, /本机候选岗位/);
   assert.match(html, /当前简历：未知 · 自动维护/);
-  assert.match(html, /编辑不会确认或忽略观察/);
+  assert.match(html, /编辑岗位不会确认消息归属或自动忽略旧消息/);
   assert.deepEqual(waiting, original);
   const manual = structuredClone(waiting);
   manual.opportunities[0].resumeState = '已发送';
@@ -1917,8 +1917,10 @@ test('等待项直达入口拒绝跨账号、多目标、链接矛盾、删除�
       },
       { data },
     );
-    assert.match(html, /未找到可唯一对应的本机岗位/);
-    assert.doesNotMatch(html, /data-view="list"/);
+    // A completed/manual application must not reappear from stale index rows.
+    if (['waiting', 'review'].includes(data.sourceApplications.at(-1).status))
+      assert.match(html, /未找到可唯一对应的本机岗位/);
+    else assert.doesNotMatch(html, /data-boss-ignore-item/);
     assert.doesNotMatch(html, /data-boss-review-action=/);
   }
   const views = createViews(

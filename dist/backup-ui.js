@@ -7,6 +7,7 @@ export function createBackupUI({
   isSyncing,
   restored,
   report,
+  isLocal = () => false,
   prepareDrafts = () => ({ commit() {}, rollback() {} }),
 }) {
   async function showRestore(backup) {
@@ -51,7 +52,7 @@ export function createBackupUI({
   async function showSnapshots() {
     const rows = await listSnapshots();
     $('#import-content').innerHTML =
-      `<div class="dialog-header"><h2>本机自动快照</h2><button class="close" data-close="import-dialog" aria-label="关闭">×</button></div><div class="dialog-body"><p>保留最近 20 次删除、导入、恢复、升级或同步前的状态。快照与当前记录都保存在此浏览器，清理网站数据会一起删除。</p>${rows.length ? rows.map((row) => `<section class="section-gap"><p>${esc(new Date(row.createdAt).toLocaleString('zh-CN'))} · ${esc(row.reason)}</p><div class="button-row"><button class="secondary" data-snapshot-download="${row.id}">下载快照</button><button class="secondary" data-snapshot-restore="${row.id}">恢复此快照</button></div></section>`).join('') : '<p class="section-gap">暂无快照。</p>'}</div>`;
+      `<div class="dialog-header"><h2>${isLocal() ? '浏览器旧快照' : '浏览器操作快照'}</h2><button class="close" data-close="import-dialog" aria-label="关闭">×</button></div><div class="dialog-body"><p>${isLocal() ? '这里是此浏览器保留的旧快照，不代表本机服务的正式提交历史。清理网站数据会删除这些快照，本机磁盘备份另行保留。' : '保留最近 20 次关键操作前的状态。快照与当前记录保存在此浏览器，清理网站数据会一起删除。'}</p>${rows.length ? rows.map((row) => `<section class="section-gap"><p>${esc(new Date(row.createdAt).toLocaleString('zh-CN'))} · ${esc(row.reason)}</p><div class="button-row"><button class="secondary" data-snapshot-download="${row.id}">下载快照</button><button class="secondary" data-snapshot-restore="${row.id}">恢复此快照</button></div></section>`).join('') : '<p class="section-gap">暂无快照。</p>'}</div>`;
     $('#import-dialog').showModal();
     $('#import-content').onclick = async (e) => {
       const button = e.target.closest('button');

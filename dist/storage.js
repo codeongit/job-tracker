@@ -131,6 +131,7 @@ export async function updateState(transform, options = {}) {
   return updateCachedState(transform, options);
 }
 export const readState = async () => (await service().read()) ?? updateCachedState((s) => s);
+export const readStateForReview = () => service().readForReview();
 export const prepareLocalWorkspaceMigration = (drafts) => service().prepareImport(drafts);
 export const initializeLocalWorkspace = (prepared, drafts) =>
   service().importCurrent(prepared, drafts);
@@ -197,6 +198,10 @@ export async function bindBossSource(accountNamespace, { restore = false } = {})
 export async function ignoreBossObservations(applicationIds, expectedRevision) {
   if (!(await service().active())) throw new Error('忽略观察需要连接本机服务。');
   return service().ignoreBossObservations(applicationIds, expectedRevision);
+}
+export async function resolveBossJobDetails(payload, expectedRevision) {
+  if (!(await service().active())) throw new Error('确认岗位资料需要连接本机服务。');
+  return service().resolveBossJobDetails(payload, expectedRevision);
 }
 export async function saveSnapshot(reason) {
   if (await service().active()) return (await service().read()) ?? null;

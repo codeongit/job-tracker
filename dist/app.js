@@ -1,5 +1,12 @@
 import { parseBossJobUrl } from './boss-job-url.js';
-import { groupBossObservations } from './boss-observations.js';
+import { runAppStartup } from './app-startup.js';
+import {
+  groupBossObservations,
+  bossObservationGroups,
+  bossJobDetailsConfirmation,
+} from './boss-observations.js';
+import { createSyncConflictUI } from './sync-conflict-ui.js';
+import { bossConflictTargets } from './settings-guidance.js';
 import { RESUME_STATES } from './resume-rules.js';
 import { createDraftManager } from './drafts.js';
 import { createDiskBackup } from './disk-backup.js';
@@ -8,6 +15,7 @@ import {
   settingsView,
   bossObservationReason,
   reconcileBossIgnoreSelection,
+  bossDetailsConfirmationView,
 } from './settings-view.js';
 import { createBackup } from './workspace.js';
 import { APP_VERSION } from './version.js';
@@ -47,6 +55,8 @@ import {
   acknowledgeSync,
   bindBossSource,
   ignoreBossObservations,
+  resolveBossJobDetails,
+  readStateForReview,
 } from './storage.js';
 import { githubClient, syncWorkspace, validateConfig } from './github.js';
 import { discoverLocalSsh, localSshClient } from './local-ssh.js';
@@ -82,6 +92,11 @@ let filteredRows = [],
 const settingsDisclosures = new Map();
 const bossIgnoreSelected = new Set();
 let bossIgnoreBusy = false;
+let bossFeedback = null,
+  bossConfirmation = null,
+  bossConfirmationOrigin = null,
+  syncConflictOrigin = null;
+let syncReviewWorkspaceId = '';
 const scrollPositions = new Map(),
   expandedDetails = new Map(),
   boundEvents = new WeakMap(),
@@ -101,8 +116,63 @@ const diskBackup = createDiskBackup({
   onStatus: (status) => {
     const el = $('#disk-backup-status');
     if (el) el.textContent = status.message;
+    if (state && view === 'settings') render(true);
   },
 });
+const conflictUI = createSyncConflictUI({
+  readState: async () => {
+    if (!storageStatus().local) return readState();
+    const review = await readStateForReview();
+    syncReviewWorkspaceId = review.workspaceId;
+    return review.state;
+  },
+  resolveSyncConflict,
+  isUnavailable: () => storageStatus().offline,
+  getWorkspaceId: () => syncReviewWorkspaceId,
+  saved: async (next) => {
+    const applicationIds = bossObservationGroups(state.data).flatMap(
+      (group) => group.applicationIds,
+    );
+    state = next;
+    if (applicationIds.length) beginBossCheck(applicationIds, '同步冲突选择已保存');
+    channel?.postMessage('changed');
+    render(true);
+    $('#conflict-dialog').close();
+    notify('冲突选择已保存，本机已保存，待同步。');
+  },
+  report,
+  sync: () => synchronize(),
+  closed: () => restoreDetailOrigin(syncConflictOrigin),
+});
+
+function rememberSettingsOrigin(trigger = document.activeElement) {
+  return {
+    scrollY: window.scrollY,
+    trigger,
+    selector: trigger?.id ? `#${CSS.escape(trigger.id)}` : '#boss-card-title',
+  };
+}
+function beginBossCheck(applicationIds, label, checking = true) {
+  bossFeedback = {
+    applicationIds: [...new Set(applicationIds)],
+    label,
+    checking,
+    startedAt: Date.now(),
+  };
+}
+function bossIdsForJob(jobId) {
+  return bossObservationGroups(state.data)
+    .filter((group) =>
+      group.applicationIds.some(
+        (id) =>
+          bossWaitingReviewTarget(state.data, id)?.opportunityId === jobId ||
+          bossWaitingReviewCandidates(state.data, id).some(
+            (candidate) => candidate.opportunityId === jobId,
+          ),
+      ),
+    )
+    .flatMap((group) => group.applicationIds);
+}
 const { detail, todayView, jobsView, jobResults, detailDateRecords } = createViews(
   () => ({
     state,
@@ -370,6 +440,7 @@ function restoreSettingsDisclosures() {
 
 function render(preserveDrafts = false) {
   if (!state) return;
+  conflictUI.invalidate(state);
   if (composition.active) {
     deferredRender = true;
     return;
@@ -377,6 +448,7 @@ function render(preserveDrafts = false) {
   deferredRender = false;
   captureDetailSections();
   captureSettingsDisclosures();
+  const settingsScroll = view === 'settings' && renderedView === 'settings' ? window.scrollY : null;
   const deletedSelection =
     selected && !live(state.data.opportunities).some((row) => row.id === selected);
   const deletedOrigin = deletedSelection ? detailOrigin : null;
@@ -384,7 +456,7 @@ function render(preserveDrafts = false) {
   refreshFilteredRows();
   const detailScroll = $('#detail-host')?.scrollTop || 0;
   const active = document.activeElement;
-  const focus = active?.matches('input,textarea,select,summary')
+  const focus = active?.matches('input,textarea,select,summary,button')
     ? {
         id: active.id,
         form: active.form?.id,
@@ -392,6 +464,9 @@ function render(preserveDrafts = false) {
         start: active.selectionStart,
         end: active.selectionEnd,
         direction: active.selectionDirection,
+        action: active.dataset?.action,
+        disclosure:
+          active.tagName === 'SUMMARY' ? active.parentElement?.dataset?.settingsDetails : '',
       }
     : null;
   const preservedForms = ['activity-form', 'task-form', 'settings-form'].flatMap((id) => {
@@ -419,6 +494,7 @@ function render(preserveDrafts = false) {
         ? settingsView({
             state,
             ssh: useSsh(),
+            sshTarget: localSsh?.target,
             token,
             syncing,
             diagnostic,
@@ -426,6 +502,8 @@ function render(preserveDrafts = false) {
             bossStatus,
             bossIgnoreSelected,
             bossIgnoreBusy,
+            bossFeedback,
+            persistence: storageStatus(),
           })
         : !live(state.data.opportunities).length && view !== 'list'
           ? emptyView()
@@ -449,12 +527,21 @@ function render(preserveDrafts = false) {
   if (focus) {
     const field = focus.id
       ? document.getElementById(focus.id)
-      : document.getElementById(focus.form)?.elements.namedItem(focus.name);
+      : focus.form
+        ? document.getElementById(focus.form)?.elements.namedItem(focus.name)
+        : focus.action
+          ? document.querySelector(`[data-action="${CSS.escape(focus.action)}"]`)
+          : focus.disclosure
+            ? document.querySelector(
+                `[data-settings-details="${CSS.escape(focus.disclosure)}"] > summary`,
+              )
+            : null;
     field?.focus?.({ preventScroll: true });
     if (Number.isInteger(focus.start) && typeof field?.setSelectionRange === 'function')
       field.setSelectionRange(focus.start, focus.end, focus.direction || 'none');
   }
   refreshCompanyMatchHint($('#editor-form'));
+  if (settingsScroll !== null) window.scrollTo(0, settingsScroll);
 }
 function bindForms() {
   const formOpportunityId = selected;
@@ -597,6 +684,9 @@ function bindForms() {
         return;
       token = String(f.get('token')).trim();
       state = await setSyncConfig(config);
+      const connection = document.querySelector('[data-settings-details="sync-config"]');
+      if (connection) connection.open = false;
+      settingsDisclosures.set('sync-config', false);
       render();
       notify('连接设置已保存。令牌仅在当前页面使用。');
     } catch (e) {
@@ -780,6 +870,7 @@ function openEditor(id = '', source) {
     if (input.stage !== '已结束') input.endReason = '';
     const stamp = new Date().toISOString(),
       jobId = id || uid();
+    const relatedBossIds = view === 'settings' ? bossIdsForJob(jobId) : [];
     if ((original?.platformJobState || 'unknown') !== input.platformJobState) {
       input.platformJobStateSource = input.platformJobState === 'unknown' ? '' : 'user';
       input.platformJobStateAt = input.platformJobState === 'unknown' ? '' : stamp;
@@ -815,6 +906,10 @@ function openEditor(id = '', source) {
         { form: e.target, captured },
       );
       $('#editor-dialog').close();
+      if (relatedBossIds.length) {
+        beginBossCheck(relatedBossIds, '岗位已保存，人工状态已保留');
+        render(true);
+      }
       openDetail(jobId);
       notify(
         (input.stage === '已结束' ? '岗位已结束，未完成行动已取消。' : '岗位已保存。') + warning,
@@ -825,6 +920,7 @@ function openEditor(id = '', source) {
   });
 }
 const { showRestore, showSnapshots } = createBackupUI({
+  isLocal: () => storageStatus().local,
   isSyncing: () => syncing,
   prepareDrafts: (rows) => drafts.store.prepareImport(rows),
   restored: async (next) => {
@@ -976,31 +1072,107 @@ async function renderImport(year) {
   };
 }
 async function showConflicts(pending) {
-  const label = (row) =>
-    row
-      ? row.deletedAt
-        ? '此记录已删除'
-        : row.company
-          ? `${row.company} · ${row.role}\n阶段：${getOpportunityStatus(row).stage}\n简历：${row.resumeState || '未知'}\n备注：${row.notes || '无'}\n\n${JSON.stringify(row, null, 2)}`
-          : JSON.stringify(row, null, 2)
-      : '此版本没有这条记录';
-  $('#conflict-content').innerHTML =
-    `<form id="conflict-form"><div class="dialog-header"><div><h2>选择要保留的版本</h2><p>本机与云端修改了同一条记录，尚未覆盖任何一方。</p></div><button class="close" type="button" data-close="conflict-dialog" aria-label="稍后处理">×</button></div><div class="dialog-body">${pending.conflicts.map((c, i) => `<section class="conflict-item"><h3>冲突 ${i + 1}${c.relational ? ' · 岗位删除与关联记录冲突' : ''}</h3><div class="conflict-options">${['local', 'remote'].map((side) => `<label><input type="radio" name="${esc(c.key)}" value="${side}" required>${side === 'local' ? '保留本机' : '保留云端'}<pre>${esc(label(c[side]))}</pre></label>`).join('')}</div></section>`).join('')}</div><div class="dialog-footer"><button class="secondary" type="button" data-close="conflict-dialog">稍后处理</button><button class="primary" type="submit">保存选择</button></div></form>`;
-  $('#conflict-dialog').showModal();
-  $('#conflict-form').onsubmit = async (e) => {
-    e.preventDefault();
+  syncConflictOrigin = rememberSettingsOrigin();
+  await conflictUI.show(pending);
+}
+
+async function showBossDetailsConfirmation(applicationIds, trigger) {
+  const origin = bossConfirmationOrigin || rememberSettingsOrigin(trigger);
+  await bossQueue?.run();
+  const current = await readStateForReview();
+  state = current.state;
+  render(true);
+  if (
+    bossIgnoreBusy ||
+    storageStatus().offline ||
+    bossStatus.connectionStale ||
+    bossStatus.error ||
+    !bossStatus.serverManaged ||
+    state.pending ||
+    !Number.isSafeInteger(bossStatus.revision)
+  )
+    throw new Error('请先刷新本机状态并处理同步冲突，再确认岗位资料。');
+  const group = bossObservationGroups(state.data).find((row) =>
+    applicationIds.some((id) => row.applicationIds.includes(id)),
+  );
+  const allApplicationIds = group?.applicationIds || applicationIds;
+  const preview = bossJobDetailsConfirmation(state.data, allApplicationIds, current.workspaceId);
+  if (!preview.allowed) throw new Error(preview.reason);
+  preview.fillsJobId = !state.data.opportunities.find(
+    (row) => row.id === preview.target.opportunityId,
+  )?.externalId;
+  bossConfirmation = { preview, revision: current.revision, allApplicationIds };
+  bossConfirmationOrigin = origin;
+  const dialog = $('#import-dialog');
+  const content = $('#import-content');
+  content.onclick = null;
+  content.innerHTML = bossDetailsConfirmationView(preview);
+  if (!dialog.open) dialog.showModal();
+  $('#boss-details-form').onsubmit = async (event) => {
+    event.preventDefault();
+    if (bossIgnoreBusy) return;
+    const reviewed = bossConfirmation;
+    const errorElement = $('#boss-details-error');
+    if (
+      storageStatus().offline ||
+      bossStatus.connectionStale ||
+      bossStatus.error ||
+      state.pending
+    ) {
+      errorElement.textContent = '状态尚未更新或存在同步冲突，请重新核对后提交。';
+      return;
+    }
+    bossIgnoreBusy = true;
+    for (const button of event.target.querySelectorAll('button')) button.disabled = true;
     try {
-      const choices = Object.fromEntries(new FormData(e.target));
-      state = await resolveSyncConflict(pending, choices);
+      const result = await resolveBossJobDetails(
+        {
+          applicationIds: reviewed.preview.applicationIds,
+          opportunityId: reviewed.preview.target.opportunityId,
+          externalJobId: reviewed.preview.externalJobId,
+          canonicalUrl: reviewed.preview.canonicalUrl,
+        },
+        reviewed.revision,
+      );
+      state = result;
+      beginBossCheck(
+        reviewed.allApplicationIds,
+        `已完成 ${reviewed.preview.observationCount} 项普通资料处理`,
+        false,
+      );
       channel?.postMessage('changed');
-      $('#conflict-dialog').close();
-      render();
-      notify('冲突选择已保存，请再次同步提交。');
-    } catch (e) {
-      report(e);
+      dialog.close();
+      await bossQueue?.run();
+      notify('普通岗位资料已确认；简历归属及其他问题请以剩余清单为准。');
+    } catch (error) {
+      errorElement.textContent = `${error.message} 请重新核对最新资料。`;
+      const reload = document.createElement('button');
+      reload.type = 'button';
+      reload.className = 'secondary';
+      reload.textContent = '重新核对最新资料';
+      reload.dataset.bossConfirm = reviewed.preview.applicationIds.join(',');
+      errorElement.replaceChildren(document.createTextNode(errorElement.textContent), reload);
+    } finally {
+      bossIgnoreBusy = false;
+      // An uncertain reply is not a new user decision. The old submit stays
+      // disabled; reopening re-reads the authority and requires fresh review.
+      for (const button of event.target.querySelectorAll('[data-close]')) button.disabled = false;
+      state = await readState();
+      render(true);
     }
   };
 }
+$('#import-dialog').addEventListener('cancel', (event) => {
+  if (bossConfirmation && bossIgnoreBusy) event.preventDefault();
+});
+$('#import-dialog').addEventListener('close', () => {
+  if (!bossConfirmation) return;
+  const origin = bossConfirmationOrigin;
+  bossConfirmation = null;
+  bossConfirmationOrigin = null;
+  restoreDetailOrigin(origin);
+});
+
 async function synchronize(allowCreate = false) {
   if (syncing) return;
   if (state.pending) {
@@ -1075,17 +1247,58 @@ document.addEventListener('click', async (e) => {
   if (!b) return;
   try {
     if (b.dataset.close) {
+      if (b.dataset.close === 'import-dialog' && bossConfirmation && bossIgnoreBusy) return;
       document.getElementById(b.dataset.close).close();
+      return;
+    }
+    if (b.dataset.bossConfirm) {
+      await showBossDetailsConfirmation(b.dataset.bossConfirm.split(',').filter(Boolean), b);
+      return;
+    }
+    if (b.dataset.action === 'use-ssh-target') {
+      if (!localSsh?.target || storageStatus().offline || state.pending)
+        throw new Error('请先恢复本机连接并处理同步冲突，再核对同步目标。');
+      if (
+        !confirm(
+          `将同步目标设为本机服务配置的 ${localSsh.target.owner}/${localSsh.target.repo}，文件 ${localSsh.target.path}？本机记录保留，之后仍由你手动同步。`,
+        )
+      )
+        return;
+      state = await setSyncConfig(localSsh.target);
+      render(true);
+      notify('已使用本机 SSH 同步目标；尚未上传，请手动同步。');
       return;
     }
     if (b.dataset.bossReview) {
       const scrollY = window.scrollY;
       state = await readState();
-      const target = b.dataset.bossCandidate
-        ? bossWaitingReviewCandidates(state.data, b.dataset.bossReview).find(
-            (row) => row.opportunityId === b.dataset.bossCandidate,
+      if (b.dataset.bossRelatedJob) {
+        const target = bossConflictTargets(state.data, [b.dataset.bossReview]).find(
+          (row) => row.opportunityId === b.dataset.bossRelatedJob && !row.deleted,
+        );
+        if (!target) throw new Error('相关岗位或来源记录已变化，请重新核对。');
+        render(true);
+        openDetail(target.opportunityId, { trigger: document.getElementById(b.id) || b });
+        detailOrigin.scrollY = scrollY;
+        return;
+      }
+      const confirmation = b.dataset.bossConfirmTarget
+        ? bossJobDetailsConfirmation(
+            state.data,
+            bossObservationGroups(state.data).find((group) =>
+              group.applicationIds.includes(b.dataset.bossReview),
+            )?.applicationIds || [b.dataset.bossReview],
+            bossStatus.sourceId,
           )
-        : bossWaitingReviewTarget(state.data, b.dataset.bossReview);
+        : null;
+      const target =
+        confirmation?.allowed && confirmation.target.opportunityId === b.dataset.bossConfirmTarget
+          ? confirmation.target
+          : b.dataset.bossCandidate
+            ? bossWaitingReviewCandidates(state.data, b.dataset.bossReview).find(
+                (row) => row.opportunityId === b.dataset.bossCandidate,
+              )
+            : bossWaitingReviewTarget(state.data, b.dataset.bossReview);
       render(true);
       if (!target) {
         window.scrollTo(0, scrollY);
@@ -1110,6 +1323,7 @@ document.addEventListener('click', async (e) => {
     if (b.dataset.bossIgnore) {
       if (
         bossIgnoreBusy ||
+        storageStatus().offline ||
         bossStatus.connectionStale ||
         bossStatus.error ||
         !bossStatus.serverManaged ||
@@ -1121,6 +1335,9 @@ document.addEventListener('click', async (e) => {
       );
       if (!items.length) return;
       const revision = bossStatus.revision;
+      const allApplicationIds = bossObservationGroups(state.data)
+        .filter((group) => group.waitingApplicationIds.some((id) => bossIgnoreSelected.has(id)))
+        .flatMap((group) => group.applicationIds);
       if (
         !confirm(
           `确认忽略以下 ${groupBossObservations(items, state.data).length} 条消息 / ${items.length} 项观察？同一事实后续不再自动应用，原始观察保留。\n\n${items.map((item) => `${item.candidateCompany || '未知公司'} / ${item.candidate || '未取得岗位'} · ${bossObservationReason(item)} · ${item.applicationId.slice(-8)}`).join('\n')}`,
@@ -1134,6 +1351,7 @@ document.addEventListener('click', async (e) => {
           items.map((item) => item.applicationId),
           revision,
         );
+        beginBossCheck(allApplicationIds, `已忽略 ${items.length} 项等待观察`, false);
         bossIgnoreSelected.clear();
         channel?.postMessage('changed');
         await bossQueue?.run();
@@ -1442,7 +1660,7 @@ async function startWorkspace() {
   }, 15000);
 }
 try {
-  await startWorkspace();
+  await runAppStartup(startWorkspace, document.documentElement);
 } catch (e) {
   let preparedMigration = null;
   const migrationRequired = [
@@ -1480,7 +1698,7 @@ try {
     button.disabled = true;
     try {
       await initializeLocalWorkspace(preparedMigration, drafts.store.list());
-      await startWorkspace();
+      await runAppStartup(startWorkspace, document.documentElement);
     } catch (error) {
       button.disabled = false;
       report(error);

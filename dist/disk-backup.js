@@ -20,6 +20,7 @@ export function createDiskBackup({
     lastDay = '',
     status = {
       available: false,
+      error: '',
       message: local ? '正在检查本机独立备份…' : '此网页可下载完整备份；自动磁盘备份需要本机服务。',
     };
   const update = (patch) => {
@@ -74,7 +75,7 @@ export function createDiskBackup({
       !backup.workspace.pending &&
       !drafts.length
     ) {
-      update({ message: '尚无记录或草稿可备份。已有磁盘备份保留。' });
+      update({ error: '', message: '尚无记录或草稿可备份。已有磁盘备份保留。' });
       return;
     }
     const content = JSON.stringify({ workspace: backup.workspace, drafts }),
@@ -86,9 +87,12 @@ export function createDiskBackup({
       lastDay = day;
       update({
         available: true,
+        error: '',
         lastSavedAt: result.savedAt,
         message: `独立备份已保存：${new Date(result.savedAt).toLocaleString('zh-CN')}`,
       });
+    } else {
+      update({ available: true, error: '', message: '磁盘备份已有相同内容，未重复写入。' });
     }
   }
   async function run(force = false) {
@@ -108,7 +112,7 @@ export function createDiskBackup({
         error instanceof TypeError || error.name === 'TimeoutError'
           ? '无法连接本机服务，请启动服务后重试。'
           : error.message;
-      update({ message: `独立备份未完成：${message} 本机记录与草稿仍保留。` });
+      update({ error: message, message: `独立备份未完成：${message} 本机记录与草稿仍保留。` });
     } finally {
       running = false;
       if (again) {

@@ -496,3 +496,115 @@ test('忽略命令绑定已核对版本，丢失回复重用同一请求，不�
   assert.equal(commands.length, 2);
   assert.deepEqual(commands[0].parsed, commands[1].parsed);
 });
+
+test('资料确认命令使用已核对版本，丢失回复精确重试同一幂等请求', async () => {
+  let posts = 0;
+  const payload = {
+    applicationIds: ['synthetic-ordinary-application'],
+    opportunityId: 'synthetic-target',
+    externalJobId: 'synthetic-job~',
+    canonicalUrl: 'https://www.zhipin.com/job_detail/synthetic-job~.html',
+  };
+  const f = fixture({
+    custom: (call, { envelope }) => {
+      if (call.path !== './__local/workspace/commands') return;
+      posts++;
+      assert.equal(call.parsed.type, 'resolve_boss_job_details');
+      assert.deepEqual(call.parsed.payload, payload);
+      if (posts === 1) throw new Error('synthetic lost reply');
+      return response({ ...envelope(), replayed: true });
+    },
+  });
+  await f.client.read();
+  await assert.rejects(f.client.resolveBossJobDetails(payload, 0), {
+    code: 'WORKSPACE_REVISION_CONFLICT',
+  });
+  assert.equal(posts, 0);
+  const saved = await f.client.resolveBossJobDetails(payload, 1);
+  const commands = f.calls.filter((call) => call.path === './__local/workspace/commands');
+  assert.equal(commands.length, 2);
+  assert.deepEqual(commands[0].parsed, commands[1].parsed);
+  assert.equal(f.calls.at(-1).path, './__local/workspace');
+  assert.deepEqual(saved, f.cache);
+});
+
+test('资料确认版本冲突不自动换版本重放，保存失败不更改本机缓存', async () => {
+  for (const [status, code] of [
+    [409, 'WORKSPACE_REVISION_CONFLICT'],
+    [500, 'SNAPSHOT_FAILED'],
+  ]) {
+    const f = fixture({
+      custom: (call) =>
+        call.path === './__local/workspace/commands'
+          ? response({ message: 'synthetic save failed', code }, status)
+          : undefined,
+    });
+    const original = structuredClone(f.cache);
+    await assert.rejects(
+      f.client.resolveBossJobDetails({ applicationIds: ['synthetic-application'] }, 1),
+      { code },
+    );
+    assert.equal(f.calls.filter((call) => call.method === 'POST').length, 1);
+    assert.deepEqual(f.cache, original);
+  }
+});
+
+test('核对快照只读取一次正式状态，资料与版本来自同一响应', async () => {
+  let reads = 0;
+  const f = fixture({
+    authorityValue: JSON.stringify({ workspaceId: '00000000-0000-4000-8000-000000000001' }),
+    custom: (call, { envelope }) => {
+      if (call.path !== './__local/workspace') return;
+      reads++;
+      const current = envelope();
+      current.revision = 7 + reads;
+      current.workspace.generation = current.revision;
+      return response(current);
+    },
+  });
+  const reviewed = await f.client.readForReview();
+  assert.equal(reads, 1);
+  assert.equal(reviewed.revision, 8);
+  assert.equal(reviewed.state.generation, 8);
+  assert.equal(reviewed.workspaceId, '00000000-0000-4000-8000-000000000001');
+  assert.deepEqual(reviewed.state, f.cache);
+  assert.equal(f.calls.filter((call) => call.method === 'POST').length, 0);
+});
+
+test('核对快照串行等待已有修改完成，再返回最新正式版本', async () => {
+  const f = fixture();
+  const saving = f.client.editData((data) => {
+    data.opportunities.push({
+      id: 'before-review',
+      company: '合成公司',
+      role: '合成岗位',
+      stage: '已触达',
+    });
+    return data;
+  });
+  const reviewing = f.client.readForReview();
+  await saving;
+  const reviewed = await reviewing;
+  assert.equal(reviewed.revision, 2);
+  assert.equal(reviewed.state.data.opportunities[0].id, 'before-review');
+  assert.deepEqual(reviewed.state, f.cache);
+});
+
+test('核对快照拒绝离线缓存及静态模式，不把旧状态作为可提交依据', async () => {
+  let offline = false;
+  const f = fixture({
+    custom: () => {
+      if (offline) throw new TypeError('offline');
+    },
+  });
+  await f.client.read();
+  const original = structuredClone(f.cache);
+  offline = true;
+  assert.deepEqual(await f.client.read(), original);
+  await assert.rejects(f.client.readForReview(), { code: 'LOCAL_WORKSPACE_UNAVAILABLE' });
+  assert.deepEqual(f.cache, original);
+  assert.equal(f.calls.filter((call) => call.method === 'POST').length, 0);
+  const website = fixture({ hostname: 'example.com' });
+  await assert.rejects(website.client.readForReview(), { code: 'LOCAL_WORKSPACE_REQUIRED' });
+  assert.equal(website.calls.length, 0);
+});

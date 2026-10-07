@@ -3,6 +3,7 @@ export { PLATFORM_JOB_LABELS } from './platform-job-state.js';
 import { clone, live, validateData } from './model.js';
 import { BOSS_JOB_ID, isCanonicalBossJobUrl, parseBossJobUrl } from './boss-job-url.js';
 import { sourceApplicationForEvent, SOURCE_RULE_VERSION } from './source-ledger.js';
+import { bossFactId, hasBossFactIdentity } from './source-identity.js';
 
 export const USER_JOB_DETAILS_REASON = 'user_confirmed_job_details';
 
@@ -25,21 +26,41 @@ function selectedRows(data, applicationIds) {
     !Array.isArray(applicationIds) ||
     !applicationIds.length ||
     applicationIds.length > 100 ||
-    new Set(applicationIds).size !== applicationIds.length
+    new Set(applicationIds).size !== applicationIds.length ||
+    applicationIds.some((id) => typeof id !== 'string' || !id)
   )
     unsafe();
+  const selectedIds = new Set(applicationIds),
+    applications = new Map(),
+    applicationsByFact = new Map(),
+    facts = new Map(live(data.sourceFacts).map((row) => [row.id, row])),
+    eventsByApplication = new Map();
+  for (const application of live(data.sourceApplications)) {
+    applications.set(application.id, application);
+    if (!applicationsByFact.has(application.factId))
+      applicationsByFact.set(application.factId, application);
+  }
+  // Match the legacy/semantic lookup without scanning every application per event.
+  for (const event of live(data.sourceEvents)) {
+    const factId = event.factId || (hasBossFactIdentity(event) ? bossFactId(event) : '');
+    const application =
+      applicationsByFact.get(factId) ||
+      applicationsByFact.get(event.id.replace(/^boss-event-/, 'boss-fact-'));
+    if (!application || !selectedIds.has(application.id)) continue;
+    const events = eventsByApplication.get(application.id) || [];
+    events.push(event);
+    eventsByApplication.set(application.id, events);
+  }
   return applicationIds.map((id) => {
-    const application = live(data.sourceApplications).find((row) => row.id === id);
-    const fact = application && live(data.sourceFacts).find((row) => row.id === application.factId);
-    const events =
-      application &&
-      live(data.sourceEvents).filter((row) => sourceApplicationForEvent(data, row)?.id === id);
+    const application = applications.get(id);
+    const fact = application && facts.get(application.factId);
+    const events = eventsByApplication.get(id);
     if (!application || !fact || !events?.length || fact.platform !== 'boss') unsafe();
     return { application, fact, events };
   });
 }
-export function resolveBossJobDetails(
-  input,
+function checkBossJobDetails(
+  data,
   {
     applicationIds,
     opportunityId,
@@ -47,10 +68,8 @@ export function resolveBossJobDetails(
     canonicalUrl,
     retiredOpportunityIds = [],
     workspaceSourceId,
-    stamp,
   },
 ) {
-  const data = clone(input);
   if (
     !BOSS_JOB_ID.test(externalJobId) ||
     !isCanonicalBossJobUrl(canonicalUrl, externalJobId) ||
@@ -130,6 +149,15 @@ export function resolveBossJobDetails(
     );
     if (messageJobs.size > 1 || (messageJobs.size === 1 && !messageJobs.has(externalJobId)))
       unsafe();
+  }
+  return { selected, opportunity };
+}
+
+export function resolveBossJobDetails(input, options) {
+  const data = clone(input);
+  const { selected, opportunity } = checkBossJobDetails(data, options);
+  const { opportunityId, externalJobId, canonicalUrl, stamp } = options;
+  for (const { application } of selected) {
     Object.assign(application, {
       opportunityId,
       resolutionSource: 'user',
@@ -145,6 +173,135 @@ export function resolveBossJobDetails(
   if (!opportunity.externalId)
     Object.assign(opportunity, { externalId: externalJobId, updatedAt: stamp });
   return validateData(data);
+}
+
+// A read-only preflight. Confirmation still rechecks the current service workspace.
+export function bossJobDetailsConfirmation(data, applicationIds, workspaceSourceId) {
+  const result = {
+    allowed: false,
+    reason: '',
+    reasonCode: '',
+    applicationIds: [],
+    excludedApplicationIds: [],
+    target: null,
+    externalJobId: '',
+    canonicalUrl: '',
+    messageCount: 0,
+    observationCount: 0,
+  };
+  const blocked = (reasonCode, reason) => ({ ...result, reasonCode, reason });
+  let rows;
+  try {
+    rows = selectedRows(data, applicationIds);
+  } catch {
+    return blocked('changed', '观察已变化或缺少来源材料，请刷新后核对。');
+  }
+  const selected = rows.filter(
+    ({ application, events }) =>
+      ['waiting', 'review'].includes(application.status) &&
+      ['missing_job_details', 'identity_conflict'].includes(application.reason) &&
+      events.every((event) => event.eventType === 'conversation_observed'),
+  );
+  result.applicationIds = selected.map(({ application }) => application.id);
+  result.excludedApplicationIds = applicationIds.filter(
+    (id) => !result.applicationIds.includes(id),
+  );
+  result.observationCount = selected.length;
+  result.messageCount = new Set(
+    selected.map(({ application, fact }) =>
+      fact.messageId && fact.accountNamespace && fact.conversationKey
+        ? JSON.stringify([fact.accountNamespace, fact.conversationKey, fact.messageId])
+        : application.id,
+    ),
+  ).size;
+  if (!selected.length)
+    return blocked('unsupported', '这些观察不能通过岗位资料确认处理；简历归属需单独核对。');
+  const accounts = new Set(selected.map(({ fact }) => fact.accountNamespace));
+  if (accounts.size !== 1)
+    return blocked('account_conflict', '所选观察来自不同 BOSS 账号，不能一起确认。');
+  const account = [...accounts][0];
+  if (!accountBound(data, account, workspaceSourceId))
+    return blocked('account_unbound', 'BOSS 账号尚未唯一绑定当前工作区，请先核对账号绑定。');
+  const jobIds = new Set(),
+    urls = new Set();
+  for (const { fact, events } of selected) {
+    if (fact.externalJobId) jobIds.add(fact.externalJobId);
+    let hasJobLink = false;
+    for (const event of events) {
+      if (event.externalJobId) jobIds.add(event.externalJobId);
+      if (!event.canonicalUrl) continue;
+      const identity = parseBossJobUrl(event.canonicalUrl);
+      if (!identity || identity.canonicalUrl !== event.canonicalUrl)
+        return blocked('identity_conflict', '观察的岗位链接无效，需先核对来源资料。');
+      jobIds.add(identity.jobId);
+      urls.add(identity.canonicalUrl);
+      hasJobLink = true;
+    }
+    if (!hasJobLink)
+      return blocked('identity_missing', '观察尚无规范岗位链接，不能仅凭公司名称确认。');
+  }
+  if (jobIds.size !== 1 || urls.size !== 1)
+    return blocked('identity_conflict', '所选观察的岗位 ID 或链接互相矛盾，需先核对。');
+  const externalJobId = [...jobIds][0],
+    canonicalUrl = [...urls][0];
+  const matching = data.opportunities.filter(
+    (row) => row.externalId === externalJobId || parseBossJobUrl(row.url)?.jobId === externalJobId,
+  );
+  if (!matching.length)
+    return blocked('target_missing', '本机尚无这个岗位 ID 和链接对应的岗位，请先补齐岗位资料。');
+  if (matching.some((row) => row.deletedAt))
+    return blocked('deleted_match', '同一平台职位存在已删除记录，需要定点核对，暂不能在此确认。');
+  if (matching.length !== 1)
+    return blocked('multiple_targets', '同一平台职位对应多个本机岗位，需要先核对重复记录。');
+  const opportunity = matching[0];
+  if (
+    (opportunity.externalId && opportunity.externalId !== externalJobId) ||
+    parseBossJobUrl(opportunity.url)?.canonicalUrl !== canonicalUrl ||
+    !/^boss(?:直聘)?$/i.test((opportunity.platform || '').replace(/\s/g, ''))
+  )
+    return blocked('target_identity_conflict', '本机岗位的平台、岗位 ID 或链接不一致，请先核对。');
+  const bindings = live(data.sourceBindings).filter(
+    (row) =>
+      row.kind === 'opportunity' &&
+      row.accountNamespace === account &&
+      row.externalJobId === externalJobId,
+  );
+  if (
+    bindings.length > 1 ||
+    bindings.some(
+      (row) => row.opportunityId !== opportunity.id || row.canonicalUrl !== canonicalUrl,
+    ) ||
+    live(data.sourceBindings).some(
+      (row) =>
+        row.kind === 'opportunity' &&
+        row.opportunityId === opportunity.id &&
+        (row.accountNamespace !== account ||
+          row.externalJobId !== externalJobId ||
+          row.canonicalUrl !== canonicalUrl),
+    )
+  )
+    return blocked('binding_conflict', '岗位来源绑定存在不同账号、目标或链接，需先核对绑定。');
+  try {
+    checkBossJobDetails(data, {
+      applicationIds: result.applicationIds,
+      opportunityId: opportunity.id,
+      externalJobId,
+      canonicalUrl,
+      workspaceSourceId,
+    });
+  } catch {
+    return blocked(
+      'observation_conflict',
+      '普通观察包含跨岗位或其他身份矛盾，不能用资料确认解除。',
+    );
+  }
+  return {
+    ...result,
+    allowed: true,
+    target: { opportunityId: opportunity.id, company: opportunity.company, role: opportunity.role },
+    externalJobId,
+    canonicalUrl,
+  };
 }
 
 export function setBossJobState(
