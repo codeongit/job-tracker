@@ -5,6 +5,9 @@ import { readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { resolve, extname, sep } from 'node:path';
+import { emptyData } from '../dist/model.js';
+import { migrateWorkspace } from '../dist/workspace.js';
+import { WORKSPACE_VERSION } from '../dist/version.js';
 
 // Uses the project's devDependency. NODE_PATH can point at an existing Playwright
 // installation when running this file before it is copied into test/.
@@ -14,15 +17,6 @@ const publicRoot = resolve(appRoot, 'dist');
 const config = { owner: 'example', repo: 'browser-regression', path: 'fixtures/data.json' };
 const fakeToken = 'browser-regression-fake-token';
 const clone = (value) => structuredClone(value);
-const emptyData = () => ({
-  schemaVersion: 2,
-  opportunities: [],
-  activities: [],
-  tasks: [],
-  imports: [],
-  sourceBindings: [],
-  sourceEvents: [],
-});
 const fixtureData = () => ({
   ...emptyData(),
   opportunities: [
@@ -42,14 +36,15 @@ const fixtureData = () => ({
     },
   ],
 });
-const fixtureState = (data = fixtureData(), base = data) => ({
-  data: clone(data),
-  base: clone(base),
-  config: clone(config),
-  generation: 0,
-  lastSync: '',
-  pending: null,
-});
+const fixtureState = (data = fixtureData(), base = data) =>
+  migrateWorkspace({
+    data: clone(data),
+    base: clone(base),
+    config: clone(config),
+    generation: 0,
+    lastSync: '',
+    pending: null,
+  });
 const deferred = () => {
   let resolvePromise;
   const promise = new Promise((resolve) => {
@@ -209,7 +204,7 @@ async function openPage(context) {
   const page = await context.newPage();
   await page.goto(origin);
   await page.waitForFunction(() =>
-    document.querySelector('#local-status')?.textContent.includes('本地已保存'),
+    document.querySelector('#local-status')?.textContent.includes('浏览器已保存'),
   );
   return page;
 }
@@ -221,7 +216,7 @@ async function seed(page, state = fixtureState()) {
   }, state);
   await page.reload();
   await page.waitForFunction(() =>
-    document.querySelector('#local-status')?.textContent.includes('本地已保存'),
+    document.querySelector('#local-status')?.textContent.includes('浏览器已保存'),
   );
 }
 
@@ -1237,7 +1232,7 @@ test(
 
     await page.reload();
     await page.waitForFunction(() =>
-      document.querySelector('#local-status')?.textContent.includes('本地已保存'),
+      document.querySelector('#local-status')?.textContent.includes('浏览器已保存'),
     );
     await organize(page);
     assert.equal(await suggestionButton('double-suggestion-job', 'resume', 'done').count(), 0);
@@ -1341,7 +1336,7 @@ test(
     const saved = await savedState(page);
     await page.reload();
     await page.waitForFunction(() =>
-      document.querySelector('#local-status')?.textContent.includes('本地已保存'),
+      document.querySelector('#local-status')?.textContent.includes('浏览器已保存'),
     );
     assert.equal(await suggestionButton('complete-resume-suggestion', 'resume', 'done').count(), 0);
     assert.equal(
@@ -1421,7 +1416,7 @@ test('另一标签已完成核实后，旧标签的相反选择不能覆盖结�
   );
   await first.reload();
   await first.waitForFunction(() =>
-    document.querySelector('#local-status')?.textContent.includes('本地已保存'),
+    document.querySelector('#local-status')?.textContent.includes('浏览器已保存'),
   );
   await organize(first);
   assert.equal(await stalePending.count(), 0);
@@ -1558,7 +1553,7 @@ test('打开新增表单时，另一标签新增同公司会刷新提示', { tim
   await seed(first, fixtureState(emptyData()));
   await second.reload();
   await second.waitForFunction(() =>
-    document.querySelector('#local-status')?.textContent.includes('本地已保存'),
+    document.querySelector('#local-status')?.textContent.includes('浏览器已保存'),
   );
   await first.locator('#new-button').click();
   await first.locator('#editor-form input[name="company"]').fill('跨标签公司');
@@ -1750,6 +1745,22 @@ test('合成云端冲突先保留两版，选择后再次同步才写入假服�
 });
 
 test('工作区升级先保留原始快照；快照写入失败时恢复事务整体回滚', { timeout: 45000 }, async (t) => {
+  // Keep this migration fixture explicitly old; ordinary fixtures use current versions.
+  const legacyData = {
+    schemaVersion: 2,
+    opportunities: clone(fixtureData().opportunities),
+    activities: [],
+    tasks: [],
+    imports: [],
+    sourceBindings: [],
+    sourceEvents: [],
+  };
+  const legacyState = {
+    ...fixtureState(),
+    data: clone(legacyData),
+    base: clone(legacyData),
+  };
+  delete legacyState.workspaceVersion;
   const context = await isolatedContext(t),
     page = await context.newPage();
   await page.goto(origin + '/styles.css');
@@ -1769,7 +1780,7 @@ test('工作区升级先保留原始快照；快照写入失败时恢复事务�
           tx.onerror = () => reject(tx.error);
         };
       }),
-    fixtureState(),
+    legacyState,
   );
   await page.goto(origin);
   await page.locator('#app-version').waitFor();
@@ -1795,9 +1806,9 @@ test('工作区升级先保留原始快照；快照写入失败时恢复事务�
     }
     return { before, after: await storage.readState(), snaps, error };
   });
-  assert.equal(result.before.workspaceVersion, 2);
+  assert.equal(result.before.workspaceVersion, WORKSPACE_VERSION);
   assert.equal(result.snaps.length, 1);
-  assert.equal(result.snaps[0].workspace.workspaceVersion, undefined);
+  assert.deepEqual(result.snaps[0].workspace, legacyState);
   assert.match(result.error, /配额/);
   assert.deepEqual(result.after, result.before);
 });
@@ -1869,7 +1880,7 @@ test('含父岗位删除和新增任务的待解决冲突，刷新后仍能处�
 test('未知工作区字段阻止启动时仍可导出完整原始状态', { timeout: 45000 }, async (t) => {
   const context = await isolatedContext(t),
     page = await openPage(context);
-  const raw = { ...fixtureState(), workspaceVersion: 3, futureField: '合成未来内容' };
+  const raw = { ...fixtureState(), futureField: '合成未来内容' };
   await page.evaluate(
     (raw) =>
       new Promise((resolve, reject) => {
