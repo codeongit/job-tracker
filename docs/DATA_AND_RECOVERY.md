@@ -4,7 +4,7 @@
 
 | 层次                    | 当前版本           | 含义                                                                         |
 | ----------------------- | ------------------ | ---------------------------------------------------------------------------- |
-| 应用                    | 0.10.13            | package.json 与 APP_VERSION 一致                                             |
+| 应用                    | 0.10.14            | package.json 与 APP_VERSION 一致                                             |
 | BOSS 应用规则           | 11                 | 业务应用判定版本；稳定来源身份与共享结构不随规则升版变化                     |
 | 共享数据                | schemaVersion 4    | 原业务集合、sourceBindings/sourceEvents，以及 sourceFacts/sourceApplications |
 | 工作区                  | workspaceVersion 3 | data、base、config、generation、lastSync、pending；完整迁移各侧              |
