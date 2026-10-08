@@ -351,7 +351,7 @@ test('增量具体时分使用快照采集日建档且来源可审计', async ()
   assert.deepEqual(await verifyBossBatch(legacySameDayBatch), legacySameDayBatch);
 });
 
-test('简历平台观察只关联既有岗位，不修改人工简历、已读或阶段状态', () => {
+test('纯简历平台观察仅存档，不关联候选岗位或修改人工简历、已读及阶段状态', () => {
   const created = applyBossBatch(boundData(), batch([event()]), {
     workspaceSourceId: SOURCE_ID,
     stamp: STAMP,
@@ -392,7 +392,10 @@ test('简历平台观察只关联既有岗位，不修改人工简历、已读�
     verifiedResumeBatch([resumeEvent({ externalJobId: '', messageId: 'resume-message-2' })]),
     { workspaceSourceId: SOURCE_ID, stamp: '2026-09-20T08:04:00.000Z' },
   );
-  assert.equal(unresolved.counts.reviewed, 1);
+  assert.equal(unresolved.counts.observed, 1);
+  assert.equal(unresolved.counts.reviewed, 0);
+  assert.equal(unresolved.data.sourceApplications.at(-1).status, 'no_effect');
+  assert.equal(unresolved.data.sourceApplications.at(-1).opportunityId, '');
   assert.equal(unresolved.data.opportunities.length, 1);
 });
 
@@ -1347,6 +1350,176 @@ function twoJobs() {
   return applySynthetic(boundData(), batch([event(), secondJobEvent()]));
 }
 
+test('纯简历卡片缺归属依据时只存档，候选岗位不成为应用目标且重复采集不增加事实', () => {
+  for (const summary of ['resume_card_other', 'resume_sent_candidate']) {
+    const initial = applySynthetic(boundData(), batch([event()]));
+    const input = resumeBatch([resumeEvent({ summary })]);
+    const archived = applySynthetic(initial, input);
+    const application = archived.sourceApplications.at(-1);
+    assert.equal(application.status, 'no_effect', summary);
+    assert.equal(application.reason, 'observation_only', summary);
+    assert.equal(application.opportunityId, '', summary);
+    assert.equal(archived.sourceEvents.at(-1).opportunityId, '', summary);
+    assert.equal(archived.sourceEvents.at(-1).status, 'review', summary);
+    assert.deepEqual(archived.opportunities, initial.opportunities, summary);
+    assert.equal(sourceReviewCounts(archived).waiting, 0, summary);
+    assert.equal(bossWaitingItems(archived).length, 0, summary);
+    assert.equal(archived.sourceFacts.length, initial.sourceFacts.length + 1, summary);
+    assert.equal(
+      archived.sourceApplications.length,
+      initial.sourceApplications.length + 1,
+      summary,
+    );
+    assert.deepEqual(applySynthetic(archived, input), archived, summary);
+
+    const enriched = resumeBatch(
+      [resumeEvent({ summary, sequence: 3, contact: '更新后的合成联系人展示' })],
+      { sequence: 3 },
+    );
+    const repeated = applySynthetic(archived, enriched);
+    assert.equal(repeated.sourceFacts.length, archived.sourceFacts.length, summary);
+    assert.equal(repeated.sourceApplications.length, archived.sourceApplications.length, summary);
+    assert.equal(repeated.sourceEvents.length, archived.sourceEvents.length + 1, summary);
+    assert.equal(repeated.sourceEvents.at(-1).factId, archived.sourceEvents.at(-1).factId, summary);
+    assert.deepEqual(repeated.sourceApplications, archived.sourceApplications, summary);
+  }
+});
+
+test('纯简历卡片即使身份完整也只存档，岗位缺失不产生资料等待或推断目标', () => {
+  for (const data of [boundData(), twoJobs()]) {
+    const input = verifiedResumeBatch([resumeEvent({ summary: 'resume_card_other' })]);
+    const archived = applySynthetic(data, input);
+    assert.equal(archived.sourceApplications.at(-1).status, 'no_effect');
+    assert.equal(archived.sourceApplications.at(-1).reason, 'observation_only');
+    assert.equal(archived.sourceApplications.at(-1).opportunityId, '');
+    assert.equal(archived.sourceEvents.at(-1).opportunityId, '');
+    assert.deepEqual(archived.opportunities, data.opportunities);
+  }
+});
+
+test('同一消息的纯卡片存档不解除简历发送事实的归属关卡', () => {
+  const initial = applySynthetic(boundData(), batch([event()]));
+  const input = resumeBatch([
+    resumeEvent({ summary: 'resume_card_other' }),
+    resumeEvent({ summary: 'resume_request_sent' }),
+  ]);
+  const archived = applySynthetic(initial, input);
+  const decisions = input.events.map((row) =>
+    archived.sourceApplications.find(
+      (application) => application.factId === bossFactId({ ...row, accountNamespace: ACCOUNT }),
+    ),
+  );
+  assert.equal(decisions[0].status, 'no_effect');
+  assert.equal(decisions[0].reason, 'observation_only');
+  assert.equal(decisions[1].status, 'waiting');
+  assert.equal(decisions[1].reason, 'attribution_evidence_missing');
+  assert.equal(sourceReviewCounts(archived).waiting, 1);
+  assert.deepEqual(archived.opportunities, initial.opportunities);
+  assert.deepEqual(applySynthetic(archived, input).sourceApplications, archived.sourceApplications);
+});
+
+test('纯简历卡片的明确联系人与跨岗位矛盾仍进入核对，缺稳定消息身份仍是采集问题', () => {
+  for (const [field, value, reason] of [
+    ['responseFriendId', 'wrong-contact', 'attribution_contact_conflict'],
+    ['senderId', 'wrong-participant', 'attribution_participant_conflict'],
+    ['messageJobId', 'wrong-job', 'attribution_job_conflict'],
+  ]) {
+    const input = verifiedResumeBatch([resumeEvent({ summary: 'resume_card_other' })]);
+    input.events[0].attribution[field] = value;
+    input.batchId = `boss-batch-${stableHash(bossBatchDigestInput(input))}`;
+    const conflicted = applySynthetic(twoJobs(), input);
+    assert.equal(conflicted.sourceApplications.at(-1).status, 'review', field);
+    assert.equal(conflicted.sourceApplications.at(-1).reason, reason, field);
+  }
+
+  const crossJob = resumeBatch([
+    resumeEvent({ summary: 'resume_card_other' }),
+    secondResume({ summary: 'resume_card_other' }),
+  ]);
+  for (const events of [crossJob.events, [...crossJob.events].reverse()]) {
+    const result = applySynthetic(twoJobs(), { ...crossJob, events });
+    assert.ok(
+      result.sourceApplications
+        .filter((row) => row.action === 'resume_observed')
+        .every(
+          (row) => row.status === 'review' && row.reason === 'attribution_message_multiple_jobs',
+        ),
+    );
+  }
+
+  const card = resumeBatch([resumeEvent({ summary: 'resume_card_other' })]);
+  const archived = applySynthetic(twoJobs(), card);
+  const previousDecision = structuredClone(archived.sourceApplications.at(-1));
+  const laterConflict = applySynthetic(
+    archived,
+    verifiedResumeBatch([secondResume({ summary: 'resume_request_sent' })]),
+  );
+  assert.deepEqual(
+    laterConflict.sourceApplications.find((row) => row.id === previousDecision.id),
+    previousDecision,
+  );
+  assert.equal(laterConflict.sourceApplications.at(-1).status, 'review');
+  assert.equal(laterConflict.sourceApplications.at(-1).reason, 'attribution_message_multiple_jobs');
+  assert.deepEqual(laterConflict.opportunities, archived.opportunities);
+
+  const missingIdentity = resumeBatch([
+    resumeEvent({ summary: 'resume_card_other', messageId: '' }),
+  ]);
+  const initial = twoJobs();
+  const unresolved = applySynthetic(initial, missingIdentity);
+  assert.equal(unresolved.sourceFacts.length, initial.sourceFacts.length);
+  assert.equal(unresolved.sourceApplications.length, initial.sourceApplications.length);
+  assert.equal(unresolved.sourceEvents.at(-1).status, 'review');
+  assert.equal(unresolved.sourceEvents.at(-1).opportunityId, '');
+  assert.equal(sourceReviewCounts(unresolved).waiting, 1);
+});
+
+test('旧纯卡片等待项重放退出等待且保留原观察，人工决定与同步阻断不被解除', () => {
+  const input = resumeBatch([resumeEvent({ summary: 'resume_card_other' })]);
+  const initial = twoJobs();
+  const legacy = applySynthetic(initial, input);
+  const legacyApplication = legacy.sourceApplications.at(-1);
+  Object.assign(legacyApplication, {
+    status: 'waiting',
+    reason: 'attribution_evidence_missing',
+    ruleVersion: 'boss-application-v10',
+    opportunityId: '',
+    appliedAt: '',
+  });
+  const originalEvents = structuredClone(legacy.sourceEvents);
+  const replayed = applySynthetic(legacy, input);
+  assert.equal(replayed.sourceApplications.at(-1).status, 'no_effect');
+  assert.equal(replayed.sourceApplications.at(-1).reason, 'observation_only');
+  assert.equal(replayed.sourceApplications.at(-1).id, legacyApplication.id);
+  assert.deepEqual(replayed.sourceEvents, originalEvents);
+  assert.equal(replayed.sourceFacts.length, legacy.sourceFacts.length);
+  assert.equal(replayed.sourceApplications.length, legacy.sourceApplications.length);
+  assert.equal(bossWaitingItems(replayed).length, 0);
+
+  for (const reason of [
+    'user_ignored_unresolved_observation',
+    'user_rejected_wrong_conversation',
+    'manual_resume_state',
+    'opportunity_deleted',
+  ]) {
+    const protectedData = structuredClone(legacy);
+    Object.assign(protectedData.sourceApplications.at(-1), { status: 'protected', reason });
+    assert.deepEqual(applySynthetic(protectedData, input), protectedData, reason);
+  }
+  const blocked = applySynthetic(initial, input, {
+    blockedOpportunityIds: [initial.opportunities[0].id],
+  });
+  assert.equal(blocked.sourceApplications.at(-1).status, 'waiting');
+  assert.equal(blocked.sourceApplications.at(-1).reason, 'entity_sync_conflict');
+  assert.deepEqual(blocked.opportunities, initial.opportunities);
+
+  for (const group of ['sourceEvents', 'sourceFacts', 'sourceApplications']) {
+    const deleted = structuredClone(legacy);
+    deleted[group].at(-1).deletedAt = STAMP;
+    assert.throws(() => applySynthetic(deleted, input), { code: 'RESTORE_REVIEW_REQUIRED' }, group);
+  }
+});
+
 function secondResume(overrides = {}) {
   return resumeEvent({
     externalJobId: 'second-job',
@@ -1372,7 +1545,7 @@ test('同批跨岗位重复先扫描全部候选，事件顺序不影响拦截�
     );
     assert.equal(one.status, 'review');
     assert.equal(one.reason, 'attribution_message_multiple_jobs');
-    assert.equal(one.ruleVersion, 'boss-application-v10');
+    assert.equal(one.ruleVersion, 'boss-application-v11');
     assert.equal(data.opportunities.find((o) => o.externalId === JOB_ID).resumeState, '未知');
     assert.equal(
       data.opportunities.find((o) => o.externalId === 'second-job').resumeState,
@@ -1514,7 +1687,7 @@ test('缺少消息岗位身份时依据会话应用新消息和历史等待项�
     applied.sourceApplications.at(-1).reason,
     'resume_status_advanced_conversation_association',
   );
-  assert.equal(applied.sourceApplications.at(-1).ruleVersion, 'boss-application-v10');
+  assert.equal(applied.sourceApplications.at(-1).ruleVersion, 'boss-application-v11');
   assert.deepEqual(applySynthetic(applied, input), applied);
   const restored = structuredClone(waiting);
   restored.sourceFacts.pop();
@@ -1987,7 +2160,7 @@ test('候选在观察卡片内核对；名称建议只用于导航，不能自�
   initial.sourceBindings = initial.sourceBindings.filter((row) => row.kind === 'account');
   const waiting = applyBossBatch(
     initial,
-    resumeBatch([resumeEvent({ linked: true })]),
+    resumeBatch([resumeEvent({ summary: 'resume_request_sent' })]),
     options,
   ).data;
   const application = waiting.sourceApplications.at(-1);

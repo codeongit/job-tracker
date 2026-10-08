@@ -202,9 +202,38 @@ export function parseArguments(argv) {
   };
 }
 
-function safeError(error) {
-  const value = String(error?.message ?? 'TRACKER_OR_DATA_ERROR');
-  return /^[A-Z][A-Z0-9_]{2,80}$/.test(value) ? value : 'TRACKER_OR_DATA_ERROR';
+function safeError(error, fallback = 'TRACKER_OR_DATA_ERROR') {
+  const value = String(error?.message ?? fallback);
+  return /^[A-Z][A-Z0-9_]{2,80}$/.test(value) ? value : fallback;
+}
+
+export function trackerFailureReport(
+  error,
+  { mode, usage, savedRuntime = null, historyMode = 'change' } = {},
+) {
+  const snapshotPath = typeof error?.snapshotPath === 'string' ? error.snapshotPath : null;
+  return {
+    ok: false,
+    saved: Boolean(snapshotPath),
+    partial: mode === 'run',
+    error: safeError(error),
+    ...(snapshotPath ? { file: snapshotPath } : {}),
+    ...(mode === 'run'
+      ? {
+          usage,
+          runtimeSaved: Boolean(savedRuntime),
+          ...(savedRuntime
+            ? {
+                history: {
+                  mode: historyMode,
+                  ...historySummary(savedRuntime.history),
+                  backfillCursor: savedRuntime.cursors.resume,
+                },
+              }
+            : {}),
+        }
+      : {}),
+  };
 }
 
 const safeBrowserBooleans = [
@@ -365,14 +394,16 @@ export function detailInputs(envelope, timeLabel = null) {
   return { candidates, knownEvidence };
 }
 
-async function saveEnvelope(directory, envelope) {
+export async function saveEnvelope(directory, envelope, { exportJobs = exportCurrent } = {}) {
   const current = upgradeEnvelope(envelope);
   const file = await commit(directory, current);
   let jobsFile;
   try {
-    jobsFile = await exportCurrent(directory, current);
+    jobsFile = await exportJobs(directory, current);
   } catch (caught) {
-    const error = caught instanceof Error ? caught : new Error('JOB_EXPORT_FAILED');
+    // Export errors can contain field values. Only a machine code and the
+    // committed snapshot path may cross the tracker reporting boundary.
+    const error = new Error(safeError(caught, 'JOB_EXPORT_FAILED'));
     error.snapshotPath = file;
     throw error;
   }
@@ -530,7 +561,31 @@ function detailFailureScope(collected, finalIdentity) {
   return 'none';
 }
 
-export async function collectResume({
+async function withHistoryRequestUsage(options, operation) {
+  let used = 0;
+  const evaluate = options.evaluate ?? evaluateBound;
+  try {
+    return await operation({
+      ...options,
+      evaluate: (...args) => {
+        // Issued requests with an unknown outcome still consume one action.
+        // Keep the count independent of subsequent local persistence failures.
+        used += 1;
+        return evaluate(...args);
+      },
+    });
+  } catch (caught) {
+    const error = caught instanceof Error ? caught : new Error(safeError(caught));
+    error.usage = { historyRequests: used };
+    throw error;
+  }
+}
+
+export function collectResume(options) {
+  return withHistoryRequestUsage(options, collectResumeOperation);
+}
+
+async function collectResumeOperation({
   directory,
   connection,
   envelope,
@@ -647,7 +702,11 @@ export async function collectResume({
   };
 }
 
-export async function collectChangedResume({
+export function collectChangedResume(options) {
+  return withHistoryRequestUsage(options, collectChangedResumeOperation);
+}
+
+async function collectChangedResumeOperation({
   directory,
   connection,
   envelope,
@@ -690,8 +749,8 @@ export async function collectChangedResume({
   const preflight = await reportOperation(() => resumeBrowser(connection, identityOptions));
   if (!preflight.ok)
     return {
-      envelope,
-      state,
+      envelope: history.envelope,
+      state: history.state,
       counts: null,
       coverage: null,
       usage: { historyRequests: 0 },
@@ -721,7 +780,7 @@ export async function collectChangedResume({
         )
       : pending;
   for (const item of ordered) {
-    if (maxRequests - used < 2 && !prior?.completedConversationKey) break;
+    if (maxRequests - used < 2 && history.checkpoint?.completedConversationKey !== item.key) break;
     const task = item.task;
     if (!task) continue;
     if (used && betweenTargetsDelayMs)
@@ -1667,7 +1726,13 @@ export async function main(argv = process.argv.slice(2)) {
       ),
     );
   } catch (error) {
-    let runtimeSaved = false;
+    if (mode === 'run' && Object.hasOwn(error?.usage ?? {}, 'historyRequests')) {
+      const reported = error.usage.historyRequests;
+      if (Number.isSafeInteger(reported) && reported >= 0 && reported <= historyRequests)
+        failureUsage.historyRequests = reported;
+      else delete failureUsage.historyRequests;
+    }
+    let savedFailureRuntime = null;
     if (mode === 'run' && runRuntime && runStartedAt && runId && !runFinalized) {
       try {
         // Earlier conversations may already have committed progress before a
@@ -1682,20 +1747,17 @@ export async function main(argv = process.argv.slice(2)) {
           usage: failureUsage,
         });
         await saveRuntimeState(directory, failed);
-        runtimeSaved = true;
+        savedFailureRuntime = failed;
       } catch {}
     }
-    const snapshotPath = typeof error?.snapshotPath === 'string' ? error.snapshotPath : null;
     console.log(
       JSON.stringify(
-        {
-          ok: false,
-          saved: Boolean(snapshotPath),
-          partial: mode === 'run',
-          error: safeError(error),
-          ...(snapshotPath ? { file: snapshotPath } : {}),
-          ...(mode === 'run' ? { usage: failureUsage, runtimeSaved } : {}),
-        },
+        trackerFailureReport(error, {
+          mode,
+          usage: failureUsage,
+          savedRuntime: savedFailureRuntime,
+          historyMode,
+        }),
         null,
         2,
       ),

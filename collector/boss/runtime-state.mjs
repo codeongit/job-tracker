@@ -3,6 +3,7 @@ import { mkdir, open, readFile, rename, unlink, lstat } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { emptyHistoryState, normalizeHistoryState } from './change-history.mjs';
+import { BOSS_JOB_ID } from '../../dist/boss-job-url.js';
 
 const runtimeName = '.runtime-v3.json';
 const legacyRuntimeNames = ['.runtime-v2.json', '.runtime-v1.json'];
@@ -59,7 +60,7 @@ function normalizeDetailState(value) {
         !task ||
         typeof task !== 'object' ||
         Array.isArray(task) ||
-        !/^[A-Za-z0-9_-]{1,300}$/.test(task.jobId ?? '') ||
+        !BOSS_JOB_ID.test(task.jobId ?? '') ||
         seen.has(task.jobId) ||
         !Number.isSafeInteger(task.attempts) ||
         task.attempts < 1 ||
@@ -115,7 +116,7 @@ export function normalizeRuntimeState(value) {
       (key) =>
         value.cursors[key] === null ||
         (typeof value.cursors[key] === 'string' &&
-          /^[A-Za-z0-9_-]{1,300}$/.test(value.cursors[key])),
+          (key === 'detail' ? BOSS_JOB_ID : /^[A-Za-z0-9_-]{1,300}$/).test(value.cursors[key])),
     ) ||
     (value.updatedAt !== null && !iso(value.updatedAt))
   )
@@ -184,7 +185,7 @@ export function detailTaskDisposition(state, jobId, now = new Date().toISOString
 export function recordDetailFailure(state, { jobId, error, stage, at, block = false }) {
   const current = normalizeRuntimeState(state);
   if (
-    !/^[A-Za-z0-9_-]{1,300}$/.test(jobId ?? '') ||
+    !BOSS_JOB_ID.test(jobId ?? '') ||
     !code(error) ||
     !['create', 'navigate', 'read', 'close'].includes(stage) ||
     !iso(at)
@@ -228,8 +229,7 @@ export function recordDetailFailure(state, { jobId, error, stage, at, block = fa
 export function clearDetailFailures(state, jobIds, { updatedAt = null } = {}) {
   const current = normalizeRuntimeState(state),
     ids = new Set(jobIds);
-  if ([...ids].some((id) => !/^[A-Za-z0-9_-]{1,300}$/.test(id)))
-    throw new Error('DETAIL_RETRY_INPUT_INVALID');
+  if ([...ids].some((id) => !BOSS_JOB_ID.test(id))) throw new Error('DETAIL_RETRY_INPUT_INVALID');
   return normalizeRuntimeState({
     ...current,
     detail: {
@@ -260,7 +260,7 @@ export function detailRuntimeSummary(
   if (
     eligibleJobIds !== null &&
     (!Array.isArray(eligibleJobIds) ||
-      eligibleJobIds.some((id) => typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,300}$/.test(id)))
+      eligibleJobIds.some((id) => typeof id !== 'string' || !BOSS_JOB_ID.test(id)))
   )
     throw new Error('DETAIL_RETRY_INPUT_INVALID');
   const eligible = eligibleJobIds === null ? null : new Set(eligibleJobIds);
@@ -441,7 +441,7 @@ export function selectFair(values, { cursor = null, limit, key } = {}) {
   }
   const items = values.map((item) => ({ item, id: String(key(item) ?? '') }));
   if (
-    items.some((entry) => !/^[A-Za-z0-9_-]{1,300}$/.test(entry.id)) ||
+    items.some((entry) => !BOSS_JOB_ID.test(entry.id)) ||
     new Set(items.map((entry) => entry.id)).size !== items.length
   )
     throw new TypeError('FAIR_SELECTION_INVALID');

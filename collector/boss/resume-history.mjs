@@ -1,4 +1,5 @@
 import { validateAttributionEvidence } from '../../dist/boss-attribution.js';
+import { BOSS_JOB_ID } from '../../dist/boss-job-url.js';
 import {
   RESUME_RULES,
   RESUME_KINDS,
@@ -16,7 +17,6 @@ import {
   validateCurrentEnvelope,
 } from './model-v2.mjs';
 
-const ID = /^[A-Za-z0-9_-]{1,300}$/;
 const MESSAGE_ID = /^[A-Za-z0-9_-]{1,128}$/;
 const SOURCE = 'geek_history_type_4';
 const STATUS_SOURCE = 'geek_history_status_message';
@@ -148,13 +148,18 @@ export function createResumePageExpression({ target, identity, page, timeoutMs =
       const output=String(value).normalize('NFC').trim();
       return output && output.length<=max && /^[A-Za-z0-9_-]+$/.test(output)?output:null;
     };
+    const normalizeJobId = value => {
+      if (!['string','number'].includes(typeof value)) return null;
+      const output=String(value).normalize('NFC').trim();
+      return ${BOSS_JOB_ID.toString()}.test(output)?output:null;
+    };
     // Reuse the existing two-source account check; unavailable or inconsistent identity stays null.
     let selfId=null;
     try { const account=${accountExpression}; if (account.ok) selfId=normalizeId(account.accountId,128); } catch {}
     const messageId = message => normalizeId(message.mid ?? message.msgId ?? message.messageId ?? message.id ??
       message.body?.mid ?? message.body?.msgId,128);
-    const jobId = message => normalizeId(message.encryptJobId ?? message.jobId ?? message.body?.encryptJobId ??
-      message.body?.jobId ?? message.body?.job?.encryptJobId ?? message.body?.job?.jobId,300);
+    const jobId = message => normalizeJobId(message.encryptJobId ?? message.jobId ?? message.body?.encryptJobId ??
+      message.body?.jobId ?? message.body?.job?.encryptJobId ?? message.body?.job?.jobId);
     const isoTime = value => {
       const number=Number(value),millis=Number.isFinite(number)?(number>0&&number<100000000000?number*1000:number):NaN;
       const date=new Date(millis);return Number.isFinite(date.getTime())?date.toISOString():null;
@@ -557,7 +562,7 @@ export function toResumeHistoryResult(payload, envelope) {
       !RESUME_KINDS.includes(value.kind) ||
       !Number.isFinite(Date.parse(value.platformTime)) ||
       value.source !== expectedSource ||
-      (value.externalJobId !== null && !ID.test(value.externalJobId ?? ''))
+      (value.externalJobId !== null && !BOSS_JOB_ID.test(value.externalJobId ?? ''))
     ) {
       throw new Error(`RESUME_HISTORY_OBSERVATION_INVALID_${index}`);
     }

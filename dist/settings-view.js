@@ -54,7 +54,7 @@ function failureCard(code, stage, problem) {
   const guide = bossFailureGuidance(code, stage);
   return issueCard({
     ...guide,
-    problem: problem || guide.title,
+    problem: guide.problem || problem || guide.title,
     actions: `<details><summary>查看处理步骤</summary><p>${esc(guide.next)}</p><code>${esc(guide.command)}</code></details>`,
     technical: code,
   });
@@ -170,8 +170,8 @@ export function bossIntegrationView(
   const date = tracking.lastSuccessAt ? new Date(tracking.lastSuccessAt) : null;
   const lastSuccess =
     date && !Number.isNaN(date.getTime())
-      ? `上次成功采集：${esc(date.toLocaleString('zh-CN'))}`
-      : '尚无成功采集记录';
+      ? `最近成功处理（含本机恢复）：${esc(date.toLocaleString('zh-CN'))}`
+      : '尚无成功处理记录';
   const description = status.connectionStale
     ? '本轮状态刷新未成功，当前显示上次成功获取的状态；下次刷新会重试。'
     : status.serverManaged

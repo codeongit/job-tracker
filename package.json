@@ -1,6 +1,6 @@
 {
   "name": "job-tracker",
-  "version": "0.10.8",
+  "version": "0.10.12",
   "private": true,
   "type": "module",
   "scripts": {

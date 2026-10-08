@@ -6,6 +6,7 @@ import { compareSnapshots } from './compare.mjs';
 import { latest } from './storage.mjs';
 import { resolveJobRowsV2 } from './model-v2.mjs';
 import { accountDataDirectory } from './paths.mjs';
+import { BOSS_JOB_ID, isCanonicalBossJobUrl, parseBossJobUrl } from '../../dist/boss-job-url.js';
 
 function cell(value, fallback = '待补') {
   if (typeof value !== 'string' || !value.trim()) return fallback;
@@ -42,7 +43,6 @@ function observationTime(record, evidence) {
 }
 
 const ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
-const DETAIL_URL = /^https:\/\/www\.zhipin\.com\/job_detail\/[A-Za-z0-9_-]+\.html$/;
 
 function validTime(value) {
   return typeof value === 'string' && ISO_TIME.test(value) && Number.isFinite(Date.parse(value));
@@ -90,17 +90,13 @@ function normalizedV2View(envelope, resolveV2) {
     seen.add(conversationKey);
     const contact = optionalText(row.contact, `${path}.contact`, 300, true);
     const company = optionalText(row.company, `${path}.company`, 500, true);
-    const jobId = optionalText(row.jobId, `${path}.jobId`, 256);
+    const jobId = optionalText(row.jobId, `${path}.jobId`);
     const detailUrl = optionalText(row.detailUrl, `${path}.detailUrl`, 1000);
-    if (
-      detailUrl !== null &&
-      (!DETAIL_URL.test(detailUrl) || new URL(detailUrl).href !== detailUrl)
-    ) {
+    if (detailUrl !== null && !isCanonicalBossJobUrl(detailUrl)) {
       throw new TypeError(`${path}.detailUrl is not a canonical BOSS job-detail URL`);
     }
-    if (jobId !== null && !/^[A-Za-z0-9_-]+$/.test(jobId))
-      throw new TypeError(`${path}.jobId is invalid`);
-    if (jobId !== null && detailUrl !== null && !detailUrl.endsWith(`/${jobId}.html`)) {
+    if (jobId !== null && !BOSS_JOB_ID.test(jobId)) throw new TypeError(`${path}.jobId is invalid`);
+    if (jobId !== null && detailUrl !== null && parseBossJobUrl(detailUrl).jobId !== jobId) {
       throw new TypeError(`${path}.jobId does not match detailUrl`);
     }
     if (![null, 'current', 'historical'].includes(row.associationStatus ?? null)) {

@@ -379,6 +379,17 @@ export function bossReceiptGap(data, batch) {
 
 function resolveResumeEvent(data, batch, event, context) {
   const attribution = assessBossAttribution(batch.accountNamespace, event, context);
+  // A card with no status meaning only needs archival, never a confirmed job
+  // target. Keep explicit contradictions visible and retain its candidate
+  // association in the immutable source context for later cross-job checks.
+  if (!resumeRule(event.summary).target && attribution.status !== 'conflict')
+    return {
+      status: 'recorded',
+      targetId: '',
+      applicationStatus: 'no_effect',
+      reason: 'observation_only',
+      evidenceStatus: 'review',
+    };
   if (attribution.status !== 'verified')
     return {
       status: 'review',

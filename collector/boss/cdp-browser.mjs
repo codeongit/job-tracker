@@ -12,6 +12,8 @@ const chrome = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const accountPattern = /^[a-zA-Z0-9_-]{1,40}$/;
 const namespacePattern = /^boss-geek:[0-9a-f]{64}$/;
 const targetPattern = /^[A-Za-z0-9_-]{1,200}$/;
+const LOADED_LIST_WAIT_MS = 10_000;
+const LOADED_LIST_POLL_MS = 500;
 const safeDetailRedirect =
   /^https:\/\/www\.zhipin\.com\/(?:passport|login|security|captcha|web\/user)(?:\/|\?|$)/i;
 
@@ -354,23 +356,46 @@ export function createCdpController({
   };
   const evaluateTarget = async (target, expression) =>
     withClient(target.webSocketDebuggerUrl, (client) => client.evaluate(expression));
-  const readIdentity = async (target, expression, extract) => {
-    const payload = await evaluateTarget(target, expression);
+  const loadedListWait = () => ({
+    deadline: new Date(now()).getTime() + LOADED_LIST_WAIT_MS,
+    remainingWaits: LOADED_LIST_WAIT_MS / LOADED_LIST_POLL_MS,
+  });
+  // All reads in one operation share this allowance. A missing Vue list can be
+  // transient; other guards and CDP transport errors retain their own behavior.
+  const readWithLoadedListWait = async (read, readiness) => {
+    while (true) {
+      const payload = await read();
+      if (payload?.ok !== false || payload?.reason !== 'LOADED_LIST_NOT_READY') return payload;
+      const remainingMs = readiness.deadline - new Date(now()).getTime();
+      if (readiness.remainingWaits <= 0 || remainingMs <= 0) return payload;
+      readiness.remainingWaits -= 1;
+      await wait(Math.min(LOADED_LIST_POLL_MS, remainingMs));
+    }
+  };
+  const readIdentity = async (resolveTarget, expression, extract, readiness) => {
+    const payload = await readWithLoadedListWait(async () => {
+      const { target } = await resolveTarget();
+      return evaluateTarget(target, expression);
+    }, readiness);
     if (!payload?.ok || !isExpectedUrl(payload.url))
       throw new Error(payload?.reason ?? 'ACCOUNT_IDENTITY_GUARD_FAILED');
     return namespace(extract(payload));
   };
-  const boundTarget = async (connection) => {
-    if (connection.version !== 2) throw new Error('CONNECTION_REBIND_REQUIRED');
-    const currentEndpoint = await endpoint(connectionPort(connection));
-    if (currentEndpoint.instanceId !== connection.browserInstanceId)
-      throw new Error('BROWSER_INSTANCE_CHANGED');
-    const target = (await listTargets(currentEndpoint.port)).find(
-      (item) => item.id === connection.taskTargetId,
-    );
+  const verifyTaskTarget = async (port, instanceId, targetId) => {
+    const currentEndpoint = await endpoint(port);
+    if (currentEndpoint.instanceId !== instanceId) throw new Error('BROWSER_INSTANCE_CHANGED');
+    const target = (await listTargets(currentEndpoint.port)).find((item) => item.id === targetId);
     if (!target) throw new Error('TASK_TARGET_MISSING');
     if (!isExpectedUrl(target.url)) throw new Error('TASK_TARGET_DRIFTED');
     return { endpoint: currentEndpoint, target };
+  };
+  const boundTarget = async (connection) => {
+    if (connection.version !== 2) throw new Error('CONNECTION_REBIND_REQUIRED');
+    return verifyTaskTarget(
+      connectionPort(connection),
+      connection.browserInstanceId,
+      connection.taskTargetId,
+    );
   };
   async function bind(
     operation,
@@ -390,9 +415,11 @@ export function createCdpController({
       report.browserLaunched = currentEndpoint.launched;
       const acquired = await acquireTaskTarget(currentEndpoint, { allowCreate });
       const accountNamespace = await readIdentity(
-        acquired.target,
+        () =>
+          verifyTaskTarget(currentEndpoint.port, currentEndpoint.instanceId, acquired.target.id),
         identityExpression,
         extractAccountIdentity,
+        loadedListWait(),
       );
       const connection = connectionFor(
         account,
@@ -432,8 +459,12 @@ export function createCdpController({
     };
     try {
       const connection = normalizeConnection(connectionValue);
-      const { target } = await boundTarget(connection);
-      const actual = await readIdentity(target, identityExpression, extractAccountIdentity);
+      const actual = await readIdentity(
+        () => boundTarget(connection),
+        identityExpression,
+        extractAccountIdentity,
+        loadedListWait(),
+      );
       if (actual !== connection.accountNamespace) throw new Error('ACCOUNT_NAMESPACE_CHANGED');
       report.identityVerified = true;
       report.bindingRetained = true;
@@ -469,15 +500,28 @@ export function createCdpController({
     };
     try {
       const connection = normalizeConnection(connectionValue);
-      const { target } = await boundTarget(connection);
-      const before = await readIdentity(target, identityExpression, extractAccountIdentity);
+      const readiness = loadedListWait();
+      const resolveTarget = () => boundTarget(connection);
+      const before = await readIdentity(
+        resolveTarget,
+        identityExpression,
+        extractAccountIdentity,
+        readiness,
+      );
       if (before !== connection.accountNamespace) throw new Error('ACCOUNT_NAMESPACE_CHANGED');
-      const payload = await evaluateBound(connection, expression);
+      const payload = await readWithLoadedListWait(
+        () => evaluateBound(connection, expression),
+        readiness,
+      );
       if (!payload?.ok || !isExpectedUrl(payload.url))
         throw new Error(payload?.reason ?? 'PAGE_READ_GUARD_FAILED');
       report.readSucceeded = true;
-      const { target: afterTarget } = await boundTarget(connection);
-      const after = await readIdentity(afterTarget, identityExpression, extractAccountIdentity);
+      const after = await readIdentity(
+        resolveTarget,
+        identityExpression,
+        extractAccountIdentity,
+        readiness,
+      );
       if (after !== connection.accountNamespace) throw new Error('ACCOUNT_NAMESPACE_CHANGED');
       report.identityVerified = true;
       report.bindingRetained = true;

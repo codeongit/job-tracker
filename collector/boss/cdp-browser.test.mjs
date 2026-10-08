@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import vm from 'node:vm';
 import { createCdpController, DETAIL_PAGE_STATE_EXPRESSION } from './cdp-browser.mjs';
+import { accountExpression, expression as loadedListExpression } from './extract.mjs';
 
 const url = 'https://www.zhipin.com/web/geek/chat';
 
@@ -51,6 +53,252 @@ function fixture({ initialUrl = url, identity = '12345' } = {}) {
   });
   return { controller, calls, target };
 }
+
+function loadedListFixture({ isReady = () => true, onWait = () => {}, pageError = null } = {}) {
+  const calls = [];
+  const state = {
+    clock: Date.parse('2026-09-21T10:00:00.000Z'),
+    ready: true,
+    accountId: '7001',
+    instance: 'synthetic-browser',
+    targetId: 'task-page',
+    targetUrl: url,
+    identityReads: 0,
+    listReads: 0,
+  };
+  const source = {
+    friendId: '101',
+    friendSource: 0,
+    uniqueId: '101-0',
+    name: '示例联系人',
+    brandName: '示例公司',
+    lastMsgId: '9001',
+  };
+  const pageContext = (value) => ({
+    location: { origin: 'https://www.zhipin.com', pathname: '/web/geek/chat' },
+    window: { _PAGE: { uid: state.accountId } },
+    document: {
+      querySelectorAll: () =>
+        state.ready && isReady(value, state)
+          ? [
+              {
+                parentElement: null,
+                __vue__: {
+                  $options: { name: 'virtual-list' },
+                  $props: { dataSources: [source] },
+                  $store: { state: { userInfo: { userId: state.accountId } } },
+                },
+                querySelector: (selector) =>
+                  selector === '.name-box'
+                    ? {
+                        children: [source.name, source.brandName, '招聘'].map((innerText) => ({
+                          tagName: 'SPAN',
+                          innerText,
+                        })),
+                      }
+                    : null,
+              },
+            ]
+          : [],
+      visibilityState: 'hidden',
+      hasFocus: () => false,
+    },
+  });
+  const controller = createCdpController({
+    fetchImpl: async (request) => ({
+      ok: true,
+      json: async () =>
+        String(request).endsWith('/json/version')
+          ? {
+              webSocketDebuggerUrl: `ws://127.0.0.1:${new URL(request).port}/devtools/browser/${state.instance}`,
+            }
+          : [
+              {
+                id: state.targetId,
+                type: 'page',
+                url: state.targetUrl,
+                webSocketDebuggerUrl: 'ws://synthetic-task',
+              },
+            ],
+    }),
+    cdpFactory: async () => ({
+      evaluate: async (value) => {
+        calls.push(['evaluate', value === accountExpression ? 'identity' : 'list']);
+        if (value === accountExpression) state.identityReads += 1;
+        else state.listReads += 1;
+        return pageError
+          ? { ok: false, reason: pageError }
+          : vm.runInNewContext(value, pageContext(value));
+      },
+      close: async () => {},
+      navigate: async () => {
+        throw new Error('UNEXPECTED_NAVIGATION');
+      },
+      command: async () => {
+        throw new Error('UNEXPECTED_TARGET_MUTATION');
+      },
+    }),
+    now: () => new Date(state.clock),
+    wait: async (milliseconds) => {
+      calls.push(['wait', milliseconds]);
+      state.clock += milliseconds;
+      onWait(state);
+    },
+    spawnImpl: () => {
+      throw new Error('UNEXPECTED_BROWSER_LAUNCH');
+    },
+  });
+  const options = {
+    account: 'main',
+    identityExpression: accountExpression,
+    extractAccountIdentity: (payload) => payload.accountId,
+  };
+  return { controller, calls, state, options };
+}
+
+test('binding entry points wait for the loaded list on the same task page', async () => {
+  for (const method of ['start', 'connect', 'recoverPage']) {
+    const value = loadedListFixture({ onWait: (state) => (state.ready = true) });
+    value.state.ready = false;
+    const bound = await value.controller[method](value.options);
+    assert.equal(bound.ok, true, `${method}: ${JSON.stringify(bound.report)}`);
+    assert.deepEqual(
+      value.calls.filter(([kind]) => kind === 'wait'),
+      [['wait', 500]],
+    );
+    assert.equal(bound.connection.taskTargetId, 'task-page');
+  }
+});
+
+test('capture waits when the loaded list mounts before, during or after extraction', async () => {
+  for (const phase of ['before', 'list', 'after']) {
+    const value = loadedListFixture({
+      isReady: (expression, state) => {
+        if (state.readyOnce) return true;
+        return !(
+          (phase === 'before' && state.identityReads > 1) ||
+          (phase === 'list' && expression === loadedListExpression) ||
+          (phase === 'after' && state.identityReads > 2)
+        );
+      },
+      onWait: (state) => (state.readyOnce = true),
+    });
+    const bound = await value.controller.connect(value.options);
+    assert.equal(bound.ok, true);
+    const captured = await value.controller.capture(
+      bound.connection,
+      loadedListExpression,
+      value.options,
+    );
+    assert.equal(captured.ok, true, `${phase}: ${JSON.stringify(captured.report)}`);
+    assert.equal(captured.payload.items.length, 1);
+    assert.deepEqual(
+      value.calls.filter(([kind]) => kind === 'wait'),
+      [['wait', 500]],
+    );
+  }
+});
+
+test('resume waits for a temporarily missing loaded list without changing the target', async () => {
+  const value = loadedListFixture({ onWait: (state) => (state.ready = true) });
+  const bound = await value.controller.connect(value.options);
+  value.state.ready = false;
+  const resumed = await value.controller.resume(bound.connection, value.options);
+  assert.equal(resumed.ok, true, JSON.stringify(resumed.report));
+  assert.equal(resumed.connection.taskTargetId, bound.connection.taskTargetId);
+  assert.deepEqual(
+    value.calls.filter(([kind]) => kind === 'wait'),
+    [['wait', 500]],
+  );
+});
+
+test('a persistent missing loaded list stops within the readiness budget with its original error', async () => {
+  const value = loadedListFixture();
+  const bound = await value.controller.connect(value.options);
+  value.state.ready = false;
+  const captured = await value.controller.capture(
+    bound.connection,
+    loadedListExpression,
+    value.options,
+  );
+  assert.equal(captured.ok, false);
+  assert.equal(captured.report.error, 'LOADED_LIST_NOT_READY');
+  assert.equal(captured.payload, null);
+  const waits = value.calls.filter(([kind]) => kind === 'wait');
+  assert.equal(waits.length, 20);
+  assert.equal(
+    waits.reduce((sum, [, milliseconds]) => sum + milliseconds, 0),
+    10_000,
+  );
+  assert.equal(value.state.listReads, 0);
+});
+
+test('capture shares one readiness window across identity and list extraction', async () => {
+  let waits = 0;
+  const value = loadedListFixture({
+    isReady: (expression, state) =>
+      state.identityReads === 1 ||
+      (expression === accountExpression && waits >= 10) ||
+      (expression === loadedListExpression && waits > 20),
+    onWait: () => (waits += 1),
+  });
+  const bound = await value.controller.connect(value.options);
+  assert.equal(bound.ok, true);
+  const captured = await value.controller.capture(
+    bound.connection,
+    loadedListExpression,
+    value.options,
+  );
+  assert.equal(captured.ok, false);
+  assert.equal(captured.report.error, 'LOADED_LIST_NOT_READY');
+  assert.equal(waits, 20);
+  assert.equal(value.state.listReads, 11);
+  assert.equal(value.state.clock - Date.parse('2026-09-21T10:00:00.000Z'), 10_000);
+});
+
+test('readiness waiting rechecks the bound browser, target, URL and account', async () => {
+  for (const [mutate, expectedError] of [
+    [(state) => (state.instance = 'replacement-browser'), 'BROWSER_INSTANCE_CHANGED'],
+    [(state) => (state.targetId = 'replacement-task'), 'TASK_TARGET_MISSING'],
+    [(state) => (state.targetUrl = 'https://www.zhipin.com/web/user/'), 'TASK_TARGET_DRIFTED'],
+    [(state) => (state.accountId = '7002'), 'ACCOUNT_NAMESPACE_CHANGED'],
+  ]) {
+    const value = loadedListFixture({
+      onWait: (state) => {
+        state.ready = true;
+        mutate(state);
+      },
+    });
+    const bound = await value.controller.connect(value.options);
+    value.state.ready = false;
+    const captured = await value.controller.capture(
+      bound.connection,
+      loadedListExpression,
+      value.options,
+    );
+    assert.equal(captured.ok, false, expectedError);
+    assert.equal(captured.report.error, expectedError);
+    assert.equal(captured.payload, null);
+    assert.equal(value.calls.filter(([kind]) => kind === 'wait').length, 1);
+  }
+});
+
+test('readiness waiting does not retry other page identity or security errors', async () => {
+  for (const pageError of [
+    'WRONG_PAGE',
+    'ACCOUNT_ID_UNVERIFIED',
+    'LOADED_LIST_SIZE_INVALID',
+    'LOGIN_REQUIRED',
+    'CAPTCHA_REQUIRED',
+  ]) {
+    const value = loadedListFixture({ pageError });
+    const bound = await value.controller.connect(value.options);
+    assert.equal(bound.ok, false);
+    assert.equal(bound.report.error, pageError);
+    assert.equal(value.calls.filter(([kind]) => kind === 'wait').length, 0);
+    assert.equal(value.state.identityReads, 1);
+  }
+});
 
 test('CDP connect and capture reuse the exact task page without navigation', async () => {
   const value = fixture();

@@ -223,14 +223,32 @@ test('v2 resolver output is validated before rendering', () => {
     candidates: [],
   };
   assert.throws(() => renderJobs({ version: 2, updatedAt: at(1) }), TypeError);
-  assert.throws(
-    () =>
-      renderJobs(
-        { version: 2, updatedAt: at(1) },
-        { resolveV2: () => [{ ...base, detailUrl: 'javascript:alert(1)' }] },
-      ),
-    TypeError,
-  );
+  for (const overrides of [
+    { detailUrl: 'javascript:alert(1)' },
+    { detailUrl: 'https://evil.example/job_detail/safe.html' },
+    { detailUrl: 'http://www.zhipin.com/job_detail/safe.html' },
+    { detailUrl: 'https://www.zhipin.com.evil.example/job_detail/safe.html' },
+    { detailUrl: 'https://user@www.zhipin.com/job_detail/safe.html' },
+    { detailUrl: 'https://www.zhipin.com:443/job_detail/safe.html' },
+    { detailUrl: `${url('safe')}?tracking=1` },
+    { detailUrl: `${url('safe')}#fragment` },
+    { detailUrl: '/job_detail/safe.html' },
+    { detailUrl: 'https://www.zhipin.com/job_detail/../job_detail/safe.html' },
+    { detailUrl: 'https://www.zhipin.com/job_detail/safe%7Eid.html' },
+    { detailUrl: url('other~job') },
+    { jobId: 'safe id', detailUrl: null },
+    { jobId: 'safe/id', detailUrl: null },
+    { jobId: 'j'.repeat(301), detailUrl: null },
+  ]) {
+    assert.throws(
+      () =>
+        renderJobs(
+          { version: 2, updatedAt: at(1) },
+          { resolveV2: () => [{ ...base, ...overrides }] },
+        ),
+      TypeError,
+    );
+  }
   assert.throws(
     () => renderJobs({ version: 2, updatedAt: at(1) }, { resolveV2: () => [base, { ...base }] }),
     /duplicate conversationKey/,
@@ -299,6 +317,52 @@ test('the default resolver renders a validated v2 envelope without caller wiring
   assert.match(markdown, new RegExp(at(1).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   assert.match(markdown, /\| 待补 \| 待补 \| 待补 \|/);
 });
+
+for (const [description, jobId] of [
+  ['a tilde in its ID', 'synthetic~job-id'],
+  ['an ID beyond the old 256-character limit', 'j'.repeat(257)],
+  ['an ID at the shared 300-character limit', 'j'.repeat(299) + '~'],
+]) {
+  test(`the model-backed export accepts a canonical job with ${description}`, () => {
+    const snapshot = {
+      capturedAt: at(1),
+      scope: 'loaded-chat-list',
+      accountNamespace: 'synthetic-account',
+      records: [
+        {
+          platformIdentity: { friendId: 'friend-a', friendSource: '0', uniqueId: 'friend-a-0' },
+          contact: 'Synthetic | contact',
+          company: 'Synthetic <company>',
+          title: 'SECRET_RECRUITER_TITLE',
+          preview: 'SECRET_CHAT_PREVIEW',
+          timeLabel: 'SECRET_CHAT_TIME',
+          unread: null,
+          latestMessageId: 'SECRET_MESSAGE_ID',
+          outgoingReceipt: { status: 'unknown', label: null, source: null },
+          jobAssociation: { jobId, detailUrl: url(jobId) },
+          observedJobName: 'Synthetic ~ role',
+        },
+      ],
+      coverage: {
+        loadedRows: 1,
+        loadedDataRows: 1,
+        unresolvedRows: 0,
+        renderedRows: 1,
+        offscreenRows: 0,
+        truncated: false,
+      },
+    };
+    const { envelope: value } = compareLoadedSnapshotsV2(null, snapshot);
+    const before = structuredClone(value);
+    const markdown = renderJobs(value);
+    assert.ok(markdown.includes(`[查看岗位](${url(jobId)})`));
+    assert.ok(markdown.includes('Synthetic \\| contact'));
+    assert.ok(markdown.includes('Synthetic &lt;company&gt;'));
+    assert.ok(markdown.includes('Synthetic \\~ role'));
+    assert.ok(!markdown.includes('SECRET_'));
+    assert.deepEqual(value, before);
+  });
+}
 
 test('private Markdown writes atomically with mode 0600, including replacement', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'boss-job-export-'));

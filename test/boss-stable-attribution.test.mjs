@@ -11,6 +11,7 @@ import {
   ignoreBossObservations,
 } from '../dist/boss-integration.js';
 import { emptyData } from '../dist/model.js';
+import { bossWaitingItems, sourceReviewCounts } from '../dist/source-ledger.js';
 import { initialWorkspace } from '../dist/workspace.js';
 import { BossInbox } from '../scripts/boss-inbox.mjs';
 import { WorkspaceStore, workspaceDigest } from '../scripts/workspace-store.mjs';
@@ -151,6 +152,112 @@ async function fixture(t, batches, { data = seed(), pending = null } = {}) {
   });
   return { root, store, inbox, consumer };
 }
+
+function legacyCardWaiting(input) {
+  const data = applyBossBatch(seed(), input, { workspaceSourceId: SOURCE_ID, stamp: STAMP }).data;
+  Object.assign(data.sourceApplications.at(-1), {
+    status: 'waiting',
+    reason: 'attribution_evidence_missing',
+    ruleVersion: 'boss-application-v10',
+    opportunityId: '',
+    appliedAt: '',
+  });
+  return data;
+}
+
+test('旧队列已回执的纯卡片等待项通过真实服务重评存档，不重复事实或提交', async (t) => {
+  const input = delivery({ summary: 'resume_card_other' });
+  input.version = 1;
+  input.policy.id = 'boss-resume-observation-v1';
+  delete input.events[0].attribution;
+  input.events[0].eventId = `boss-event-${workspaceDigest(bossEventDigestInput(input, input.events[0]))}`;
+  input.batchId = `boss-batch-${workspaceDigest(bossBatchDigestInput(input))}`;
+  const data = legacyCardWaiting(input);
+  const { store, inbox, consumer } = await fixture(t, [input], { data });
+  const before = await store.read();
+  await inbox.acknowledge(input.batchId, {
+    format: 'job-tracker-boss-receipt',
+    version: 2,
+    batchId: input.batchId,
+    workspaceSourceId: before.workspaceId,
+    status: 'processed',
+    processedAt: STAMP,
+    counts: { added: 0, linked: 0, observed: 0, reviewed: 1, skipped: 0 },
+    errorCode: '',
+  });
+  const result = await consumer.run();
+  assert.equal(result.isolated.length, 0);
+  const archived = await store.read();
+  const application = archived.workspace.data.sourceApplications.at(-1);
+  assert.equal(application.status, 'no_effect');
+  assert.equal(application.reason, 'observation_only');
+  assert.equal(application.opportunityId, '');
+  assert.equal(application.id, before.workspace.data.sourceApplications.at(-1).id);
+  assert.equal(bossWaitingItems(archived.workspace.data).length, 0);
+  assert.deepEqual(archived.workspace.data.sourceEvents, before.workspace.data.sourceEvents);
+  assert.deepEqual(archived.workspace.data.sourceFacts, before.workspace.data.sourceFacts);
+  assert.deepEqual(archived.workspace.data.opportunities, before.workspace.data.opportunities);
+  await consumer.run();
+  assert.equal((await store.read()).revision, archived.revision);
+});
+
+test('真实队列中同消息卡片仅存档，发送观察仍等待，后续采集不会重复累计', async (t) => {
+  const card = delivery({ summary: 'resume_card_other' });
+  const sent = delivery({ summary: 'resume_request_sent', sequence: 2 });
+  const { store, inbox, consumer } = await fixture(t, [card, sent]);
+  await consumer.run();
+  const first = await store.read();
+  const applications = first.workspace.data.sourceApplications.filter(
+    (row) => row.action === 'resume_observed',
+  );
+  assert.deepEqual(
+    applications.map((row) => [row.status, row.reason]),
+    [
+      ['no_effect', 'observation_only'],
+      ['waiting', 'attribution_evidence_missing'],
+    ],
+  );
+  assert.equal(sourceReviewCounts(first.workspace.data).waiting, 1);
+  assert.equal(first.workspace.data.opportunities[0].resumeState, '未知');
+  await consumer.run();
+  assert.equal((await store.read()).revision, first.revision);
+  const nextCapture = delivery({ summary: 'resume_card_other', sequence: 3 });
+  nextCapture.source.snapshotSha256 = 'd'.repeat(64);
+  nextCapture.batchId = `boss-batch-${workspaceDigest(bossBatchDigestInput(nextCapture))}`;
+  await inbox.enqueue(nextCapture);
+  await consumer.run();
+  const repeated = await store.read();
+  assert.equal(repeated.workspace.data.sourceFacts.length, first.workspace.data.sourceFacts.length);
+  assert.equal(
+    repeated.workspace.data.sourceApplications.length,
+    first.workspace.data.sourceApplications.length,
+  );
+  assert.equal(sourceReviewCounts(repeated.workspace.data).waiting, 1);
+  assert.deepEqual(repeated.workspace.data.opportunities, first.workspace.data.opportunities);
+});
+
+test('纯卡片重评诊断写入失败不确认进度，修复后原材料可原子存档', async (t) => {
+  const input = delivery({ summary: 'resume_card_other' });
+  const { root, store, inbox, consumer } = await fixture(t, [input], {
+    data: legacyCardWaiting(input),
+  });
+  const before = await store.read();
+  const diagnostics = join(root, 'inbox', 'attribution-diagnostics');
+  await rm(diagnostics, { recursive: true, force: true });
+  await writeFile(diagnostics, 'synthetic blocked diagnostics', { mode: 0o600 });
+  const failed = await consumer.run();
+  assert.equal(failed.isolated.length, 1);
+  assert.equal((await store.read()).revision, before.revision);
+  assert.equal(await inbox.readReceipt(input.batchId, before.workspaceId), null);
+  assert.equal((await store.read()).workspace.data.sourceApplications.at(-1).status, 'waiting');
+  await rm(diagnostics);
+  const repaired = await consumer.run();
+  assert.equal(repaired.isolated.length, 0);
+  const archived = await store.read();
+  assert.equal(archived.workspace.data.sourceApplications.at(-1).status, 'no_effect');
+  assert.equal(archived.workspace.data.sourceApplications.at(-1).reason, 'observation_only');
+  assert.equal((await inbox.readReceipt(input.batchId, before.workspaceId)).status, 'processed');
+});
 
 test('same fact uses a stable insufficient reason independently of observation order', () => {
   const none = delivery();

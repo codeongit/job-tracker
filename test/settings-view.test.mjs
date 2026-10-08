@@ -52,7 +52,7 @@ test('正常等待显示摘要，人工保护和回执折叠，不误报故障�
   });
   const primary = html.slice(0, html.indexOf('<details'));
   assert.match(primary, /跟踪已停止/);
-  assert.match(primary, /上次成功采集/);
+  assert.match(primary, /最近成功处理（含本机恢复）/);
   assert.doesNotMatch(primary, /仍继续|badge warn|47|68/);
   assert.match(primary, /等待资料或证据/);
   assert.match(
@@ -79,6 +79,35 @@ test('运行和暂停状态文案准确，故障始终在主区域可见', () =>
   assert.match(paused, /LOGIN_REQUIRED/);
   assert.doesNotMatch(primary, /LOGIN_REQUIRED/);
   assert.doesNotMatch(primary, /仍继续/);
+});
+
+test('聊天列表未就绪时说明实际读取失败及恢复前提', () => {
+  const html = bossIntegrationView({
+    available: true,
+    serverManaged: true,
+    tracking: { lifecycle: 'paused', pauseCode: 'LOADED_LIST_NOT_READY' },
+  });
+  const primary = html.slice(0, html.indexOf('<details'));
+  assert.match(primary, /聊天列表暂时无法读取/);
+  assert.match(primary, /没有找到可读取的聊天列表数据/);
+  assert.match(primary, /采集专用页面/);
+  assert.match(primary, /确认登录和验证已完成、聊天列表正常显示/);
+  assert.match(html, /pnpm boss resume/);
+  assert.doesNotMatch(primary, /LOADED_LIST_NOT_READY|查看本机诊断定位原因/);
+});
+
+test('岗位清单导出失败说明快照保留，不误报登录或资料缺失', () => {
+  const html = bossIntegrationView({
+    available: true,
+    serverManaged: true,
+    tracking: { lifecycle: 'paused', pauseCode: 'JOB_EXPORT_FAILED' },
+  });
+  const primary = html.slice(0, html.indexOf('<details'));
+  assert.match(primary, /本机岗位清单导出失败/);
+  assert.match(primary, /采集快照已保存/);
+  assert.match(primary, /正式录入结果须按当前应用记录核对/);
+  assert.match(html, /pnpm boss resume/);
+  assert.doesNotMatch(primary, /查看本机诊断定位原因|登录、验证和账号/);
 });
 
 test('批次处理记录与保存的聊天进度不冒充最新录入结果', () => {

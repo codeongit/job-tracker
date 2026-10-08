@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, realpath, readdir, readFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, realpath, readdir, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -11,10 +11,18 @@ import {
   fairResumeTargets,
   parseArguments,
   safeBrowserReport,
+  saveEnvelope,
   summarizeEnvelope,
+  trackerFailureReport,
 } from './tracker.mjs';
+import { latest } from './storage.mjs';
 import { applyDetailEvidenceV2, compareLoadedSnapshotsV2, conversationKeyV2 } from './model-v2.mjs';
-import { normalizeRuntimeState, recordDetailFailure } from './runtime-state.mjs';
+import {
+  loadChangeCheckpoint,
+  normalizeRuntimeState,
+  recordDetailFailure,
+  saveChangeCheckpoint,
+} from './runtime-state.mjs';
 import { observeHistoryList, pendingHistory } from './change-history.mjs';
 
 // macOS exposes /var as a symlink; private-writer fixtures use its real location.
@@ -683,7 +691,11 @@ test('completed-page checkpoint replays locally after progress write fails', asy
               };
         },
       }),
-      /LOCAL_PROGRESS_FAILED/,
+      (error) => {
+        assert.equal(error.message, 'LOCAL_PROGRESS_FAILED');
+        assert.deepEqual(error.usage, { historyRequests: 2 });
+        return true;
+      },
     );
     assert.equal(commits, 1);
     const recovered = await collectChangedResume({
@@ -702,6 +714,402 @@ test('completed-page checkpoint replays locally after progress write fails', asy
   } finally {
     await rm(directory, { recursive: true });
   }
+});
+
+function changedHistoryFixture(count = 1) {
+  const namespace = `boss-geek:${'d'.repeat(64)}`;
+  const record = {
+    key: conversationKeyV2(namespace, '901', '0'),
+    platformIdentity: { friendId: '901', friendSource: '0', uniqueId: '901-0' },
+    contact: 'Synthetic contact',
+    company: 'Synthetic company',
+    title: 'Recruiter',
+    preview: 'ordinary',
+    timeLabel: '10:00',
+    unread: null,
+    latestMessageId: 'm1',
+    outgoingReceipt: { status: 'unknown', label: null, source: null },
+    jobAssociation: { jobId: null, detailUrl: null },
+    observedJobName: null,
+  };
+  const records = Array.from({ length: count }, (_, index) => {
+    const friendId = String(901 + index);
+    return {
+      ...record,
+      key: conversationKeyV2(namespace, friendId, '0'),
+      platformIdentity: { friendId, friendSource: '0', uniqueId: `${friendId}-0` },
+    };
+  });
+  const snapshot = {
+    capturedAt: '2026-09-24T02:00:00.000Z',
+    scope: 'loaded-chat-list',
+    accountNamespace: namespace,
+    records,
+    coverage: {
+      loadedRows: count,
+      loadedDataRows: count,
+      renderedRows: count,
+      offscreenRows: 0,
+      unresolvedRows: 0,
+      truncated: false,
+    },
+  };
+  const envelope = compareLoadedSnapshotsV2(null, snapshot).envelope;
+  const history = observeHistoryList(
+    normalizeRuntimeState({
+      version: 2,
+      cursors: { resume: null, detail: null },
+      lastRun: null,
+      updatedAt: null,
+    }).history,
+    snapshot.records,
+    snapshot.capturedAt,
+  );
+  return { envelope, history, record };
+}
+
+test('completed checkpoint replay never bypasses the budget for later queued conversations', async (t) => {
+  for (const [maxRequests, expectedRequests, expectedPending, expectedCommits] of [
+    [20, 20, 1, 11],
+    [0, 0, 11, 1],
+    [1, 0, 11, 1],
+  ]) {
+    await t.test(`budget ${maxRequests}`, async (t) => {
+      const directory = await mkdtemp(join(privateTemporaryRoot, 'boss-history-replay-budget-'));
+      t.after(() => rm(directory, { recursive: true, force: true }));
+      const { envelope, history } = changedHistoryFixture(12);
+      const completed = pendingHistory(history)[0];
+      await saveChangeCheckpoint(directory, {
+        version: 2,
+        capturedAt: envelope.snapshot.capturedAt,
+        nextConversationKey: null,
+        nextPage: 0,
+        completedConversationKey: completed.key,
+        targetFingerprint: completed.task.fingerprint,
+        head: 'saved-head',
+        observations: [],
+        unresolved: [],
+        coverage: {},
+        usage: { historyRequests: 2 },
+        partial: false,
+        error: null,
+      });
+      let requests = 0;
+      let commits = 0;
+      const result = await collectChangedResume({
+        directory,
+        connection: {},
+        envelope,
+        runtime: { history },
+        maxRequests,
+        requestDelayMs: 0,
+        betweenTargetsDelayMs: 0,
+        reportOperation: async () => ({ ok: true, report: {} }),
+        saveEvidence: async () => {
+          commits += 1;
+        },
+        saveProgress: async () => {},
+        evaluate: async (_connection, _expression, metadata) => {
+          assert.notEqual(metadata.conversationKey, completed.key);
+          requests += 1;
+          return metadata.kind === 'friend'
+            ? { ok: true, identity: { bossId: 'synthetic-boss', securityId: 'synthetic-security' } }
+            : {
+                ok: true,
+                observations: [],
+                unresolved: [],
+                messageIds: [`head-${metadata.conversationKey}`],
+                exhausted: true,
+                page: metadata.page,
+              };
+        },
+      });
+      assert.equal(result.error, null);
+      assert.equal(result.partial, false);
+      assert.equal(result.usage.historyRequests, expectedRequests);
+      assert.equal(requests, expectedRequests);
+      assert.equal(commits, expectedCommits);
+      assert.equal(pendingHistory(result.state).length, expectedPending);
+      assert.equal(
+        result.state.conversations.find((item) => item.key === completed.key).watermark,
+        'saved-head',
+      );
+      assert.equal(await loadChangeCheckpoint(directory), null);
+    });
+  }
+});
+
+test('failed run reports the saved change-history backlog rather than leaving an old completion status', () => {
+  const { history, record } = changedHistoryFixture(16);
+  const savedRuntime = normalizeRuntimeState({
+    version: 3,
+    cursors: { resume: record.key, detail: null },
+    history,
+    lastRun: null,
+    updatedAt: null,
+  });
+  const usage = { historyRequests: 20, domSwitches: 0, detailNavigations: 0, cdpReconnects: 0 };
+  const report = trackerFailureReport(new Error('RESUME_SCAN_INPUT_INVALID'), {
+    mode: 'run',
+    historyMode: 'change',
+    usage,
+    savedRuntime,
+  });
+  assert.deepEqual(report.history, {
+    mode: 'change',
+    initializedDay: '2026-09-24',
+    pending: 16,
+    paginating: 0,
+    completed: 0,
+    truncated: 0,
+    waitingRetry: 0,
+    failed: 0,
+    isolated: 0,
+    backfillCursor: record.key,
+  });
+  assert.equal(report.error, 'RESUME_SCAN_INPUT_INVALID');
+  assert.deepEqual(report.usage, usage);
+  assert.equal(report.runtimeSaved, true);
+  assert.equal(JSON.stringify(report).includes('Synthetic contact'), false);
+  assert.equal(JSON.stringify(report).includes('ordinary'), false);
+
+  const unavailable = trackerFailureReport(new Error('RUNTIME_STATE_UNREADABLE'), {
+    mode: 'run',
+    historyMode: 'change',
+    usage,
+  });
+  assert.equal(unavailable.runtimeSaved, false);
+  assert.equal(Object.hasOwn(unavailable, 'history'), false);
+});
+
+test('change history preflight preserves the identity failure and reports zero new requests', async (t) => {
+  const directory = await mkdtemp(join(privateTemporaryRoot, 'boss-history-preflight-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const { envelope, history } = changedHistoryFixture();
+  const result = await collectChangedResume({
+    directory,
+    connection: {},
+    envelope,
+    runtime: { history },
+    maxRequests: 4,
+    reportOperation: async () => ({ ok: false, report: { error: 'ACCOUNT_NAMESPACE_CHANGED' } }),
+    evaluate: async () => assert.fail('platform must not be accessed after failed preflight'),
+    saveEvidence: async () => assert.fail('failed preflight cannot commit evidence'),
+    saveProgress: async () => assert.fail('failed preflight cannot advance progress'),
+  });
+  assert.equal(result.error, 'ACCOUNT_NAMESPACE_CHANGED');
+  assert.equal(result.partial, true);
+  assert.deepEqual(result.usage, { historyRequests: 0 });
+  assert.deepEqual(result.envelope, envelope);
+  assert.deepEqual(result.state, history);
+});
+
+test('evidence save failure retains issued history usage and replays without another request', async (t) => {
+  const directory = await mkdtemp(join(privateTemporaryRoot, 'boss-history-evidence-failure-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const { envelope, record, history: initialHistory } = changedHistoryFixture();
+  let history = initialHistory;
+  let requests = 0;
+  const base = {
+    directory,
+    connection: {},
+    envelope,
+    maxRequests: 4,
+    requestDelayMs: 0,
+    betweenTargetsDelayMs: 0,
+    reportOperation: async () => ({ ok: true, report: {} }),
+    saveProgress: async (value) => {
+      history = value;
+    },
+  };
+  await assert.rejects(
+    collectChangedResume({
+      ...base,
+      runtime: { history },
+      saveEvidence: async () => {
+        throw new Error('LOCAL_EVIDENCE_FAILED');
+      },
+      evaluate: async (_connection, _expression, metadata) => {
+        requests += 1;
+        return metadata.kind === 'friend'
+          ? { ok: true, identity: { bossId: 'boss901', securityId: 'security901' } }
+          : {
+              ok: true,
+              observations: [],
+              unresolved: [],
+              messageIds: ['ordinary901'],
+              exhausted: true,
+              page: metadata.page,
+            };
+      },
+    }),
+    (error) => {
+      assert.equal(error.message, 'LOCAL_EVIDENCE_FAILED');
+      assert.deepEqual(error.usage, { historyRequests: 2 });
+      return true;
+    },
+  );
+  const checkpoint = await loadChangeCheckpoint(directory);
+  assert.equal(checkpoint.completedConversationKey, record.key);
+  assert.equal(checkpoint.usage.historyRequests, 2);
+  await assert.rejects(
+    collectChangedResume({
+      ...base,
+      runtime: { history },
+      saveEvidence: async () => {
+        throw new Error('LOCAL_EVIDENCE_FAILED');
+      },
+      evaluate: async () => assert.fail('completed evidence must replay locally'),
+    }),
+    (error) => {
+      assert.deepEqual(error.usage, { historyRequests: 0 });
+      return true;
+    },
+  );
+  const recovered = await collectChangedResume({
+    ...base,
+    runtime: { history },
+    saveEvidence: async () => {},
+    evaluate: async () => {
+      throw new Error('PLATFORM_SHOULD_NOT_BE_CALLED');
+    },
+  });
+  assert.equal(recovered.usage.historyRequests, 0);
+  assert.equal(requests, 2);
+  assert.equal(history.conversations[0].watermark, 'ordinary901');
+});
+
+test('checkpoint write failure retains the issued request count for both history modes', async (t) => {
+  for (const [collect, checkpointName] of [
+    [collectChangedResume, '.change-checkpoint-v1.json'],
+    [collectResume, '.resume-checkpoint-v1.json'],
+  ]) {
+    await t.test(checkpointName, async (t) => {
+      const directory = await mkdtemp(
+        join(privateTemporaryRoot, 'boss-history-checkpoint-failure-'),
+      );
+      t.after(() => rm(directory, { recursive: true, force: true }));
+      const { envelope, history } = changedHistoryFixture();
+      let requests = 0;
+      await assert.rejects(
+        collect({
+          directory,
+          connection: {},
+          envelope,
+          runtime: { history, cursors: { resume: null, detail: null } },
+          maxRequests: 4,
+          reportOperation: async () => ({ ok: true, report: {} }),
+          evaluate: async () => {
+            requests += 1;
+            await mkdir(join(directory, checkpointName));
+            return { ok: true, identity: { bossId: 'boss901', securityId: 'security901' } };
+          },
+        }),
+        (error) => {
+          assert.deepEqual(error.usage, { historyRequests: 1 });
+          return true;
+        },
+      );
+      assert.equal(requests, 1);
+    });
+  }
+});
+
+test('history export failure retains issued usage and local recovery failures use zero', async (t) => {
+  const directory = await mkdtemp(join(privateTemporaryRoot, 'boss-history-export-failure-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const { envelope, history } = changedHistoryFixture();
+  let requests = 0;
+  const base = {
+    directory,
+    connection: {},
+    envelope,
+    runtime: { history },
+    maxRequests: 4,
+    requestDelayMs: 0,
+    betweenTargetsDelayMs: 0,
+    reportOperation: async () => ({ ok: true, report: {} }),
+    saveProgress: async () => {},
+    saveEvidence: (value) =>
+      saveEnvelope(directory, value, {
+        exportJobs: async () => {
+          throw new TypeError('SYNTHETIC_PRIVATE_CHAT invalid export');
+        },
+      }),
+  };
+  const assertFailure = (used) => async (error) => {
+    assert.equal(error.message, 'JOB_EXPORT_FAILED');
+    assert.deepEqual(error.usage, { historyRequests: used });
+    assert.equal(error.snapshotPath, (await latest(directory)).path);
+    assert.equal(String(error).includes('SYNTHETIC_PRIVATE_CHAT'), false);
+    return true;
+  };
+  for (const expectedUsage of [2, 0]) {
+    let caught;
+    try {
+      await collectChangedResume({
+        ...base,
+        evaluate: async (_connection, _expression, metadata) => {
+          requests += 1;
+          return metadata.kind === 'friend'
+            ? { ok: true, identity: { bossId: 'boss901', securityId: 'security901' } }
+            : {
+                ok: true,
+                observations: [],
+                unresolved: [],
+                messageIds: ['ordinary901'],
+                exhausted: true,
+                page: metadata.page,
+              };
+        },
+      });
+    } catch (error) {
+      caught = error;
+    }
+    assert.ok(caught, 'export must fail after snapshot commit');
+    await assertFailure(expectedUsage)(caught);
+    assert.equal(requests, 2);
+  }
+});
+
+test('export failure reports a safe code while keeping its committed snapshot recoverable', async (t) => {
+  const directory = await mkdtemp(join(privateTemporaryRoot, 'boss-export-failure-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const envelope = compareLoadedSnapshotsV2(null, {
+    capturedAt: '2026-09-24T02:00:00.000Z',
+    scope: 'loaded-chat-list',
+    accountNamespace: `boss-geek:${'a'.repeat(64)}`,
+    records: [],
+    coverage: {
+      loadedRows: 0,
+      loadedDataRows: 0,
+      renderedRows: 0,
+      offscreenRows: 0,
+      unresolvedRows: 0,
+      truncated: false,
+    },
+  }).envelope;
+  let failure;
+  await assert.rejects(
+    saveEnvelope(directory, envelope, {
+      exportJobs: async () => {
+        throw new TypeError('SYNTHETIC_PRIVATE_CHAT SYNTHETIC_PAT invalid export field');
+      },
+    }),
+    (error) => {
+      failure = error;
+      assert.equal(error.message, 'JOB_EXPORT_FAILED');
+      assert.equal(JSON.stringify(error).includes('SYNTHETIC_PRIVATE_CHAT'), false);
+      assert.equal(String(error).includes('SYNTHETIC_PAT'), false);
+      return true;
+    },
+  );
+  const saved = await latest(directory);
+  assert.equal(saved.path, failure.snapshotPath);
+  assert.deepEqual(saved.envelope, envelope);
+  const recovered = await saveEnvelope(directory, saved.envelope);
+  assert.equal(recovered.jobsFile, join(directory, 'jobs.md'));
+  assert.match(await readFile(recovered.jobsFile, 'utf8'), /BOSS/);
 });
 
 test('v4 本地状态命令仍计算详情待处理和 DOM 状态，不访问浏览器', async (t) => {

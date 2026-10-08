@@ -600,6 +600,7 @@ export class BossRuntime {
               lastTickAt: started.toISOString(),
               nextTickAt: '',
               consecutiveFailures: failures,
+              history: result.history ? validateHistory(result.history) : this.state.history,
               ...(mayChangeControl ? { lifecycle: 'paused', sessionId: '', pauseCode: code } : {}),
             },
             { controlMutation: mayChangeControl },

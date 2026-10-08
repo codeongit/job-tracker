@@ -41,6 +41,22 @@ export function bossConflictTargets(data, applicationIds) {
 
 // These are explanations of existing recovery paths, never platform actions.
 export function bossFailureGuidance(code = '', stage = '') {
+  if (code === 'JOB_EXPORT_FAILED')
+    return {
+      title: '本机岗位清单导出失败',
+      problem: '采集快照已保存，但生成本机 Markdown 岗位清单失败。',
+      impact: '已保存快照保留；正式录入结果须按当前应用记录核对。',
+      next: '修复岗位清单导出原因；确认采集专用页面正常后，再明确恢复跟踪并核对新的成功采集时间。',
+      command: 'pnpm boss resume',
+    };
+  if (code === 'LOADED_LIST_NOT_READY')
+    return {
+      title: '聊天列表暂时无法读取',
+      problem: '程序在采集专用页面没有找到可读取的聊天列表数据，已暂停采集。',
+      impact: '该账号暂停取得新资料，已经录入的岗位保留。',
+      next: '查看 BOSS 采集专用页面，确认登录和验证已完成、聊天列表正常显示，再明确恢复跟踪；若仍报同一错误，保持暂停并核查列表提取规则。',
+      command: 'pnpm boss resume',
+    };
   if (/LOCAL_|WORKSPACE.*UNAVAILABLE|SERVICE_UNAVAILABLE/.test(code))
     return {
       title: '本机状态暂时无法更新',

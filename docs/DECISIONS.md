@@ -48,7 +48,7 @@
 | [D030](adr/0030-reject-misattributed-resume-observation.md)    | 恢复附件简历发送映射，否决误归属观察               | 有效；真实浏览器待验收                           | 用户澄清平台文案与目标聊天内容             |
 | [D031](adr/0031-explicit-resume-semantics.md)                  | 简历观察、含义和应用条件显式分层                   | 有效；真实浏览器待验收                           | 用户同意通过建模与枚举减少语义误判         |
 | [D032](adr/0032-attribution-review-boundaries.md)              | 归属证据不足时停止自动更新，人工状态与证据确认分开 | 设计已确认；由 D033 收敛，未实施                 | 用户确认严格关卡及 Q1–Q9 均选 A            |
-| [D033](adr/0033-boss-import-convergence.md)                    | BOSS 导入统一归属判断与处理链路                    | 已实现；归属前提由 D035 调整                     | 用户确认整体收敛计划并要求实施             |
+| [D033](adr/0033-boss-import-convergence.md)                    | BOSS 导入统一归属判断与处理链路                    | 已实现；归属前提由 D035、存档边界由 D043 调整    | 用户确认整体收敛计划并要求实施             |
 | [D034](adr/0034-boss-cross-observation-attribution.md)         | BOSS 跨观察归属防错                                | 已实现；真实浏览器待人工验收                     | 用户确认防错计划并要求实施                 |
 | [D035](adr/0035-boss-conversation-association-application.md)  | 允许依据会话关联应用简历观察                       | 已实现；身份排查已收尾；业务验收待确认           | 用户明确取消消息岗位必填并确认历史处理范围 |
 | [D036](adr/0036-boss-waiting-observation-ignore.md)            | 处理历史等待项并允许人工忽略观察                   | 已实现；真实界面待人工验收                       | 用户确认处理计划与持续忽略范围             |
@@ -58,6 +58,11 @@
 | [D040](adr/0040-boss-repeated-work-and-stable-reevaluation.md) | 减少重复计算并稳定同事实重评                       | 已实施；完整启动审计约束由 D041 调整             | 用户同意三个保留安全校验的优化措施         |
 | [D041](adr/0041-workspace-startup-catalog.md)                  | 提交索引与旧历史按需校验                           | 已实施；启动已核对，界面待人工验收               | 用户接受旧历史异常发现时机延后并确认实施   |
 | [D042](adr/0042-data-sync-guided-resolution.md)                | 数据与同步按任务引导异常处理                       | 已实施代码；真实界面待人工验收                   | 用户确认页面与受限资料、同步冲突流程整理   |
+| [D043](adr/0043-boss-observation-only-archive.md)              | 纯简历卡片观察只存档                               | 已实现；真实界面待用户验收                       | 用户明确批准纯存档观察不计待处理           |
+
+## D043：纯简历卡片观察只存档
+
+完整记录见 [ADR-0043](adr/0043-boss-observation-only-archive.md)。应用 0.10.12、规则 v11 对共享简历规则中 `target === null` 的两类卡片，在归属不足或已验证时记录 `no_effect / observation_only`，正式目标为空，不计待处理，也不确认归属或改变岗位。明确冲突仍 review，缺稳定消息身份仍是采集问题；真实发送接收、人工决定、同步与恢复保护保留。现有纯本机消费重评旧等待项，无新采集或命令，共享数据 v4 及各外层、私有格式不变；完整非浏览器测试与静态、格式检查通过，真实界面待用户验收。
 
 ## D042：数据与同步按任务引导异常处理
 

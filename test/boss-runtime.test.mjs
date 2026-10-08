@@ -136,6 +136,46 @@ test('详情降级重复出现也不累计账号失败或暂停', async () => {
   }
 });
 
+test('普通部分失败保存最新历史摘要，未提供时保留原进度', async () => {
+  const history = {
+    mode: 'change',
+    initializedDay: '2026-09-21',
+    pending: 3,
+    paginating: 1,
+    completed: 4,
+    truncated: 0,
+    waitingRetry: 0,
+    failed: 0,
+    isolated: 0,
+    backfillCursor: null,
+  };
+  let includeHistory = true;
+  const f = await fixture({
+    executeCycle: async () => ({
+      partial: true,
+      error: 'TEST_PARTIAL',
+      failureScope: 'account',
+      ...(includeHistory ? { history } : {}),
+      usage: { historyRequests: 2, domSwitches: 0, detailNavigations: 0 },
+    }),
+  });
+  try {
+    await f.runtime.requestCycle();
+    assert.deepEqual(f.runtime.status().history, history);
+    const stored = await new BossRuntimeStateStore(join(f.root, 'runtime.json')).read();
+    assert.deepEqual(stored.history, history);
+    assert.equal(f.runtime.status().budget.historyUsed, 2);
+    assert.equal(f.runtime.status().lastSuccessAt, '');
+    includeHistory = false;
+    f.advance(10_000);
+    await f.runtime.requestCycle();
+    assert.deepEqual(f.runtime.status().history, history);
+  } finally {
+    await f.runtime.stop();
+    await f.cleanup();
+  }
+});
+
 test('详情维护串行等待采集且不改变生命周期和预算', async () => {
   let release, started;
   const gate = new Promise((resolve) => (release = resolve)),

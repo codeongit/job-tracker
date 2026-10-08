@@ -4,6 +4,8 @@ import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { fairDetailInputs } from './tracker.mjs';
+import { compareLoadedSnapshotsV2, conversationKeyV2 } from './model-v2.mjs';
 import {
   loadRuntimeState,
   saveRuntimeState,
@@ -38,6 +40,170 @@ test('fair selection resumes after the prior item and wraps without starvation',
     third.selected.map((item) => item.id),
     ['a', 'b'],
   );
+});
+
+test('fair selection accepts tilde job IDs alongside legacy resume keys', () => {
+  const values = ['job_a', 'job~b', 'a'.repeat(64)].map((id) => ({ id }));
+  const first = selectFair(values, { cursor: 'job_a', limit: 1, key: (item) => item.id });
+  assert.deepEqual(first.selected, [{ id: 'job~b' }]);
+  assert.equal(first.cursor, 'job~b');
+  const next = selectFair(values, { cursor: first.cursor, limit: 2, key: (item) => item.id });
+  assert.deepEqual(
+    next.selected.map((item) => item.id),
+    ['a'.repeat(64), 'job_a'],
+  );
+});
+
+test('detail input fairness resumes through legal tilde job IDs', () => {
+  const accountNamespace = 'boss-geek:' + 'a'.repeat(64);
+  const snapshot = {
+    capturedAt: '2026-09-21T03:02:35.881Z',
+    scope: 'loaded-chat-list',
+    accountNamespace,
+    records: ['job_a', 'job~b'].map((jobId, index) => {
+      const friendId = String(101 + index);
+      return {
+        key: conversationKeyV2(accountNamespace, friendId, '0'),
+        platformIdentity: { friendId, friendSource: '0', uniqueId: `${friendId}-0` },
+        contact: 'Synthetic contact',
+        company: 'Synthetic company',
+        title: 'Recruiter',
+        preview: 'Synthetic preview',
+        timeLabel: '昨天',
+        unread: null,
+        latestMessageId: `message-${friendId}`,
+        outgoingReceipt: { status: 'unknown', label: null, source: null },
+        jobAssociation: { jobId, detailUrl: `https://www.zhipin.com/job_detail/${jobId}.html` },
+        observedJobName: null,
+      };
+    }),
+    coverage: {
+      loadedRows: 2,
+      loadedDataRows: 2,
+      renderedRows: 2,
+      offscreenRows: 0,
+      unresolvedRows: 0,
+      truncated: false,
+    },
+  };
+  const { envelope } = compareLoadedSnapshotsV2(null, snapshot);
+  const first = fairDetailInputs(envelope, { cursor: 'job_a', limit: 1 });
+  assert.deepEqual(first.selectedIds, ['job~b']);
+  assert.equal(first.cursor, 'job~b');
+  assert.deepEqual(fairDetailInputs(envelope, { cursor: first.cursor, limit: 1 }).selectedIds, [
+    'job_a',
+  ]);
+  assert.throws(
+    () => fairDetailInputs({ ...envelope, unknownField: true }, { limit: 1 }),
+    /envelope contains unknown fields/,
+  );
+});
+
+test('fair IDs and runtime cursors keep the 300 character limit and resume character range', () => {
+  const resumeKey = 'A_-'.repeat(100),
+    jobId = 'a'.repeat(299) + '~';
+  const state = normalizeRuntimeState({
+    version: 3,
+    cursors: { resume: resumeKey, detail: jobId },
+    lastRun: null,
+    updatedAt: null,
+  });
+  assert.deepEqual(state.cursors, { resume: resumeKey, detail: jobId });
+  assert.equal(selectFair([resumeKey, jobId], { limit: 2, key: (id) => id }).cursor, jobId);
+  for (const id of ['', 'bad id', 'job/id', 'job.id', jobId + 'a']) {
+    assert.throws(
+      () => selectFair([id], { limit: 1, key: (item) => item }),
+      /FAIR_SELECTION_INVALID/,
+    );
+    assert.throws(
+      () => normalizeRuntimeState({ ...state, cursors: { ...state.cursors, detail: id } }),
+      /RUNTIME_STATE_INVALID/,
+    );
+  }
+  for (const resume of ['job~a', resumeKey + 'a'])
+    assert.throws(
+      () => normalizeRuntimeState({ ...state, cursors: { ...state.cursors, resume } }),
+      /RUNTIME_STATE_INVALID/,
+    );
+  assert.throws(() => normalizeRuntimeState({ ...state, version: 4 }), /RUNTIME_STATE_INVALID/);
+});
+
+test('tilde detail failures, explicit resume and cursor survive private runtime reload', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'boss-runtime-tilde-'));
+  try {
+    let state = await loadRuntimeState(directory);
+    state = recordDetailFailure(state, {
+      jobId: 'job~a',
+      error: 'DETAIL_TAB_OWNERSHIP_MISMATCH',
+      stage: 'read',
+      at: '2026-09-21T10:00:00.000Z',
+      block: true,
+    });
+    state = { ...state, cursors: { resume: 'a'.repeat(64), detail: 'job~a' } };
+    await saveRuntimeState(directory, state);
+    const restored = await loadRuntimeState(directory);
+    assert.deepEqual(restored, state);
+    assert.equal(detailTaskDisposition(restored, 'job~a', '2026-09-21T10:01:00.000Z'), 'blocked');
+    state = resumeDetailState(restored, { updatedAt: '2026-09-21T10:01:00.000Z' });
+    assert.equal(state.detail.tasks.length, 1);
+    assert.equal(detailTaskDisposition(state, 'job~a', '2026-09-21T10:01:00.000Z'), 'backoff');
+    assert.deepEqual(
+      detailRuntimeSummary(state, {
+        pending: 1,
+        eligibleJobIds: ['job~a'],
+        now: '2026-09-21T10:01:00.000Z',
+      }),
+      {
+        status: 'waiting_retry',
+        pending: 1,
+        deferred: 1,
+        isolated: 0,
+        nextRetryAt: '2026-09-21T10:30:00.000Z',
+        lastError: 'DETAIL_TAB_OWNERSHIP_MISMATCH',
+      },
+    );
+    assert.equal(detailTaskDisposition(state, 'job~a', '2026-09-21T10:30:00.000Z'), 'ready');
+    state = clearDetailFailures(state, ['job~a'], { updatedAt: '2026-09-21T10:30:01.000Z' });
+    assert.deepEqual(state.detail.tasks, []);
+    assert.equal(state.cursors.detail, 'job~a');
+  } finally {
+    await rm(directory, { recursive: true });
+  }
+});
+
+test('detail job IDs accept 300 characters and reject unsupported IDs at every runtime boundary', () => {
+  const jobId = 'a'.repeat(299) + '~',
+    at = '2026-09-21T10:00:00.000Z';
+  const initial = normalizeRuntimeState({
+    version: 1,
+    cursors: { resume: null, detail: null },
+    lastRun: null,
+    updatedAt: null,
+  });
+  const failure = { jobId, error: 'DETAIL_TAB_CHANGED', stage: 'navigate', at };
+  const state = recordDetailFailure(initial, failure);
+  assert.equal(state.detail.tasks[0].jobId, jobId);
+  assert.equal(detailRuntimeSummary(state, { eligibleJobIds: [jobId], now: at }).deferred, 1);
+  assert.equal(clearDetailFailures(state, [jobId]).detail.tasks.length, 0);
+  for (const id of ['', 'bad id', 'job/id', 'job.id', jobId + 'a']) {
+    assert.throws(
+      () => recordDetailFailure(initial, { ...failure, jobId: id }),
+      /DETAIL_RETRY_INPUT_INVALID/,
+    );
+    assert.throws(() => clearDetailFailures(initial, [id]), /DETAIL_RETRY_INPUT_INVALID/);
+    assert.throws(
+      () => detailRuntimeSummary(initial, { eligibleJobIds: [id], now: at }),
+      /DETAIL_RETRY_INPUT_INVALID/,
+    );
+    assert.throws(
+      () =>
+        normalizeRuntimeState({
+          ...state,
+          detail: { ...state.detail, tasks: [{ ...state.detail.tasks[0], jobId: id }] },
+        }),
+      /RUNTIME_DETAIL_INVALID/,
+    );
+  }
 });
 
 test('legacy runtime state gains an empty shared CDP retry budget', () => {
@@ -335,6 +501,17 @@ test('runtime and resume checkpoints are private, atomic and reloadable', async 
     };
     const checkpointPath = await saveResumeCheckpoint(directory, checkpoint);
     assert.equal((await stat(checkpointPath)).mode & 0o777, 0o600);
+    assert.deepEqual(await loadResumeCheckpoint(directory), checkpoint);
+    for (const invalid of [
+      { ...checkpoint, unknownField: true },
+      { ...checkpoint, version: 3 },
+      { ...checkpoint, head: 'message~a' },
+      { ...checkpoint, nextConversationKey: 'job~a' },
+    ])
+      await assert.rejects(
+        () => saveResumeCheckpoint(directory, invalid),
+        /RESUME_CHECKPOINT_INVALID/,
+      );
     assert.deepEqual(await loadResumeCheckpoint(directory), checkpoint);
     assert.equal(await removeResumeCheckpoint(directory), true);
     assert.equal(await loadResumeCheckpoint(directory), null);

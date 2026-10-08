@@ -640,6 +640,20 @@ test('response contact and checked self identity share the gate across paged and
       status: 'verified',
     },
     {
+      name: 'complete synthetic message identity with tilde job ID',
+      candidateJob: 'candidate~job',
+      job: 'candidate~job',
+      reason: 'attribution_verified',
+      status: 'verified',
+    },
+    {
+      name: 'complete synthetic message identity with 300 character job ID',
+      candidateJob: 'a'.repeat(299) + '~',
+      job: 'a'.repeat(299) + '~',
+      reason: 'attribution_verified',
+      status: 'verified',
+    },
+    {
       name: 'message belongs to another job',
       job: 'other-job',
       reason: 'attribution_job_conflict',
@@ -650,6 +664,13 @@ test('response contact and checked self identity share the gate across paged and
       reason: 'attribution_conversation_association',
       status: 'verified',
     },
+    ...['bad id', 'job/id', 'job.id', 'a'.repeat(300) + '~'].map((job) => ({
+      name: `unsupported synthetic message job ID (${job.length} characters)`,
+      job,
+      extractedJob: null,
+      reason: 'attribution_conversation_association',
+      status: 'verified',
+    })),
     { name: 'wrong contact', uid: 302, reason: 'attribution_contact_conflict', status: 'conflict' },
     { name: 'wrong source', source: 1, reason: 'attribution_contact_conflict', status: 'conflict' },
     {
@@ -665,12 +686,19 @@ test('response contact and checked self identity share the gate across paged and
       status: 'conflict',
     },
     {
+      name: 'unsupported participant ID remains unavailable',
+      sender: 'sender~101',
+      reason: 'attribution_participants_missing',
+      status: 'insufficient',
+    },
+    {
       name: 'self sources disagree',
       storeSelf: 102,
       reason: 'attribution_participants_missing',
       status: 'insufficient',
     },
   ]) {
+    const candidateJob = scenario.candidateJob ?? 'candidate-job';
     const contact = { uid: scenario.uid ?? 301, securityId: 'synthetic-security' };
     if (scenario.source !== null) contact.friendSource = scenario.source ?? 0;
     const message = {
@@ -703,7 +731,7 @@ test('response contact and checked self identity share the gate across paged and
         $options: { name: 'virtual-list' },
         $props: {
           dataSources: [
-            { friendId: 301, friendSource: 0, uniqueId: '301-0', encryptJobId: 'candidate-job' },
+            { friendId: 301, friendSource: 0, uniqueId: '301-0', encryptJobId: candidateJob },
           ],
         },
         $store: { state: { userInfo: { userId: scenario.storeSelf ?? 101 } } },
@@ -733,13 +761,87 @@ test('response contact and checked self identity share the gate across paged and
     );
     const observation = page.observations[0];
     assert.equal(observation.kind, 'request_sent', scenario.name);
-    assert.equal(observation.externalJobId, scenario.job ?? null, scenario.name);
+    const extractedJob = Object.hasOwn(scenario, 'extractedJob')
+      ? scenario.extractedJob
+      : (scenario.job ?? null);
+    assert.equal(observation.externalJobId, extractedJob, scenario.name);
+    assert.equal(observation.attribution.messageJobId, extractedJob, scenario.name);
     const result = assessBossAttribution(namespace, {
       ...observation,
-      externalJobId: 'candidate-job',
+      externalJobId: candidateJob,
       attribution: { ...observation.attribution, accountNamespace: namespace },
     });
     assert.equal(result.status, scenario.status, scenario.name);
     assert.equal(result.reason, scenario.reason, scenario.name);
+    if (scenario.candidateJob) {
+      const inputSnapshot = structuredClone(snapshot);
+      inputSnapshot.records[0].jobAssociation = {
+        jobId: candidateJob,
+        detailUrl: `https://www.zhipin.com/job_detail/${candidateJob}.html`,
+      };
+      const { envelope } = createEnvelopeV2(inputSnapshot);
+      const converted = toResumeHistoryResult(
+        payload(JSON.parse(JSON.stringify(page.observations))),
+        envelope,
+      );
+      assert.equal(converted.observations[0].externalJobId, candidateJob, scenario.name);
+      assert.equal(converted.observations[0].attribution.messageJobId, candidateJob, scenario.name);
+      const applied = applyResumeHistoryV2(envelope, converted);
+      assert.equal(applied.envelope.resume.observations[0].id, converted.observations[0].id);
+      assert.equal(applied.envelope.resume.observations[0].externalJobId, candidateJob);
+      assert.equal(applied.envelope.resume.observations[0].attribution.messageJobId, candidateJob);
+      const repeated = applyResumeHistoryV2(applied.envelope, converted);
+      assert.equal(repeated.report.counts.added, 0);
+      assert.equal(repeated.envelope.resume.observations[0].id, converted.observations[0].id);
+    }
   }
+});
+
+test('history conversion accepts tilde job IDs without relaxing other observation identities', () => {
+  const { envelope } = createEnvelopeV2(snapshot);
+  const raw = {
+    conversationKey,
+    friendId: '301',
+    friendSource: '0',
+    messageId: 'synthetic-message',
+    direction: 'outbound',
+    messageType: 4,
+    kind: 'sent_candidate',
+    platformTime: '2026-09-20T01:00:00.000Z',
+    externalJobId: 'job~301',
+    source: 'geek_history_type_4',
+  };
+  const result = toResumeHistoryResult(payload([raw]), envelope);
+  assert.equal(result.observations[0].externalJobId, 'job~301');
+  for (const externalJobId of ['', 'bad id', 'job/id', 'job.id', 'a'.repeat(300) + '~'])
+    assert.throws(
+      () => toResumeHistoryResult(payload([{ ...raw, externalJobId }]), envelope),
+      /RESUME_HISTORY_OBSERVATION_INVALID/,
+    );
+  for (const invalid of [
+    { messageId: 'message~301' },
+    { friendId: 'friend~301' },
+    { friendSource: 'source~0' },
+  ])
+    assert.throws(
+      () => toResumeHistoryResult(payload([{ ...raw, ...invalid }]), envelope),
+      /RESUME_HISTORY_OBSERVATION_INVALID/,
+    );
+  const target = { conversationKey, friendId: '301', friendSource: '0' };
+  for (const invalid of [
+    { target, identity: { bossId: 'boss~301', securityId: 'synthetic-security' } },
+    {
+      target: { ...target, friendId: 'friend~301' },
+      identity: { bossId: '301', securityId: 'synthetic-security' },
+    },
+    {
+      target: { ...target, friendSource: 'source~0' },
+      identity: { bossId: '301', securityId: 'synthetic-security' },
+    },
+    { target, identity: { bossId: '301', securityId: 'synthetic security' } },
+  ])
+    assert.throws(
+      () => createResumePageExpression({ ...invalid, page: 1 }),
+      /RESUME_SCAN_INPUT_INVALID/,
+    );
 });
