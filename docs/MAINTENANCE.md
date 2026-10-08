@@ -18,6 +18,8 @@ pnpm service status
 
 ## 每次改动
 
+代理改动按[现状理解与目标核对](agents/change-workflow.md)执行，检查范围随影响调整；该页统一维护修改前核对、独立测试预期及审查步骤。
+
 ```sh
 pnpm format
 pnpm test

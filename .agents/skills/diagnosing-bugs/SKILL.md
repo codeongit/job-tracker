@@ -9,6 +9,8 @@ A discipline for hard bugs. Skip phases only when explicitly justified.
 
 When exploring the codebase, read `CONTEXT.md` (if it exists) to get a clear mental model of the relevant modules, and check ADRs in the area you're touching.
 
+Before choosing the feedback loop, complete the proportional current-mechanism and intended-behavior check in [change workflow](../../../docs/agents/change-workflow.md#1-修改前分别核对现状与目标). Reuse it during implementation and independent review; keep factual observation separate from the intended outcome and causal hypotheses.
+
 ## Redact
 
 This skill has you show commands, outputs and captured artifacts. **Redact every secret first**: write `<REDACTED>` in its place. Build loops against env vars, so the credential stays in the environment rather than in what you show. Captured artifacts carry auth headers: quote only the lines that carry the signal.
@@ -63,7 +65,7 @@ Phase 1 is done when the loop is **tight** and **red-capable**: you can name **o
 - [ ] **Fast**: seconds, not minutes.
 - [ ] **Agent-runnable**: you can run it unattended; a human in the loop only via `scripts/hitl-loop.template.sh`.
 
-If you catch yourself reading code to build a theory before this command exists, **stop: jumping straight to a hypothesis is the exact failure this skill prevents.** No red-capable command, no Phase 2.
+Read the affected baseline code to establish facts, choose the seam, and construct this loop. Test causal hypotheses after the red-capable loop exists; the shared mechanism check does not require understanding the whole repository before reproducing the symptom.
 
 ## Phase 2: Reproduce + minimise
 
