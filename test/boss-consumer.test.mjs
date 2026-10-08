@@ -182,12 +182,17 @@ function resumeBatch(events, { sequence = 2, version = 1 } = {}) {
 // Explicit synthetic contract: real collectors do not yet supply this complete identity chain.
 function verifiedResumeBatch(events, options) {
   const input = resumeBatch(events, options);
-  input.version = 3;
+  input.version = 5;
   input.events = events.map((event) =>
     event.eventType !== 'resume_observed'
-      ? event
+      ? { ...event, jobDetails: null }
       : {
           ...event,
+          jobDetails: null,
+          resumeEvidence:
+            event.summary === 'resume_request_sent'
+              ? { version: 1, messageType: 5, field: 'body.text', text: '附件简历请求已发送' }
+              : null,
           attribution: {
             version: 1,
             source: 'history',
@@ -1291,7 +1296,7 @@ test('归属关卡拒绝旧队列、缺字段与同公司不同岗位，补证�
   const raw = resumeBatch([resumeEvent({ summary: 'resume_request_sent' })]);
   const waiting = applyBossBatch(created.data, raw, { workspaceSourceId: SOURCE_ID, stamp: STAMP });
   assert.deepEqual(waiting.data.opportunities, created.data.opportunities);
-  assert.equal(waiting.data.sourceApplications.at(-1).reason, 'attribution_evidence_missing');
+  assert.equal(waiting.data.sourceApplications.at(-1).reason, 'resume_semantics_missing');
   assert.equal(waiting.data.sourceEvents.at(-1).opportunityId, '');
   for (const [field, value, reason] of [
     ['responseFriendId', 'other-contact', 'attribution_contact_conflict'],
@@ -1412,7 +1417,7 @@ test('同一消息的纯卡片存档不解除简历发送事实的归属关卡',
   assert.equal(decisions[0].status, 'no_effect');
   assert.equal(decisions[0].reason, 'observation_only');
   assert.equal(decisions[1].status, 'waiting');
-  assert.equal(decisions[1].reason, 'attribution_evidence_missing');
+  assert.equal(decisions[1].reason, 'resume_semantics_missing');
   assert.equal(sourceReviewCounts(archived).waiting, 1);
   assert.deepEqual(archived.opportunities, initial.opportunities);
   assert.deepEqual(applySynthetic(archived, input).sourceApplications, archived.sourceApplications);
@@ -1545,7 +1550,7 @@ test('同批跨岗位重复先扫描全部候选，事件顺序不影响拦截�
     );
     assert.equal(one.status, 'review');
     assert.equal(one.reason, 'attribution_message_multiple_jobs');
-    assert.equal(one.ruleVersion, 'boss-application-v11');
+    assert.equal(one.ruleVersion, 'boss-application-v12');
     assert.equal(data.opportunities.find((o) => o.externalId === JOB_ID).resumeState, '未知');
     assert.equal(
       data.opportunities.find((o) => o.externalId === 'second-job').resumeState,
@@ -1607,7 +1612,7 @@ test('会话岗位变化不替代消息岗位证据，旧队列等待，明确�
   );
   const raw = resumeBatch([resumeEvent({ summary: 'resume_request_sent' })]);
   const waiting = applySynthetic(data, raw);
-  assert.equal(waiting.sourceApplications.at(-1).reason, 'attribution_conversation_job_changed');
+  assert.equal(waiting.sourceApplications.at(-1).reason, 'resume_semantics_missing');
   const complete = verifiedResumeBatch([resumeEvent({ summary: 'resume_request_sent' })]);
   const applied = applySynthetic(waiting, complete);
   assert.equal(applied.opportunities.find((o) => o.externalId === JOB_ID).resumeState, '已发送');
@@ -1687,7 +1692,7 @@ test('缺少消息岗位身份时依据会话应用新消息和历史等待项�
     applied.sourceApplications.at(-1).reason,
     'resume_status_advanced_conversation_association',
   );
-  assert.equal(applied.sourceApplications.at(-1).ruleVersion, 'boss-application-v11');
+  assert.equal(applied.sourceApplications.at(-1).ruleVersion, 'boss-application-v12');
   assert.deepEqual(applySynthetic(applied, input), applied);
   const restored = structuredClone(waiting);
   restored.sourceFacts.pop();

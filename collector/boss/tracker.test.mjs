@@ -111,7 +111,7 @@ test('CLI keeps compatibility while exposing persistent connection and bounded e
   }
 });
 
-test('status summary for v4 reports coverage and job counts without chat content', () => {
+test('status summary for v5 reports coverage and job counts without chat content', () => {
   const namespace = 'boss-geek:' + 'a'.repeat(64);
   const snapshot = {
     capturedAt: '2026-09-18T12:00:00.000Z',
@@ -147,7 +147,7 @@ test('status summary for v4 reports coverage and job counts without chat content
   };
   const envelope = compareLoadedSnapshotsV2(null, snapshot).envelope;
   const summary = summarizeEnvelope(envelope);
-  assert.equal(summary.version, 4);
+  assert.equal(summary.version, 5);
   assert.equal(summary.trackedRecords, 1);
   assert.equal(summary.jobs.named, 1);
   assert.equal(summary.jobs.linked, 1);
@@ -1112,7 +1112,7 @@ test('export failure reports a safe code while keeping its committed snapshot re
   assert.match(await readFile(recovered.jobsFile, 'utf8'), /BOSS/);
 });
 
-test('v4 本地状态命令仍计算详情待处理和 DOM 状态，不访问浏览器', async (t) => {
+test('v5 本地状态命令仍计算详情待处理和 DOM 状态，不访问浏览器', async (t) => {
   const { mkdir } = await import('node:fs/promises');
   const { execFile } = await import('node:child_process');
   const { promisify } = await import('node:util');
@@ -1143,7 +1143,7 @@ test('v4 本地状态命令仍计算详情待处理和 DOM 状态，不访问浏
     { env: { ...process.env, JOB_TRACKER_BOSS_DATA_ROOT: root } },
   );
   const status = JSON.parse(stdout);
-  assert.equal(status.version, 4);
+  assert.equal(status.version, 5);
   assert.equal(status.connectionSaved, false);
   assert.equal(status.detailEnrichment.pending, 0);
   assert.notEqual(status.dom, null);

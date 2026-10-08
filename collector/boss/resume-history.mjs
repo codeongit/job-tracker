@@ -4,8 +4,9 @@ import {
   RESUME_RULES,
   RESUME_KINDS,
   RESUME_STATUS_KINDS,
-  classifyResumeMessage,
+  classifyResumeEvidence,
   classifyResumeText,
+  validateResumeEvidence,
 } from '../../dist/resume-rules.js';
 import { createHash } from 'node:crypto';
 import { expectedUrl } from './guard.mjs';
@@ -38,6 +39,45 @@ function digest(value) {
   return createHash('sha256')
     .update(JSON.stringify(canonical(value)))
     .digest('hex');
+}
+
+// Identity and semantic evidence belong to one response sample. Choosing a
+// candidate may replace the pair, but must never fill its two halves separately.
+function selectObservationEvidence(prior, incoming) {
+  const pair = (value) => ({
+    attribution: value.attribution ?? null,
+    resumeEvidence: validateResumeEvidence(value.resumeEvidence ?? null),
+  });
+  const previous = pair(prior),
+    next = pair(incoming);
+  if (
+    previous.resumeEvidence &&
+    next.resumeEvidence &&
+    digest(previous.resumeEvidence) !== digest(next.resumeEvidence)
+  )
+    throw new Error('RESUME_SEMANTIC_EVIDENCE_CONFLICT');
+  if (
+    previous.attribution &&
+    next.attribution &&
+    Object.keys(previous.attribution).some(
+      (field) =>
+        previous.attribution[field] !== null &&
+        next.attribution[field] !== null &&
+        previous.attribution[field] !== next.attribution[field],
+    )
+  )
+    throw new Error('RESUME_ATTRIBUTION_EVIDENCE_CONFLICT');
+  const strength = (value) => [
+    Number(Boolean(value.attribution && value.resumeEvidence)),
+    Object.values(value.attribution ?? {}).filter((item) => item !== null).length,
+    Number(Boolean(value.resumeEvidence)),
+  ];
+  const left = strength(previous),
+    right = strength(next);
+  for (let index = 0; index < left.length; index++) {
+    if (left[index] !== right[index]) return left[index] > right[index] ? previous : next;
+  }
+  return digest(previous).localeCompare(digest(next)) <= 0 ? previous : next;
 }
 
 function clean(value, max = 300) {
@@ -164,8 +204,8 @@ export function createResumePageExpression({ target, identity, page, timeoutMs =
       const number=Number(value),millis=Number.isFinite(number)?(number>0&&number<100000000000?number*1000:number):NaN;
       const date=new Date(millis);return Number.isFinite(date.getTime())?date.toISOString():null;
     };
-    const statusKind = (message, bossId) => (${classifyResumeMessage.toString()})(
-      message, bossId, ${JSON.stringify(RESUME_RULES)}, (${classifyResumeText.toString()}));
+    const statusEvidence = message => (${classifyResumeEvidence.toString()})(
+      message, ${JSON.stringify(RESUME_RULES)}, (${classifyResumeText.toString()}));
     const endpoint='https://www.zhipin.com/wapi/zpchat/geek/historyMsg?bossId='+encodeURIComponent(identity.bossId)+
       '&securityId='+encodeURIComponent(identity.securityId)+'&page='+page+'&c=20&src='+encodeURIComponent(target.friendSource);
     const response=await request('GET',endpoint);
@@ -181,12 +221,12 @@ export function createResumePageExpression({ target, identity, page, timeoutMs =
     for (const message of messages) {
       const id=messageId(message),platformTime=isoTime(message.time ?? message.msgTime ?? message.timestamp);
       if (id) messageIds.push(id);
-      const status=statusKind(message, identity.bossId);
+      const status=statusEvidence(message);
       if (status) {
         if (!id || !platformTime) { unresolved.push({conversationKey:target.conversationKey,reason:'RESUME_STATUS_IDENTITY_INCOMPLETE'});continue; }
         observations.push({conversationKey:target.conversationKey,friendId:target.friendId,
           friendSource:target.friendSource,messageId:id,direction:'system',messageType:Number(message?.type)||5,
-          kind:status,platformTime,externalJobId:jobId(message),attribution:attribution(message),source:${JSON.stringify(STATUS_SOURCE)}});continue;
+          kind:status.kind,resumeEvidence:status.evidence,platformTime,externalJobId:jobId(message),attribution:attribution(message),source:${JSON.stringify(STATUS_SOURCE)}});continue;
       }
       if (Number(message?.type)!==4) continue;
       const fromUid=normalizeId(message.from?.uid,128);
@@ -196,7 +236,7 @@ export function createResumePageExpression({ target, identity, page, timeoutMs =
       }
       observations.push({conversationKey:target.conversationKey,friendId:target.friendId,
         friendSource:target.friendSource,messageId:id,direction,messageType:4,
-        kind:direction==='outbound'?'sent_candidate':'resume_card_other',platformTime,
+        kind:direction==='outbound'?'sent_candidate':'resume_card_other',resumeEvidence:{version:1,messageType:4,field:'none',text:''},platformTime,
         externalJobId:jobId(message),attribution:attribution(message),source:${JSON.stringify(SOURCE)}});
     }
     return {ok:true,url,target,page,messageCount:messages.length,exhausted:messages.length<20,
@@ -274,7 +314,10 @@ export async function runResumeHistoryRequests({
       knownByConversation.set(conversationKey, new Set());
     knownByConversation.get(conversationKey).add(messageId);
   }
-  const observations = structuredClone(initialObservations),
+  const observations = initialObservations.map((item) => ({
+      ...structuredClone(item),
+      resumeEvidence: validateResumeEvidence(item.resumeEvidence ?? null),
+    })),
     unresolved = [];
   const coverage = {
     requestedConversations: safeTargets.length,
@@ -297,7 +340,7 @@ export async function runResumeHistoryRequests({
   if (initialHead && startConversationKey) heads.set(startConversationKey, initialHead);
   const checkpoint = async (nextConversationKey, nextPage, metadata = {}) =>
     onCheckpoint({
-      version: 2,
+      version: 3,
       capturedAt: now(),
       nextConversationKey,
       nextPage,
@@ -405,7 +448,12 @@ export async function runResumeHistoryRequests({
       coverage.completedPages += 1;
       if (!heads.has(target.conversationKey) && firstPage === 1)
         heads.set(target.conversationKey, pageResult.payload.messageIds[0] ?? null);
-      observations.push(...pageResult.payload.observations);
+      observations.push(
+        ...pageResult.payload.observations.map((item) => ({
+          ...structuredClone(item),
+          resumeEvidence: validateResumeEvidence(item.resumeEvidence ?? null),
+        })),
+      );
       unresolved.push(...pageResult.payload.unresolved);
       if (
         pageResult.payload.unresolved.some((item) =>
@@ -575,6 +623,7 @@ export function toResumeHistoryResult(payload, envelope) {
       throw new Error(`RESUME_HISTORY_DIRECTION_INVALID_${index}`);
     }
     const facts = {
+      resumeEvidence: validateResumeEvidence(value.resumeEvidence ?? null),
       attribution: value.attribution
         ? validateAttributionEvidence({
             ...value.attribution,
@@ -610,13 +659,7 @@ export function toResumeHistoryResult(payload, envelope) {
     ]);
     if (ids.has(id)) {
       const prior = ids.get(id);
-      if (
-        prior.attribution &&
-        facts.attribution &&
-        digest(prior.attribution) !== digest(facts.attribution)
-      )
-        throw new Error('RESUME_ATTRIBUTION_EVIDENCE_CONFLICT');
-      if (facts.attribution) prior.attribution = facts.attribution;
+      Object.assign(prior, selectObservationEvidence(prior, facts));
       continue;
     }
     const observation = { id, ...facts };
@@ -691,6 +734,7 @@ export function applyResumeHistoryV2(inputEnvelope, result) {
     const key = eventKey(observation);
     if (prior.has(key)) {
       deduplicated += 1;
+      Object.assign(prior.get(key), selectObservationEvidence(prior.get(key), observation));
       continue;
     }
     prior.set(key, observation);
@@ -701,11 +745,13 @@ export function applyResumeHistoryV2(inputEnvelope, result) {
   for (const observation of result.observations) {
     const key = eventKey(observation);
     if (prior.has(key)) {
+      const previous = prior.get(key),
+        selected = selectObservationEvidence(previous, observation);
       if (
-        observation.attribution &&
-        JSON.stringify(prior.get(key).attribution) !== JSON.stringify(observation.attribution)
+        digest({ attribution: previous.attribution, resumeEvidence: previous.resumeEvidence }) !==
+        digest(selected)
       ) {
-        prior.get(key).attribution = structuredClone(observation.attribution);
+        Object.assign(previous, structuredClone(selected));
         enriched = true;
       }
       continue;

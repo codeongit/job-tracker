@@ -407,6 +407,10 @@ export function propagatePlatformJobState(before, next, stamp) {
   return next;
 }
 
+function observationReasonPriority(reason) {
+  return reason.startsWith('attribution_') ? 2 : reason === 'resume_semantics_missing' ? 1 : 0;
+}
+
 export function groupBossObservations(items, data) {
   const groups = new Map();
   const platformStates = data ? buildBossPlatformStates(data) : new Map();
@@ -449,8 +453,7 @@ export function groupBossObservations(items, data) {
     if (
       (item.status || application?.status) === 'review' ||
       (group.status !== 'review' &&
-        item.reason.startsWith('attribution_') &&
-        !group.reason.startsWith('attribution_'))
+        observationReasonPriority(item.reason) > observationReasonPriority(group.reason))
     ) {
       group.reason = item.reason;
       group.status = item.status || application?.status || 'waiting';

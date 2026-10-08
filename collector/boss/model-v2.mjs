@@ -2,7 +2,11 @@ import { resolveBossJobEvidence } from './job-evidence.mjs';
 import { BOSS_JOB_ID, parseBossJobUrl, isCanonicalBossJobUrl } from '../../dist/boss-job-url.js';
 import { parseBossDetailTitle } from '../../dist/boss-detail-title.js';
 import { validateAttributionEvidence } from '../../dist/boss-attribution.js';
-import { RESUME_KINDS, RESUME_STATUS_KINDS } from '../../dist/resume-rules.js';
+import {
+  RESUME_KINDS,
+  RESUME_STATUS_KINDS,
+  validateResumeEvidence,
+} from '../../dist/resume-rules.js';
 import { createHash } from 'node:crypto';
 
 export const V2_SCOPE = 'loaded-chat-list';
@@ -272,7 +276,7 @@ function associationId(conversationKey, jobId) {
 
 function emptyEnvelope(snapshot) {
   return {
-    version: 4,
+    version: 5,
     scope: V2_SCOPE,
     accountNamespace: snapshot.accountNamespace,
     createdAt: snapshot.capturedAt,
@@ -533,12 +537,19 @@ function validateEnvelopeVersion(input, allowedVersions) {
             'source',
             'status',
             ...(envelope.version >= 4 ? ['attribution'] : []),
+            ...(envelope.version >= 5 ? ['resumeEvidence'] : []),
           ].includes(key),
       )
     )
       fail('observation contains unknown fields');
     if (envelope.version >= 4) validateAttributionEvidence(record.attribution);
     else if (Object.hasOwn(record, 'attribution')) fail('legacy observation contains attribution');
+    if (envelope.version >= 5) {
+      const proof = validateResumeEvidence(record.resumeEvidence);
+      if (proof && proof.messageType !== record.messageType)
+        fail('resume evidence message type is inconsistent');
+    } else if (Object.hasOwn(record, 'resumeEvidence'))
+      fail('legacy observation contains resume evidence');
     string(record.id, `${path}.id`, { max: 100 });
     const conversationKey = string(record.conversationKey, `${path}.conversationKey`, { max: 100 });
     const conversation = envelope.state.records.find((item) => item.key === conversationKey);
@@ -585,7 +596,9 @@ function validateEnvelopeVersion(input, allowedVersions) {
       fail(`${path} evidence status is invalid`);
     }
     const facts = Object.fromEntries(
-      Object.entries(record).filter(([key]) => !['id', 'attribution'].includes(key)),
+      Object.entries(record).filter(
+        ([key]) => !['id', 'attribution', 'resumeEvidence'].includes(key),
+      ),
     );
     const stableId = digest([
       'boss-v2-evidence',
@@ -688,21 +701,24 @@ export function validateEnvelopeV2(input) {
   return validateEnvelopeVersion(input, [2]);
 }
 
-/** Validate the current v4 envelope format. */
+/** Validate the current v5 envelope format. */
 export function validateCurrentEnvelope(input) {
-  return validateEnvelopeVersion(input, [4]);
+  return validateEnvelopeVersion(input, [5]);
 }
 
 /** Read supported versions without upgrading a read-only operation. */
 export function validateEnvelope(input) {
-  return validateEnvelopeVersion(input, [2, 3, 4]);
+  return validateEnvelopeVersion(input, [2, 3, 4, 5]);
 }
 
 /** Explicit, shape-preserving adapter used before every mutation or new commit. */
 export function upgradeEnvelope(input) {
   const envelope = validateEnvelope(input);
-  envelope.version = 4;
-  for (const observation of envelope.resume.observations) observation.attribution ??= null;
+  envelope.version = 5;
+  for (const observation of envelope.resume.observations) {
+    observation.attribution ??= null;
+    observation.resumeEvidence ??= null;
+  }
   return validateCurrentEnvelope(envelope);
 }
 

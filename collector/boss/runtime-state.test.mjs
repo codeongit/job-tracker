@@ -21,6 +21,8 @@ import {
   detailTaskDisposition,
   detailRuntimeSummary,
   resumeDetailState,
+  saveChangeCheckpoint,
+  loadChangeCheckpoint,
 } from './runtime-state.mjs';
 
 test('fair selection resumes after the prior item and wraps without starvation', () => {
@@ -504,7 +506,7 @@ test('runtime and resume checkpoints are private, atomic and reloadable', async 
     assert.deepEqual(await loadResumeCheckpoint(directory), checkpoint);
     for (const invalid of [
       { ...checkpoint, unknownField: true },
-      { ...checkpoint, version: 3 },
+      { ...checkpoint, version: 4 },
       { ...checkpoint, head: 'message~a' },
       { ...checkpoint, nextConversationKey: 'job~a' },
     ])
@@ -515,6 +517,95 @@ test('runtime and resume checkpoints are private, atomic and reloadable', async 
     assert.deepEqual(await loadResumeCheckpoint(directory), checkpoint);
     assert.equal(await removeResumeCheckpoint(directory), true);
     assert.equal(await loadResumeCheckpoint(directory), null);
+  } finally {
+    await rm(directory, { recursive: true });
+  }
+});
+
+test('语义依据仅在 v3 检查点保存，旧格式拒绝依据且失败保留已有进度', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'boss-checkpoint-proof-'));
+  try {
+    const observation = {
+      conversationKey: 'c'.repeat(64),
+      friendId: '301',
+      friendSource: '0',
+      messageId: 'same-status',
+      direction: 'system',
+      messageType: 5,
+      kind: 'request_sent',
+      platformTime: '2026-09-21T10:00:00.000Z',
+      externalJobId: null,
+      source: 'geek_history_status_message',
+      resumeEvidence: {
+        version: 1,
+        messageType: 5,
+        field: 'message.content',
+        text: '附件简历请求已发送',
+      },
+    };
+    const checkpoint = {
+      version: 3,
+      capturedAt: '2026-09-21T10:00:01.000Z',
+      nextConversationKey: 'c'.repeat(64),
+      nextPage: 2,
+      observations: [observation],
+      unresolved: [],
+      coverage: { requestedConversations: 1 },
+      usage: { historyRequests: 2 },
+      partial: false,
+      error: null,
+    };
+    for (const [save, load] of [
+      [saveResumeCheckpoint, loadResumeCheckpoint],
+      [saveChangeCheckpoint, loadChangeCheckpoint],
+    ]) {
+      const checkpointPath = await save(directory, checkpoint);
+      assert.deepEqual(await load(directory), checkpoint);
+      for (const invalid of [
+        { ...checkpoint, version: 4 },
+        ...[1, 2].map((version) => ({ ...checkpoint, version })),
+        { ...checkpoint, observations: [{ ...observation, futureSemanticField: 'synthetic' }] },
+        {
+          ...checkpoint,
+          observations: [
+            { ...observation, resumeEvidence: { ...observation.resumeEvidence, version: 2 } },
+          ],
+        },
+        {
+          ...checkpoint,
+          observations: [
+            {
+              ...observation,
+              resumeEvidence: { ...observation.resumeEvidence, text: '合成私人正文' },
+            },
+          ],
+        },
+        {
+          ...checkpoint,
+          observations: [
+            { ...observation, resumeEvidence: { ...observation.resumeEvidence, messageType: 4 } },
+          ],
+        },
+      ])
+        await assert.rejects(() => save(directory, invalid), /RESUME_CHECKPOINT_INVALID/);
+      assert.deepEqual(await load(directory), checkpoint);
+      await writeFile(
+        checkpointPath,
+        JSON.stringify({
+          ...checkpoint,
+          observations: [{ ...observation, futureSemanticField: 'synthetic' }],
+        }),
+      );
+      await assert.rejects(() => load(directory), /RESUME_CHECKPOINT_INVALID/);
+      await save(directory, checkpoint);
+      const legacyObservation = { ...observation };
+      delete legacyObservation.resumeEvidence;
+      for (const version of [1, 2]) {
+        const legacy = { ...checkpoint, version, observations: [legacyObservation] };
+        await save(directory, legacy);
+        assert.deepEqual(await load(directory), legacy);
+      }
+    }
   } finally {
     await rm(directory, { recursive: true });
   }

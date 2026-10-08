@@ -104,7 +104,9 @@ node tracker.mjs status --account another-account
 
 DOM 仅接受带稳定 `data-message-id` 和 `data-message-time` 的白名单系统状态，来源固定保存为 `dom_chat_status_message_v1`，不会伪装成历史接口证据。该 DOM 结构仍标记为**待真实浏览器验收**；验收前不要创建启用策略。
 
-历史接口的“附件简历请求已发送”既可能以精确系统文案返回，也可能仅以平台模板签名返回。模板识别只接受已实测的完整结构 `type=4 / bizType=317 / body.type=16 / body.style=3 / body.templateId=1`、单文章卡片及对端发送方关系；任一字段不同都继续作为普通卡片观察，不能推进简历状态。
+历史接口的精确系统文案“附件简历请求已发送”仍表示简历已发送。`type=4 / bizType=317 / body.type=16 / body.style=3 / body.templateId=1` 也用于岗位卡片，不能仅凭模板、单文章或发送方关系证明简历发送；类型 4 只保留普通卡片观察。
+
+私有快照 v5 保留最小简历含义依据 `resumeEvidence`：消息类型、白名单系统字段路径与固定状态文案，附件文件名统一替换为 `[attachment]`。普通卡片使用 `field: none` 和空文案。旧 v1–v4 仍可读取，升级旧观察时默认依据为空，不改变原观察 ID、类别或已作出的人工决定；缺依据不能被升级为可信发送材料。
 
 ## 文件与安全
 

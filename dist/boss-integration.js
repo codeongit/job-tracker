@@ -6,7 +6,7 @@ import {
   bossAttributionSummary,
   buildBossAttributionContext,
 } from './boss-attribution.js';
-import { resumeRule, resumeTransition } from './resume-rules.js';
+import { resumeRule, resumeTransition, resumeEvidenceMeaning } from './resume-rules.js';
 import {
   clone,
   equal,
@@ -378,11 +378,45 @@ export function bossReceiptGap(data, batch) {
 }
 
 function resolveResumeEvent(data, batch, event, context) {
-  const attribution = assessBossAttribution(batch.accountNamespace, event, context);
+  let attribution = assessBossAttribution(batch.accountNamespace, event, context);
+  let observationOnly = !resumeRule(event.summary).target;
+  // request_sent keeps its historical identity and business meaning. A producer
+  // label alone cannot prove that the source was an actual system confirmation.
+  if (event.summary === 'resume_request_sent' && attribution.status !== 'conflict') {
+    const identity = { ...event, platform: 'boss', accountNamespace: batch.accountNamespace };
+    const factId = bossFactId(identity);
+    const candidates = [...(context?.factAssociations?.get(factId) ?? []), identity];
+    const classified = candidates.map((candidate) => ({
+      candidate,
+      meaning: resumeEvidenceMeaning(candidate.summary, candidate.resumeEvidence ?? null),
+    }));
+    const confirmed = classified.filter((item) => item.meaning.status === 'verified');
+    const cards = classified.filter((item) => item.candidate.resumeEvidence?.field === 'none');
+    if (!confirmed.length && cards.length) observationOnly = true;
+    else if (!confirmed.length || cards.length)
+      return {
+        status: 'review',
+        targetId: '',
+        applicationStatus: 'waiting',
+        reason: 'resume_semantics_missing',
+      };
+    else {
+      // Attribution and system semantics must be complete in the same
+      // observation. Never combine an old candidate's identity with another
+      // candidate's system text to manufacture a valid chain.
+      const proofCandidates = confirmed.map((item) => item.candidate);
+      const factObservations = new Map(context?.factObservations ?? []);
+      factObservations.set(factId, proofCandidates);
+      attribution = assessBossAttribution(batch.accountNamespace, proofCandidates[0], {
+        ...context,
+        factObservations,
+      });
+    }
+  }
   // A card with no status meaning only needs archival, never a confirmed job
   // target. Keep explicit contradictions visible and retain its candidate
   // association in the immutable source context for later cross-job checks.
-  if (!resumeRule(event.summary).target && attribution.status !== 'conflict')
+  if (observationOnly && attribution.status !== 'conflict')
     return {
       status: 'recorded',
       targetId: '',
@@ -1040,6 +1074,20 @@ export function applyBossBatch(
                     : event,
                   stamp,
                 );
+    if (
+      event.eventType === 'resume_observed' &&
+      result.applicationStatus === 'no_effect' &&
+      result.reason === 'observation_only' &&
+      application?.status === 'review' &&
+      (application.reason.startsWith('attribution_') ||
+        ['job_identity_conflict', 'ambiguous_job_identity'].includes(application.reason))
+    )
+      Object.assign(result, {
+        status: 'review',
+        targetId: '',
+        applicationStatus: 'review',
+        reason: application.reason,
+      });
     if (result.targetId && blockedOpportunityIds.includes(result.targetId))
       Object.assign(result, {
         status: 'review',
@@ -1532,8 +1580,14 @@ export function latestPlatformObservation(data, opportunityId) {
     )[0];
 }
 
-export function platformObservationLabel(event) {
+export function platformObservationLabel(event, application = null) {
   if (!event) return '';
+  if (event.eventType === 'resume_observed' && event.summary === 'resume_request_sent') {
+    if (application?.reason === 'observation_only') return '旧平台卡片（仅存档，未确认发送）';
+    if (application?.reason === 'resume_semantics_missing') return '旧平台卡片（发送依据不足）';
+    if (['waiting', 'review'].includes(application?.status))
+      return '简历相关观察（待核对，未确认发送）';
+  }
   if (event.eventType === 'resume_observed') return resumeRule(event.summary).label;
   if (event.messageDirection === 'inbound' || event.receiptStatus === 'not_applicable')
     return '对方消息';

@@ -42,21 +42,30 @@ function uniqueEventsById(events) {
     const {
       observedAt: existingObservedAt,
       attribution: existingAttribution,
+      resumeEvidence: existingResumeEvidence,
       ...existingIdentity
     } = existing;
-    const { observedAt, attribution, ...eventIdentity } = event;
+    const { observedAt, attribution, resumeEvidence, ...eventIdentity } = event;
     if (
       existingAttribution &&
       attribution &&
       stableHash(existingAttribution) !== stableHash(attribution)
     )
       integrationFail('BOSS_ATTRIBUTION_EVIDENCE_CONFLICT', { fatal: true });
+    if (
+      existingResumeEvidence &&
+      resumeEvidence &&
+      stableHash(existingResumeEvidence) !== stableHash(resumeEvidence)
+    )
+      integrationFail('BOSS_RESUME_EVIDENCE_CONFLICT', { fatal: true });
     if (stableHash(existingIdentity) !== stableHash(eventIdentity))
       integrationFail('BOSS_EVENT_ID_COLLISION', { fatal: true });
     if (
-      (attribution && !existingAttribution) ||
-      (Boolean(attribution) === Boolean(existingAttribution) &&
-        observedAt.localeCompare(existingObservedAt) < 0)
+      (resumeEvidence && !existingResumeEvidence) ||
+      (Boolean(resumeEvidence) === Boolean(existingResumeEvidence) &&
+        ((attribution && !existingAttribution) ||
+          (Boolean(attribution) === Boolean(existingAttribution) &&
+            observedAt.localeCompare(existingObservedAt) < 0)))
     )
       unique.set(event.eventId, event);
   }
@@ -295,6 +304,11 @@ export function createResumeEvents(envelope, { sourceSequence, evidenceDate = ''
         })}`,
         eventType: facts.eventType,
         attribution: observation.attribution ?? null,
+        resumeEvidence:
+          observation.resumeEvidence ??
+          (observation.kind === 'request_sent' && observation.messageType === 4
+            ? { version: 1, messageType: 4, field: 'none', text: '' }
+            : null),
         conversationKey: facts.conversationKey,
         friendId: facts.friendId,
         friendSource: facts.friendSource,
@@ -364,6 +378,7 @@ export function createResumeStatusEvents(envelope, { sourceSequence, evidenceDat
       return {
         eventId: `boss-event-${stableHash({ ...facts, workflow: RESUME_STATUS_WORKFLOW })}`,
         eventType: facts.eventType,
+        resumeEvidence: null,
         conversationKey: facts.conversationKey,
         friendId: facts.friendId,
         friendSource: facts.friendSource,
@@ -436,7 +451,11 @@ export function createBatch({
       const row = rows.get(event.conversationKey);
       return {
         ...(event.eventType === 'resume_observed'
-          ? { ...structuredClone(event), attribution: event.attribution ?? null }
+          ? {
+              ...structuredClone(event),
+              attribution: event.attribution ?? null,
+              resumeEvidence: event.resumeEvidence ?? null,
+            }
           : structuredClone(event)),
         jobDetails: row?.jobDetails ?? null,
       };
@@ -494,13 +513,19 @@ export function createIncrementalBatch(
     [
       ...eventsFor(previous).filter((event) => !afterInitial || HH_MM.test(event.timeLabel)),
       ...createResumeEvents(previous.envelope, { sourceSequence }),
-    ].map((event) => `${event.eventId}:${stableHash(event.attribution ?? null)}`),
+    ].map(
+      (event) =>
+        `${event.eventId}:${stableHash(event.attribution ?? null)}:${stableHash(event.resumeEvidence ?? null)}`,
+    ),
   );
   const events = uniqueEventsById([
     ...eventsFor(current),
     ...createResumeEvents(current.envelope, { sourceSequence }),
   ]).filter(
-    (event) => !previousIds.has(`${event.eventId}:${stableHash(event.attribution ?? null)}`),
+    (event) =>
+      !previousIds.has(
+        `${event.eventId}:${stableHash(event.attribution ?? null)}:${stableHash(event.resumeEvidence ?? null)}`,
+      ),
   );
   if (!events.length) return null;
   const policy = {

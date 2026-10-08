@@ -1,5 +1,11 @@
 import { BOSS_JOB_ID, isCanonicalBossJobUrl } from './boss-job-url.js';
-import { RESUME_SUMMARIES } from './resume-rules.js';
+import {
+  RESUME_SUMMARIES,
+  RESUME_RULES,
+  resumeRule,
+  classifyResumeText,
+  validateResumeEvidence,
+} from './resume-rules.js';
 import { validateAttributionEvidence } from './boss-attribution.js';
 const clone = structuredClone;
 const BATCH_ID = /^boss-batch-[a-f0-9]{64}$/;
@@ -100,9 +106,22 @@ function validateEvent(event, batch) {
       ? [...baseFields, 'eventType', ...(batch.version >= 3 ? ['attribution'] : [])]
       : baseFields;
   if (batch.version >= 4) fields.push('jobDetails');
+  if (batch.version >= 5 && eventType === 'resume_observed') fields.push('resumeEvidence');
   if (batch.version >= 3 && eventType === 'resume_observed')
     validateAttributionEvidence(event.attribution);
   if (batch.version >= 4) validateJobDetails(event.jobDetails, event);
+  if (batch.version >= 5 && eventType === 'resume_observed') {
+    const evidence = validateResumeEvidence(event.resumeEvidence);
+    if (
+      evidence &&
+      (evidence.field === 'none'
+        ? !['resume_request_sent', 'resume_sent_candidate', 'resume_card_other'].includes(
+            event.summary,
+          )
+        : classifyResumeText(evidence.text, RESUME_RULES) !== resumeRule(event.summary).kind)
+    )
+      throw integrationError('BOSS 简历证据与观察类别不一致。', 'BATCH_INVALID');
+  }
   if (!hasOnly(event, fields) || fields.some((field) => !(field in event)))
     throw integrationError('BOSS 批次事件结构无效。', 'BATCH_INVALID');
   if (!EVENT_ID.test(event.eventId))
@@ -125,7 +144,10 @@ function validateEvent(event, batch) {
     nameSource: 100,
   };
   for (const field of fields.filter(
-    (field) => !['sourceSequence', 'eventType', 'attribution', 'jobDetails'].includes(field),
+    (field) =>
+      !['sourceSequence', 'eventType', 'attribution', 'jobDetails', 'resumeEvidence'].includes(
+        field,
+      ),
   ))
     text(event[field], `events.${field}`, limits[field] || 1000);
   if (!['conversation_observed', 'resume_observed'].includes(eventType))
@@ -225,7 +247,7 @@ export function validateBossBatch(input) {
     throw integrationError('BOSS 队列批次结构无效。', 'BATCH_INVALID');
   if (
     input.format !== 'job-tracker-boss-batch' ||
-    ![1, 2, 3, 4].includes(input.version) ||
+    ![1, 2, 3, 4, 5].includes(input.version) ||
     !BATCH_ID.test(input.batchId) ||
     input.platform !== 'boss' ||
     !ACCOUNT_NAMESPACE.test(input.accountNamespace) ||
@@ -342,6 +364,14 @@ export function bossEventDigestInput(batch, event) {
 }
 export function bossBatchDigestInput(batch) {
   return {
+    ...(batch.version >= 5
+      ? {
+          resumeEvidence: batch.events
+            .filter((event) => event.eventType === 'resume_observed')
+            .map((event) => ({ eventId: event.eventId, evidence: event.resumeEvidence }))
+            .sort((a, b) => a.eventId.localeCompare(b.eventId)),
+        }
+      : {}),
     ...(batch.version >= 4
       ? {
           jobDetails: batch.events

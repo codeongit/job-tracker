@@ -13,6 +13,10 @@ export const ATTRIBUTION_REASONS = Object.freeze({
   attribution_message_multiple_jobs: '同一消息关联了不同候选岗位',
   attribution_conversation_job_changed: '会话曾关联不同岗位，消息缺少岗位身份',
 });
+export const BOSS_OBSERVATION_REASONS = Object.freeze({
+  ...ATTRIBUTION_REASONS,
+  resume_semantics_missing: '旧平台卡片缺少可核对的简历发送依据',
+});
 
 // Ephemeral candidate associations, never proof of message/job ownership.
 export function buildBossAttributionContext(events, { observations = [] } = {}) {
@@ -234,13 +238,13 @@ export function assessBossAttribution(accountNamespace, event, context = null) {
 
 // Query current decisions, never historical diagnostic-file counts.
 export function bossAttributionSummary(data) {
-  const result = { insufficient: 0, conflict: 0, collection: 0, items: [] };
+  const result = { insufficient: 0, conflict: 0, semantic: 0, collection: 0, items: [] };
   const seen = new Set();
   for (const application of data?.sourceApplications || []) {
     if (
       application.deletedAt ||
       !['waiting', 'review'].includes(application.status) ||
-      !Object.hasOwn(ATTRIBUTION_REASONS, application.reason) ||
+      !Object.hasOwn(BOSS_OBSERVATION_REASONS, application.reason) ||
       seen.has(application.factId)
     )
       continue;
@@ -248,13 +252,18 @@ export function bossAttributionSummary(data) {
     const event = (data.sourceEvents || []).find(
       (event) => !event.deletedAt && event.factId === application.factId,
     );
-    const category = application.status === 'review' ? 'conflict' : 'insufficient';
+    const category =
+      application.status === 'review'
+        ? 'conflict'
+        : application.reason === 'resume_semantics_missing'
+          ? 'semantic'
+          : 'insufficient';
     result[category]++;
     result.items.push({
       id: application.factId,
       category,
       reason: application.reason,
-      label: ATTRIBUTION_REASONS[application.reason],
+      label: BOSS_OBSERVATION_REASONS[application.reason],
       candidate: event?.jobName || '',
       candidateCompany: event?.company || '',
     });

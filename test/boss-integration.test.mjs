@@ -169,11 +169,12 @@ function attachDurableState(envelope, records = envelope.snapshot.records) {
   return envelope;
 }
 
-test('采集快照 v4 携带归属依据，旧 v2/v3 仍可读取', () => {
+test('采集快照 v5 携带简历语义依据，旧 v2/v3/v4 仍可读取', () => {
   assert.equal(validateTrackerEnvelope(fixture({ rows: 1 })).version, 2);
   assert.equal(validateTrackerEnvelope({ ...fixture({ rows: 1 }), version: 3 }).version, 3);
   assert.equal(validateTrackerEnvelope({ ...fixture({ rows: 1 }), version: 4 }).version, 4);
-  assert.throws(() => validateTrackerEnvelope({ ...fixture({ rows: 1 }), version: 5 }));
+  assert.equal(validateTrackerEnvelope({ ...fixture({ rows: 1 }), version: 5 }).version, 5);
+  assert.throws(() => validateTrackerEnvelope({ ...fixture({ rows: 1 }), version: 6 }));
 });
 
 test('v3 接受经私有策略验收的 DOM 状态证据，但拒绝未知来源', () => {
@@ -555,7 +556,7 @@ test('inbox is immutable, private, and does not chmod a shared parent', async (t
   const beforeMode = (await lstat(root)).mode & 0o777;
   const snapshot = await readTrackerSnapshot(join(data, FIRST_NAME));
   const batch = createInitialBatch(snapshot, 1);
-  assert.equal(batch.version, 4);
+  assert.equal(batch.version, 5);
   // Queue v3 binds attribution material in its batch digest. Repeated writes remain immutable.
   const first = await inbox.enqueue(batch);
   const second = await inbox.enqueue(batch);

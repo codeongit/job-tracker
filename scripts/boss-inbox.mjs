@@ -24,9 +24,9 @@ export const BOSS_RECEIPT_FORMAT = 'job-tracker-boss-receipt';
 export const BOSS_CONTROL_FORMAT = 'job-tracker-boss-control';
 export const BOSS_RUN_FORMAT = 'job-tracker-boss-run';
 export const BOSS_INCIDENT_FORMAT = 'job-tracker-boss-incident';
-export const BOSS_INTEGRATION_VERSION = 4;
+export const BOSS_INTEGRATION_VERSION = 5;
 export const BOSS_CONTROL_MAX_ATTEMPTS = 128;
-const SUPPORTED_QUEUE_VERSIONS = new Set([1, 2, 3, BOSS_INTEGRATION_VERSION]);
+const SUPPORTED_QUEUE_VERSIONS = new Set([1, 2, 3, 4, BOSS_INTEGRATION_VERSION]);
 
 const MAX_BATCH_BYTES = 5_000_000;
 const MAX_CONTROL_BYTES = 128_000;

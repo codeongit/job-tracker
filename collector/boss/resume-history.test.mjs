@@ -2,7 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import { assessBossAttribution } from '../../dist/boss-attribution.js';
-import { createEnvelopeV2, conversationKeyV2, validateEnvelopeV2 } from './model-v2.mjs';
+import {
+  createEnvelopeV2,
+  conversationKeyV2,
+  validateEnvelopeV2,
+  upgradeEnvelope,
+} from './model-v2.mjs';
 import {
   createResumeHistoryExpression,
   createResumeFriendExpression,
@@ -362,7 +367,7 @@ test('page classifier accepts exact platform system fields but not chat text or 
       ),
       [
         ['m1', 'request_sent', 'geek_history_status_message'],
-        ['m5', 'request_sent', 'geek_history_status_message'],
+        ['m5', 'resume_card_other', 'geek_history_type_4'],
         ['m6', 'resume_card_other', 'geek_history_type_4'],
       ],
     );
@@ -429,6 +434,10 @@ test('bounded history runner checkpoints every request and reports actual covera
     failedConversations: 0,
   });
   assert.equal(checkpoints.length, 5);
+  assert.equal(
+    checkpoints.every((item) => item.version === 3),
+    true,
+  );
   assert.equal(waits.length, 4);
   assert.equal(
     waits.every((value) => value === 3000),
@@ -620,7 +629,7 @@ test('new snapshots retain partial identity evidence and enrich observations wit
     first.envelope,
     toResumeHistoryResult(payload([{ ...raw, attribution: evidence }]), first.envelope),
   );
-  assert.equal(second.envelope.version, 4);
+  assert.equal(second.envelope.version, 5);
   assert.equal(second.envelope.resume.observations.length, 1);
   assert.equal(second.envelope.resume.observations[0].id, first.envelope.resume.observations[0].id);
   assert.equal(second.envelope.resume.observations[0].attribution.responseFriendId, null);
@@ -628,6 +637,175 @@ test('new snapshots retain partial identity evidence and enrich observations wit
     second.envelope.resume.observations[0].attribution.accountNamespace,
     base.accountNamespace,
   );
+});
+
+test('v4 类型四误分类升级保留原观察身份，并显式缺少发送依据', () => {
+  const { envelope } = createEnvelopeV2(snapshot);
+  const raw = {
+    conversationKey,
+    friendId: '301',
+    friendSource: '0',
+    messageId: 'legacy-card',
+    direction: 'system',
+    messageType: 4,
+    kind: 'request_sent',
+    platformTime: '2026-09-20T08:00:00.000Z',
+    externalJobId: null,
+    source: 'geek_history_status_message',
+  };
+  const current = applyResumeHistoryV2(
+    envelope,
+    toResumeHistoryResult(payload([raw]), envelope),
+  ).envelope;
+  const legacy = structuredClone(current);
+  legacy.version = 4;
+  delete legacy.resume.observations[0].resumeEvidence;
+  const upgraded = upgradeEnvelope(legacy);
+  assert.equal(upgraded.version, 5);
+  assert.equal(upgraded.resume.observations[0].resumeEvidence, null);
+  assert.equal(upgraded.resume.observations[0].kind, 'request_sent');
+  assert.equal(upgraded.resume.observations[0].id, current.resume.observations[0].id);
+  assert.equal(Object.hasOwn(legacy.resume.observations[0], 'resumeEvidence'), false);
+  const bad = structuredClone(upgraded);
+  bad.resume.observations[0].resumeEvidence = {
+    version: 2,
+    messageType: 4,
+    field: 'none',
+    text: '',
+  };
+  assert.throws(() => upgradeEnvelope(bad), /RESUME_EVIDENCE_INVALID/);
+});
+
+test('同一观察补入精确发送依据时不改变身份，卡片依据仍不含正文', () => {
+  const { envelope } = createEnvelopeV2(snapshot);
+  const raw = {
+    conversationKey,
+    friendId: '301',
+    friendSource: '0',
+    messageId: 'same-status',
+    direction: 'system',
+    messageType: 5,
+    kind: 'request_sent',
+    platformTime: '2026-09-20T08:00:00.000Z',
+    externalJobId: null,
+    source: 'geek_history_status_message',
+  };
+  const first = applyResumeHistoryV2(envelope, toResumeHistoryResult(payload([raw]), envelope));
+  const proof = {
+    version: 1,
+    messageType: 5,
+    field: 'message.content',
+    text: '附件简历请求已发送',
+  };
+  const second = applyResumeHistoryV2(
+    first.envelope,
+    toResumeHistoryResult(payload([{ ...raw, resumeEvidence: proof }]), first.envelope),
+  );
+  assert.equal(second.envelope.resume.observations.length, 1);
+  assert.equal(second.envelope.resume.observations[0].id, first.envelope.resume.observations[0].id);
+  assert.deepEqual(second.envelope.resume.observations[0].resumeEvidence, proof);
+  const repeated = applyResumeHistoryV2(
+    second.envelope,
+    toResumeHistoryResult(payload([{ ...raw, resumeEvidence: proof }]), second.envelope),
+  );
+  assert.deepEqual(repeated.envelope.resume.observations, second.envelope.resume.observations);
+});
+
+test('重复消息的身份与发送依据保持同次观察，不能跨采样拼成完整证明', () => {
+  const { envelope } = createEnvelopeV2(snapshot);
+  const raw = {
+    conversationKey,
+    friendId: '301',
+    friendSource: '0',
+    messageId: 'independent-status',
+    direction: 'system',
+    messageType: 5,
+    kind: 'request_sent',
+    platformTime: '2026-09-20T08:00:00.000Z',
+    externalJobId: null,
+    source: 'geek_history_status_message',
+  };
+  const attribution = {
+    version: 1,
+    source: 'history',
+    accountNamespace: null,
+    conversationKey,
+    messageId: raw.messageId,
+    requestedBossId: 'boss_301',
+    responseFriendId: '301',
+    responseFriendSource: '0',
+    responseBossId: 'boss_301',
+    selfId: 'self_301',
+    senderId: 'boss_301',
+    recipientId: 'self_301',
+    messageJobId: null,
+  };
+  const proof = {
+    version: 1,
+    messageType: 5,
+    field: 'message.content',
+    text: '附件简历请求已发送',
+  };
+  const identityOnly = { ...raw, attribution },
+    semanticsOnly = { ...raw, resumeEvidence: proof };
+  const first = applyResumeHistoryV2(
+    envelope,
+    toResumeHistoryResult(payload([identityOnly]), envelope),
+  );
+  const second = applyResumeHistoryV2(
+    first.envelope,
+    toResumeHistoryResult(payload([semanticsOnly]), first.envelope),
+  );
+  const paired = second.envelope.resume.observations[0];
+  assert.equal(Boolean(paired.attribution && paired.resumeEvidence), false);
+  assert.equal(paired.id, first.envelope.resume.observations[0].id);
+  for (const items of [
+    [identityOnly, semanticsOnly],
+    [semanticsOnly, identityOnly],
+  ]) {
+    const converted = toResumeHistoryResult(payload(items), envelope);
+    assert.equal(converted.observations.length, 1);
+    assert.equal(
+      Boolean(converted.observations[0].attribution && converted.observations[0].resumeEvidence),
+      false,
+    );
+    assert.deepEqual(
+      converted.observations,
+      toResumeHistoryResult(payload([...items].reverse()), envelope).observations,
+    );
+  }
+  const complete = applyResumeHistoryV2(
+    second.envelope,
+    toResumeHistoryResult(
+      payload([{ ...raw, attribution, resumeEvidence: proof }]),
+      second.envelope,
+    ),
+  );
+  assert.deepEqual(complete.envelope.resume.observations[0].resumeEvidence, proof);
+  assert.equal(complete.envelope.resume.observations[0].attribution.selfId, 'self_301');
+  assert.equal(complete.envelope.resume.observations[0].id, paired.id);
+  const conflicting = {
+    ...raw,
+    attribution,
+    resumeEvidence: { ...proof, text: '对方已查看了您的附件简历' },
+  };
+  assert.throws(
+    () =>
+      toResumeHistoryResult(
+        payload([{ ...raw, attribution, resumeEvidence: proof }, conflicting]),
+        envelope,
+      ),
+    /RESUME_SEMANTIC_EVIDENCE_CONFLICT/,
+  );
+  assert.throws(
+    () =>
+      applyResumeHistoryV2(
+        complete.envelope,
+        toResumeHistoryResult(payload([conflicting]), complete.envelope),
+      ),
+    /RESUME_SEMANTIC_EVIDENCE_CONFLICT/,
+  );
+  assert.deepEqual(complete.envelope.resume.observations[0].resumeEvidence, proof);
 });
 
 test('response contact and checked self identity share the gate across paged and compatibility reads', async () => {

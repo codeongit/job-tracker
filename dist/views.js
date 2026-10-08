@@ -56,7 +56,7 @@ export function createViews(context, pendingTasks) {
     if (opportunity.readState) return getOpportunityStatus(opportunity).readState;
     const observation = latestPlatformObservation(data, opportunity.id),
       conversations = new Set(
-        live(data.sourceEvents)
+        live(effectiveSourceFacts(data))
           .filter((event) => event.opportunityId === opportunity.id && event.status === 'recorded')
           .map((event) => event.conversationKey),
       ),
@@ -130,7 +130,13 @@ export function createViews(context, pendingTasks) {
               const summary = group.rows.find(
                 (row) => row.eventType !== 'resume_observed' && row.summary,
               )?.summary;
-              const labels = [...new Set(group.rows.map(platformObservationLabel))];
+              const labels = [
+                ...new Set(
+                  group.rows.map((row) =>
+                    platformObservationLabel(row, sourceApplicationForEvent(state.data, row)),
+                  ),
+                ),
+              ];
               return `<li><time>${esc(event.evidenceDate || event.observedAt || '时间未知')} · ${esc(event.contact || '招聘者未标记')} · ${labels.map(esc).join('、')}</time>${summary ? esc(summary) : '<span class="muted">结构化平台观察</span>'}<small>包含 ${group.rows.length} 项观察</small></li>`;
             })
             .join(

@@ -8,7 +8,7 @@ import {
 
 // Evidence is immutable. Application decisions are separately replayable and never
 // turn a rule upgrade or a restored backup into a new platform observation.
-export const SOURCE_RULE_VERSION = 'boss-application-v11';
+export const SOURCE_RULE_VERSION = 'boss-application-v12';
 
 export function sourceApplicationForEvent(data, event) {
   const factId = event.factId || (hasBossFactIdentity(event) ? bossFactId(event) : '');
@@ -82,9 +82,14 @@ export function effectiveSourceEvents(data) {
     if (!application) return event;
     return {
       ...event,
-      opportunityId: application.reason.startsWith('attribution_')
-        ? ''
-        : application.opportunityId || event.opportunityId,
+      opportunityId:
+        application.reason.startsWith('attribution_') ||
+        application.reason === 'resume_semantics_missing' ||
+        (application.status === 'no_effect' &&
+          application.reason === 'observation_only' &&
+          !application.opportunityId)
+          ? ''
+          : application.opportunityId || event.opportunityId,
       status:
         ['applied', 'no_effect', 'protected'].includes(application.status) &&
         application.opportunityId

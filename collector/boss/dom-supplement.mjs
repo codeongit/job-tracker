@@ -1,4 +1,8 @@
-import { RESUME_RULES, classifyResumeText } from '../../dist/resume-rules.js';
+import {
+  RESUME_RULES,
+  classifyResumeText,
+  classifyResumeEvidence,
+} from '../../dist/resume-rules.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, open, readFile, rename, unlink, lstat } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -366,18 +370,18 @@ export function createDomSupplementReadExpression(target, { allowSwitch = true }
     const normalizeTime=value=>{const text=clean(value);if(!text)return null;const numeric=Number(text);
       const millis=Number.isFinite(numeric)?(numeric>0&&numeric<100000000000?numeric*1000:numeric):Date.parse(text);
       const date=new Date(millis);return Number.isFinite(date.getTime())?date.toISOString():null;};
-    const statusKind = text => (${classifyResumeText.toString()})(text, ${JSON.stringify(RESUME_RULES)});
+    const statusEvidence = text => (${classifyResumeEvidence.toString()})({type:5,content:text}, ${JSON.stringify(RESUME_RULES)}, (${classifyResumeText.toString()}));
     const observations=[],unresolved=[],seen=new Set();
     for(const node of panels[0].querySelectorAll('[data-message-id][data-message-time]')){
       const statusNode=node.querySelector('.system-text');
-      const kind=statusKind(clean(statusNode?.innerText));if(!kind)continue;
+      const status=statusEvidence(clean(statusNode?.innerText));if(!status)continue;const kind=status.kind;
       const messageId=clean(node.getAttribute('data-message-id')),platformTime=normalizeTime(node.getAttribute('data-message-time'));
       if(!/^[A-Za-z0-9_-]{1,128}$/.test(messageId??'')||!platformTime){
         unresolved.push({conversationKey:target.conversationKey,reason:'DOM_MESSAGE_IDENTITY_INCOMPLETE'});continue;}
       const key=JSON.stringify([messageId,kind,platformTime]);if(seen.has(key))continue;seen.add(key);
       const rawJobId=clean(node.getAttribute('data-job-id'));
       observations.push({conversationKey:target.conversationKey,friendId:target.friendId,
-        friendSource:target.friendSource,messageId,direction:'system',messageType:5,kind,platformTime,
+        friendSource:target.friendSource,messageId,direction:'system',messageType:5,kind,resumeEvidence:status.evidence,platformTime,
         externalJobId:/^[A-Za-z0-9_~\-]{1,300}$/.test(rawJobId??'')?rawJobId:null,
         source:${JSON.stringify(DOM_STATUS_SOURCE)}});}
     return {ok:true,url,target,switchAttempted,capturedAt:new Date().toISOString(),observations,unresolved,

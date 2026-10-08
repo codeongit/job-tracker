@@ -1,6 +1,6 @@
 # BOSS 采集、队列与本机录入
 
-更新日期：2026-10-07；核对实现版本：v0.10.5。本页集中说明 BOSS 的运行入口、采集链路、调度、动作预算和阶段故障行为；授权及操作边界见 [AUTOMATION_POLICY](AUTOMATION_POLICY.md)。脚本、协议和合成数据测试不等于真实环境验收，验收分工见 [维护手册](MAINTENANCE.md#真实浏览器测试分工)。
+更新日期：2026-10-08；核对实现版本：v0.10.15。本页集中说明 BOSS 的运行入口、采集链路、调度、动作预算和阶段故障行为；授权及操作边界见 [AUTOMATION_POLICY](AUTOMATION_POLICY.md)。脚本、协议和合成数据测试不等于真实环境验收，验收分工见 [维护手册](MAINTENANCE.md#真实浏览器测试分工)。
 
 当前运行方式依据 [D026](adr/0026-local-authoritative-workspace.md) 和 [D028](adr/0028-change-driven-history.md)；业务收敛与后续调整见 [决策索引](DECISIONS.md)。首批规则保留于 [D023](adr/0023-boss-private-queue-integration.md) 和 [D024](adr/0024-boss-date-label-import.md)，旧版关页积压、仅手动单轮、45 分钟/每天 16 次等运行限制已由 D026 替代。
 
@@ -83,7 +83,7 @@ DOM 额度只表示受控补采上限。生产策略默认关闭，只有用户�
 
 ### 精确简历状态
 
-精确平台文案与状态转换以 [`dist/resume-rules.js`](../dist/resume-rules.js) 为唯一规则定义，维护方法见 [架构的简历规则](ARCHITECTURE.md#简历规则的维护)，用户确认样例见 [D025](adr/0025-controlled-conversation-detail-read.md)。规则含义、归属和应用条件分别见 [D030](adr/0030-reject-misattributed-resume-observation.md)、[D031](adr/0031-explicit-resume-semantics.md) 和 [D035](adr/0035-boss-conversation-association-application.md)；本机消息/阶段联动见 [架构的数据流](ARCHITECTURE.md#数据流)。
+精确平台文案与状态转换以 [`dist/resume-rules.js`](../dist/resume-rules.js) 为唯一规则定义，维护方法见 [架构的简历规则](ARCHITECTURE.md#简历规则的维护)，用户确认样例见 [D025](adr/0025-controlled-conversation-detail-read.md)。通用卡片模板不能证明简历发送；0.10.15 的语义依据与旧材料边界见 [D044](adr/0044-boss-card-semantics-evidence.md)。规则含义、归属和应用条件分别见 [D030](adr/0030-reject-misattributed-resume-observation.md)、[D031](adr/0031-explicit-resume-semantics.md) 和 [D035](adr/0035-boss-conversation-association-application.md)；本机消息/阶段联动见 [架构的数据流](ARCHITECTURE.md#数据流)。
 
 ### 已授权历史日期
 

@@ -4,6 +4,8 @@ import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { emptyHistoryState, normalizeHistoryState } from './change-history.mjs';
 import { BOSS_JOB_ID } from '../../dist/boss-job-url.js';
+import { validateResumeEvidence } from '../../dist/resume-rules.js';
+import { validateAttributionEvidence } from '../../dist/boss-attribution.js';
 
 const runtimeName = '.runtime-v3.json';
 const legacyRuntimeNames = ['.runtime-v2.json', '.runtime-v1.json'];
@@ -481,12 +483,26 @@ function normalizeCheckpoint(value) {
     'truncated',
     'targetFingerprint',
   ];
+  const observationFields = [
+    'conversationKey',
+    'friendId',
+    'friendSource',
+    'messageId',
+    'direction',
+    'messageType',
+    'kind',
+    'platformTime',
+    'externalJobId',
+    'source',
+    'attribution',
+    'resumeEvidence',
+  ];
   if (value && Object.keys(value).some((key) => !keys.includes(key)))
     throw new Error('RESUME_CHECKPOINT_INVALID');
 
   if (
     !value ||
-    ![1, 2].includes(value.version) ||
+    ![1, 2, 3].includes(value.version) ||
     !iso(value.capturedAt) ||
     (value.nextConversationKey !== null &&
       !/^[a-f0-9]{64}$/.test(value.nextConversationKey ?? '')) ||
@@ -510,6 +526,26 @@ function normalizeCheckpoint(value) {
     (value.targetFingerprint !== undefined && !/^[a-f0-9]{64}$/.test(value.targetFingerprint))
   ) {
     throw new Error('RESUME_CHECKPOINT_INVALID');
+  }
+  for (const observation of value.observations) {
+    if (!observation || typeof observation !== 'object' || Array.isArray(observation))
+      throw new Error('RESUME_CHECKPOINT_INVALID');
+    if (value.version < 3) {
+      if (Object.hasOwn(observation, 'resumeEvidence'))
+        throw new Error('RESUME_CHECKPOINT_INVALID');
+      continue;
+    }
+    try {
+      if (Object.keys(observation).some((field) => !observationFields.includes(field)))
+        throw new Error('RESUME_CHECKPOINT_INVALID');
+      if (Object.hasOwn(observation, 'attribution'))
+        validateAttributionEvidence(observation.attribution);
+      const proof = validateResumeEvidence(observation.resumeEvidence);
+      if (proof && proof.messageType !== observation.messageType)
+        throw new Error('RESUME_CHECKPOINT_INVALID');
+    } catch {
+      throw new Error('RESUME_CHECKPOINT_INVALID');
+    }
   }
   return structuredClone(value);
 }

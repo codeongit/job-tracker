@@ -1,7 +1,9 @@
 import { canonical, equal, live, resolveConflicts } from './model.js';
 import { $, esc } from './ui.js';
-import { ATTRIBUTION_REASONS } from './boss-attribution.js';
+import { BOSS_OBSERVATION_REASONS } from './boss-attribution.js';
 import { RESUME_RULES } from './resume-rules.js';
+import { platformObservationLabel } from './boss-integration.js';
+import { sourceApplicationForEvent } from './source-ledger.js';
 
 const GROUP_LABELS = {
   opportunities: '岗位',
@@ -138,7 +140,7 @@ const VALUES = {
   missing_message_identity: '缺少稳定消息身份',
   observation_recorded: '观察已处理',
   existing_job_details_available: '已采用本机岗位资料',
-  ...ATTRIBUTION_REASONS,
+  ...BOSS_OBSERVATION_REASONS,
   ...Object.fromEntries(RESUME_RULES.map((rule) => [rule.summary, rule.label])),
 };
 const TECHNICAL_FIELDS = new Set(['id', 'createdAt', 'updatedAt', 'deletedAt']);
@@ -208,7 +210,7 @@ function opportunityForConflict(conflict, data) {
   }
   return ids.size === 1 ? [...ids][0] : '';
 }
-function readableValue(field, value, data) {
+function readableValue(field, value, data, row) {
   if (value === undefined || value === null) return '未提供';
   if (value === '') return '未填写';
   if (field === 'opportunityId') return jobLabel(data, value);
@@ -218,6 +220,8 @@ function readableValue(field, value, data) {
       .map((key) => FIELD_LABELS[key] || key)
       .join('、');
   if (ID_FIELDS.has(field)) return shortIdentity(value);
+  if (field === 'summary' && row?.eventType === 'resume_observed')
+    return platformObservationLabel(row, sourceApplicationForEvent(data, row));
   if (ENUM_FIELDS.has(field) && VALUES[value]) return VALUES[value];
   if (field === 'rawText') return `原文 ${String(value).length} 字，详见技术详情`;
   if (
@@ -254,8 +258,8 @@ export function describeSyncConflict(conflict, data = {}) {
     fields.push({
       field,
       label: FIELD_LABELS[field] || '其他记录字段',
-      local: readableValue(field, local?.[field], data),
-      remote: readableValue(field, remote?.[field], data),
+      local: readableValue(field, local?.[field], data, local),
+      remote: readableValue(field, remote?.[field], data, remote),
     });
   }
   const opportunityId = opportunityForConflict(conflict, data);

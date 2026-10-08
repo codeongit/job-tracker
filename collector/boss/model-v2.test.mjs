@@ -132,10 +132,10 @@ test('legacy v2 envelopes upgrade explicitly and without changing their safe sha
   const legacy = { ...structuredClone(current), version: 2 };
   assert.equal(validateEnvelopeV2(legacy).version, 2);
   const upgraded = upgradeEnvelope(legacy);
-  assert.equal(upgraded.version, 4);
+  assert.equal(upgraded.version, 5);
   assert.deepEqual({ ...upgraded, version: 2 }, legacy);
   const next = compareLoadedSnapshotsV2(legacy, snapshot([row('a')], 1)).envelope;
-  assert.equal(next.version, 4);
+  assert.equal(next.version, 5);
   assert.equal(legacy.version, 2);
 });
 

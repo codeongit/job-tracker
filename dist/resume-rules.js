@@ -36,7 +36,6 @@ export const RESUME_RULES = Object.freeze(
       target: RESUME_STATE.SENT,
       label: '附件简历请求已发送',
       text: '附件简历请求已发送',
-      structured: true,
     },
     {
       kind: 'sent_confirmed',
@@ -90,41 +89,101 @@ export function classifyResumeText(text, rules) {
   );
 }
 
-export function classifyResumeMessage(message, bossId, rules, classifyText) {
+export function classifyResumeEvidence(message, rules, classifyText) {
   const body = message?.body;
-  const sender = ['string', 'number'].includes(typeof message?.from?.uid)
-    ? String(message.from.uid).normalize('NFC').trim()
-    : null;
+  const messageType = Number(message?.type);
   if (
-    Number(message?.type) === 4 &&
-    Number(message?.bizType) === 317 &&
-    Number(body?.type) === 16 &&
-    Number(body?.style) === 3 &&
-    Number(body?.templateId) === 1 &&
-    Array.isArray(body?.articles) &&
-    body.articles.length === 1 &&
-    sender &&
-    sender === bossId
+    !Number.isSafeInteger(messageType) ||
+    messageType < 1 ||
+    messageType > 1000 ||
+    [1, 4].includes(messageType)
   )
-    return rules.find((rule) => rule.structured)?.kind ?? null;
-  if ([1, 4].includes(Number(message?.type))) return null;
-  for (const value of [
-    message?.text,
-    message?.content,
-    message?.title,
-    message?.description,
-    body?.text,
-    body?.content,
-    body?.title,
-    body?.description,
-    body?.card?.text,
-    body?.card?.content,
-    body?.card?.title,
+    return null;
+  for (const [field, value] of [
+    ['message.text', message?.text],
+    ['message.content', message?.content],
+    ['message.title', message?.title],
+    ['message.description', message?.description],
+    ['body.text', body?.text],
+    ['body.content', body?.content],
+    ['body.title', body?.title],
+    ['body.description', body?.description],
+    ['body.card.text', body?.card?.text],
+    ['body.card.content', body?.card?.content],
+    ['body.card.title', body?.card?.title],
   ]) {
     const kind = classifyText(value, rules);
-    if (kind) return kind;
+    if (kind) {
+      const rule = rules.find((item) => item.kind === kind);
+      const text =
+        kind === 'attachment_sent' ? '您的附件简历 [attachment] 已发送给Boss' : rule.text;
+      return { kind, evidence: { version: 1, messageType, field, text } };
+    }
   }
   return null;
+}
+
+export function classifyResumeMessage(
+  message,
+  bossId,
+  rules,
+  classifyText,
+  classifyEvidence = classifyResumeEvidence,
+) {
+  return classifyEvidence(message, rules, classifyText)?.kind ?? null;
+}
+
+const RESUME_EVIDENCE_FIELDS = Object.freeze([
+  'message.text',
+  'message.content',
+  'message.title',
+  'message.description',
+  'body.text',
+  'body.content',
+  'body.title',
+  'body.description',
+  'body.card.text',
+  'body.card.content',
+  'body.card.title',
+  'none',
+]);
+
+export function validateResumeEvidence(value) {
+  if (value === null) return null;
+  const validText =
+    typeof value?.text === 'string' &&
+    (RESUME_RULES.some((rule) => rule.text === value.text) ||
+      value.text === '您的附件简历 [attachment] 已发送给Boss');
+  if (
+    !value ||
+    typeof value !== 'object' ||
+    Array.isArray(value) ||
+    Object.keys(value).length !== 4 ||
+    Object.keys(value).some((key) => !['version', 'messageType', 'field', 'text'].includes(key)) ||
+    value.version !== 1 ||
+    !Number.isSafeInteger(value.messageType) ||
+    value.messageType < 1 ||
+    value.messageType > 1000 ||
+    !RESUME_EVIDENCE_FIELDS.includes(value.field) ||
+    (value.field === 'none' ? value.messageType !== 4 || value.text !== '' : !validText)
+  )
+    throw Object.assign(new Error('RESUME_EVIDENCE_INVALID'), { code: 'RESUME_EVIDENCE_INVALID' });
+  return { ...value };
+}
+
+export function resumeEvidenceMeaning(summary, value) {
+  const evidence = validateResumeEvidence(value);
+  const rule = resumeRule(summary);
+  const observation = { meaning: RESUME_MEANING.OBSERVATION, target: null };
+  if (!rule.target || evidence?.field === 'none')
+    return { status: 'observation_only', ...observation };
+  if (
+    !evidence ||
+    [1, 4].includes(evidence.messageType) ||
+    classifyResumeText(evidence.text, RESUME_RULES) !== rule.kind
+  )
+    return { status: 'insufficient', ...observation };
+  return { status: 'verified', meaning: rule.meaning, target: rule.target };
 }
 
 // Call only after verifying the observation's opportunity and field ownership.

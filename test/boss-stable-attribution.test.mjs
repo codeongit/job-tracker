@@ -214,7 +214,7 @@ test('真实队列中同消息卡片仅存档，发送观察仍等待，后续�
     applications.map((row) => [row.status, row.reason]),
     [
       ['no_effect', 'observation_only'],
-      ['waiting', 'attribution_evidence_missing'],
+      ['waiting', 'resume_semantics_missing'],
     ],
   );
   assert.equal(sourceReviewCounts(first.workspace.data).waiting, 1);

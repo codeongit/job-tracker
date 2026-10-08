@@ -18,6 +18,7 @@ import { createInitialBatch, createDatedYesterdayBatch } from '../scripts/boss-l
 
 import { resolveBossJobEvidence } from '../collector/boss/job-evidence.mjs';
 import { bossFactId, bossApplicationId } from '../dist/source-identity.js';
+import { bossBatchDigestInput } from '../dist/boss-batch.js';
 
 const ACCOUNT = `boss-geek:${'a'.repeat(64)}`;
 const FIRST = '2026-09-18T08:00:00.000Z';
@@ -153,12 +154,43 @@ const GOLDEN = {
   resume: '85e8d07c1074db87969090cabea4a640aa94bc159c5bf0f30c15ad108a3f5dc8',
   incremental: '752837a57928f2d74875482a7b6f0af3b2d2604e1bb9763e936e0c196a5c868e',
 };
-test('evidence projections and all batch constructors retain their baseline output', () => {
+const V5_BATCH_GOLDEN = {
+  initial: 'c96decbf6e17350f4805db36bea91ba37a141b04f84a9c14d96495177a7e16a8',
+  dated: '4fbe5ff7920922fc898ea2457e8e5b450a6dee884f0faf6b03acd519a13d0eeb',
+  resume: '13cbb4746b2a515d1b5917039824786b03cc0d4ed668c71a83fc92c18780c7d3',
+  incremental: '77573eda68ff194583c33a080a25b573dffd8791b3d344925ef506ec7f1c8243',
+};
+
+function legacyBatchProjection(batch) {
+  const legacy = structuredClone(batch);
+  legacy.version = 4;
+  for (const event of legacy.events) delete event.resumeEvidence;
+  legacy.batchId = `boss-batch-${stableHash(bossBatchDigestInput(legacy))}`;
+  return legacy;
+}
+
+test('evidence projections and stable identities retain baseline outputs across explicit v5 delivery', () => {
   const outputs = characterizedOutputs();
   const hashes = Object.fromEntries(
-    Object.entries(outputs).map(([key, value]) => [key, stableHash(value)]),
+    Object.entries(outputs).map(([key, value]) => [
+      key,
+      stableHash(key in V5_BATCH_GOLDEN ? legacyBatchProjection(value) : value),
+    ]),
   );
   assert.deepEqual(hashes, GOLDEN);
+  assert.deepEqual(
+    Object.fromEntries(
+      Object.keys(V5_BATCH_GOLDEN).map((key) => {
+        assert.equal(outputs[key].version, 5);
+        return [key, stableHash(outputs[key])];
+      }),
+    ),
+    V5_BATCH_GOLDEN,
+  );
+  assert.deepEqual(
+    outputs.resume.events.find((event) => event.summary === 'resume_request_sent').resumeEvidence,
+    { version: 1, messageType: 4, field: 'none', text: '' },
+  );
   assert.equal(
     outputs.collector.find((row) => row.jobId === 'job~1').company,
     'Synthetic employer',

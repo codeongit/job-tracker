@@ -28,7 +28,13 @@ export {
   createDatedYesterdayBatch,
 } from './boss-legacy-import.mjs';
 import { validateAttributionEvidence } from '../dist/boss-attribution.js';
-import { RESUME_KINDS, RESUME_STATUS_KINDS } from '../dist/resume-rules.js';
+import {
+  RESUME_KINDS,
+  RESUME_STATUS_KINDS,
+  RESUME_RULES,
+  classifyResumeText,
+  validateResumeEvidence,
+} from '../dist/resume-rules.js';
 import { createHash, randomBytes } from 'node:crypto';
 import { execFile as execFileCallback } from 'node:child_process';
 import { lstat, open, readFile, readdir, unlink } from 'node:fs/promises';
@@ -512,7 +518,7 @@ export function validateTrackerEnvelope(input) {
     'resume',
   ]);
   if (
-    ![2, 3, 4].includes(value.version) ||
+    ![2, 3, 4, 5].includes(value.version) ||
     value.scope !== 'loaded-chat-list' ||
     !requiredString(value.accountNamespace, { max: 75, pattern: ACCOUNT_NAMESPACE }) ||
     !isIso(value.createdAt) ||
@@ -561,8 +567,25 @@ export function validateTrackerEnvelope(input) {
       'source',
       'status',
       ...(value.version >= 4 ? ['attribution'] : []),
+      ...(value.version >= 5 ? ['resumeEvidence'] : []),
     ]);
     if (value.version >= 4) validateAttributionEvidence(observation.attribution);
+    if (value.version >= 5) {
+      let proof;
+      try {
+        proof = validateResumeEvidence(observation.resumeEvidence);
+      } catch {
+        integrationFail('BOSS_SNAPSHOT_RESUME_INVALID', { fatal: true });
+      }
+      if (
+        proof &&
+        (proof.messageType !== observation.messageType ||
+          (proof.field === 'none'
+            ? !['request_sent', 'sent_candidate', 'resume_card_other'].includes(observation.kind)
+            : classifyResumeText(proof.text, RESUME_RULES) !== observation.kind))
+      )
+        integrationFail('BOSS_SNAPSHOT_RESUME_INVALID', { fatal: true });
+    }
     const record = conversations.get(observation.conversationKey);
     const statusKind = RESUME_STATUS_KINDS.includes(observation.kind);
     if (
