@@ -349,12 +349,17 @@ export function createLocalWorkspaceClient({
     return job;
   }
 
-  async function submit(type, payload, expectedRevision) {
+  // Prepare against the authority only after prior reads and commands finish.
+  // A null command is a no-op; response retries stay inside request() so the
+  // same command ID, revision and payload are never recomputed after delivery.
+  async function runCommand(prepare, expectedRevision) {
     if (!(await active())) return null;
     const execute = async () => {
       const current = await load();
       if (expectedRevision !== undefined && current.revision !== expectedRevision)
         throw failure('记录已变化，请刷新后重新核对所选观察。', 'WORKSPACE_REVISION_CONFLICT', 409);
+      const command = prepare(current);
+      if (!command) return current.workspace;
       let committed;
       try {
         committed = await request('./__local/workspace/commands', {
@@ -362,8 +367,8 @@ export function createLocalWorkspaceClient({
           body: {
             commandId: makeId(),
             expectedRevision: current.revision,
-            type,
-            payload,
+            type: command.type,
+            payload: command.payload,
           },
         });
       } catch (error) {
@@ -382,6 +387,10 @@ export function createLocalWorkspaceClient({
     const job = chain.then(execute);
     chain = job.catch(() => {});
     return job;
+  }
+
+  function submit(type, payload, expectedRevision) {
+    return runCommand(() => ({ type, payload }), expectedRevision);
   }
 
   function releaseHints(before, next) {
@@ -415,9 +424,7 @@ export function createLocalWorkspaceClient({
   }
 
   async function editData(transform, { reason = '' } = {}) {
-    if (!(await active())) return null;
-    const execute = async () => {
-      const current = await load();
+    return runCommand((current) => {
       const before = current.workspace.data,
         next = validateData(transform(structuredClone(before))),
         changes = [];
@@ -434,34 +441,9 @@ export function createLocalWorkspaceClient({
           );
       }
       const releaseFields = releaseHints(before, next);
-      if (!changes.length && !releaseFields.length) return current.workspace;
-      let committed;
-      try {
-        committed = await request('./__local/workspace/commands', {
-          method: 'POST',
-          body: {
-            commandId: makeId(),
-            expectedRevision: current.revision,
-            type: 'edit_data',
-            payload: { changes, releaseFields, reason },
-          },
-        });
-      } catch (error) {
-        if (error.code !== 'WORKSPACE_REVISION_CONFLICT') throw error;
-        await cache(await request('./__local/workspace'));
-        throw failure(
-          '记录已由另一操作更新，本次修改未覆盖它。请核对最新记录后再保存，草稿仍保留。',
-          'WORKSPACE_REVISION_CONFLICT',
-          409,
-        );
-      }
-      if (committed.replayed) committed = await request('./__local/workspace');
-      await cache(committed);
-      return committed.workspace;
-    };
-    const job = chain.then(execute);
-    chain = job.catch(() => {});
-    return job;
+      if (!changes.length && !releaseFields.length) return null;
+      return { type: 'edit_data', payload: { changes, releaseFields, reason } };
+    });
   }
 
   async function update() {

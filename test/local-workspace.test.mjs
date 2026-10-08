@@ -18,6 +18,7 @@ function fixture({
   brokenCache = false,
   authorityValue = '',
   storageVersion = 1,
+  makeId,
 } = {}) {
   let workspace = copy(initial),
     revision = initial ? 1 : 0,
@@ -67,6 +68,7 @@ function fixture({
   const client = createLocalWorkspaceClient({
     fetcher,
     hostname,
+    makeId,
     authorityStorage: {
       getItem: (key) => metadata.get(key) || null,
       setItem: (key, value) => metadata.set(key, value),
@@ -607,4 +609,166 @@ test('核对快照拒绝离线缓存及静态模式，不把旧状态作为可�
   const website = fixture({ hostname: 'example.com' });
   await assert.rejects(website.client.readForReview(), { code: 'LOCAL_WORKSPACE_REQUIRED' });
   assert.equal(website.calls.length, 0);
+});
+
+const commandEntrances = [
+  {
+    name: '普通编辑',
+    run: (client, transformed = () => {}) =>
+      client.editData((data) => {
+        transformed();
+        data.opportunities.push({
+          id: 'delivery-job',
+          company: '合成交付公司',
+          role: '合成交付岗位',
+          stage: '已触达',
+        });
+        return data;
+      }),
+  },
+  {
+    name: '固定命令',
+    run: (client) => client.ignoreBossObservations(['synthetic-application'], 1),
+  },
+];
+
+test('普通编辑无变化不生成命令，随后固定操作仍可正常保存', async () => {
+  let ids = 0;
+  const f = fixture({
+    makeId: () => `synthetic-command-${++ids}`,
+    custom: (call, { envelope }) => (call.method === 'POST' ? response(envelope()) : undefined),
+  });
+  assert.deepEqual(await f.client.editData((data) => data), initialWorkspace());
+  assert.equal(ids, 0);
+  assert.equal(f.calls.filter((call) => call.method === 'POST').length, 0);
+  await f.client.ignoreBossObservations(['synthetic-application'], 1);
+  assert.equal(ids, 1);
+  assert.equal(f.calls.filter((call) => call.method === 'POST').length, 1);
+});
+
+test('固定操作和普通编辑共用串行顺序，编辑读取前一操作后的正式状态', async () => {
+  const entered = Promise.withResolvers(),
+    release = Promise.withResolvers();
+  let formal = initialWorkspace(),
+    revision = 1,
+    transformations = 0;
+  const f = fixture({
+    custom: async (call, { envelope }) => {
+      const current = () => ({ ...envelope(), workspace: copy(formal), revision });
+      if (call.path === './__local/workspace') return response(current());
+      if (call.method !== 'POST') return;
+      assert.equal(call.parsed.expectedRevision, revision);
+      if (call.parsed.type === 'ignore_boss_observations') {
+        entered.resolve();
+        await release.promise;
+      } else {
+        assert.equal(call.parsed.type, 'edit_data');
+        formal.data.opportunities = call.parsed.payload.changes.map((change) => change.record);
+      }
+      formal.generation++;
+      revision++;
+      return response(current());
+    },
+  });
+  await f.client.active();
+  const fixed = f.client.ignoreBossObservations(['synthetic-application'], 1);
+  const editing = f.client.editData((data) => {
+    transformations++;
+    assert.equal(formal.generation, 1);
+    data.opportunities.push({
+      id: 'after-fixed-command',
+      company: '合成串行公司',
+      role: '合成串行岗位',
+      stage: '已触达',
+    });
+    return data;
+  });
+  await entered.promise;
+  assert.equal(transformations, 0);
+  assert.equal(f.calls.filter((call) => call.method === 'POST').length, 1);
+  release.resolve();
+  await fixed;
+  const saved = await editing;
+  assert.equal(saved.generation, 2);
+  assert.equal(saved.data.opportunities[0].id, 'after-fixed-command');
+  assert.deepEqual(f.cache, saved);
+  assert.deepEqual(
+    f.calls.filter((call) => call.method === 'POST').map((call) => call.parsed.expectedRevision),
+    [1, 2],
+  );
+});
+
+test('两种命令入口的版本冲突只刷新，保存失败不留下候选修改', async (t) => {
+  for (const entry of commandEntrances) {
+    for (const [status, code] of [
+      [409, 'WORKSPACE_REVISION_CONFLICT'],
+      [500, 'SNAPSHOT_FAILED'],
+    ]) {
+      await t.test(`${entry.name} ${status}`, async () => {
+        let attempted = false,
+          transformed = 0;
+        const f = fixture({
+          custom: (call, { envelope }) => {
+            if (call.method === 'POST') {
+              attempted = true;
+              return response({ code, message: 'synthetic rejected save' }, status);
+            }
+            if (call.path === './__local/workspace' && attempted) {
+              const latest = envelope();
+              latest.revision = 5;
+              latest.workspace.generation = 5;
+              return response(latest);
+            }
+          },
+        });
+        await assert.rejects(
+          entry.run(f.client, () => transformed++),
+          { code },
+        );
+        assert.equal(transformed, entry.name === '普通编辑' ? 1 : 0);
+        assert.equal(f.calls.filter((call) => call.method === 'POST').length, 1);
+        assert.equal(f.cache.generation, status === 409 ? 5 : 0);
+        assert.equal(f.cache.data.opportunities.length, 0);
+      });
+    }
+  }
+});
+
+test('两种入口丢失响应后重发原命令，旧回执不覆盖最新数据，缓存失败仍返回正式结果', async (t) => {
+  for (const entry of commandEntrances) {
+    for (const brokenCache of [false, true]) {
+      await t.test(`${entry.name} cacheFailure=${brokenCache}`, async () => {
+        let posts = 0,
+          ids = 0;
+        const f = fixture({
+          brokenCache,
+          makeId: () => `synthetic-command-${++ids}`,
+          custom: (call, { envelope }) => {
+            if (call.method === 'POST') {
+              posts++;
+              if (posts === 1) throw new TypeError('synthetic committed reply lost');
+              const old = envelope();
+              old.workspace.generation = 1;
+              return response({ ...old, replayed: true });
+            }
+            if (call.path === './__local/workspace' && posts) {
+              const latest = envelope();
+              latest.revision = 7;
+              latest.workspace.generation = 7;
+              return response(latest);
+            }
+          },
+        });
+        const saved = await entry.run(f.client);
+        const commands = f.calls.filter((call) => call.method === 'POST');
+        assert.equal(commands.length, 2);
+        assert.equal(ids, 1);
+        assert.equal(commands[0].body, commands[1].body);
+        assert.equal(saved.generation, 7);
+        assert.equal(f.calls.at(-1).path, './__local/workspace');
+        if (brokenCache) assert.ok(f.cacheFailures > 0);
+        else assert.deepEqual(f.cache, saved);
+      });
+    }
+  }
 });
