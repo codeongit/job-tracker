@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { bossAttributionSummary } from '../dist/boss-attribution.js';
 import { groupBossObservations } from '../dist/boss-observations.js';
-import { bossIntegrationView } from '../dist/settings-view.js';
+import { bossIntegrationView, bossObservationReason } from '../dist/settings-view.js';
 import { syncConflictView } from '../dist/sync-conflict-ui.js';
 import { initialWorkspace } from '../dist/workspace.js';
 import { createViews } from '../dist/views.js';
@@ -265,4 +265,57 @@ test('详情与冲突按来源应用解释旧request_sent枚举，已应用发�
   assert.match(primary, /旧平台卡片（仅存档，未确认发送）/);
   assert.doesNotMatch(primary, /附件简历请求已发送/);
   assert.match(html.slice(html.indexOf('<details')), /resume_request_sent/);
+});
+
+test('人工否决发送误判显示固定原因，退出等待并归入人工决定，正文与旧发送标签不展示', () => {
+  const data = observationData();
+  data.sourceApplications = [data.sourceApplications[1]];
+  data.sourceEvents = [data.sourceEvents[1]];
+  const application = data.sourceApplications[0];
+  Object.assign(application, {
+    status: 'protected',
+    reason: 'user_rejected_wrong_resume_semantics',
+  });
+  const label = '已人工否决错误简历发送判断';
+  assert.equal(bossObservationReason(application), label);
+  const summary = bossAttributionSummary(data);
+  assert.equal(summary.semantic, 0);
+  assert.equal(summary.items.length, 0);
+  const html = bossIntegrationView(
+    {
+      available: true,
+      serverManaged: true,
+      revision: 2,
+      applicationCounts: { protected: 1 },
+      waitingItems: [
+        { applicationId: application.id, status: 'waiting', reason: 'resume_semantics_missing' },
+      ],
+      attribution: summary,
+    },
+    { data },
+  );
+  assert.match(html, /人工决定已保留：<strong>1<\/strong>/);
+  assert.doesNotMatch(
+    html,
+    /data-boss-ignore-item|等待资料或证据|附件简历请求已发送|SECRET_MESSAGE_BODY/,
+  );
+  const pending = {
+    data,
+    conflicts: [
+      {
+        key: `sourceApplications:${application.id}`,
+        group: 'sourceApplications',
+        id: application.id,
+        local: application,
+        remote: { ...application, status: 'applied', reason: 'resume_state_applied' },
+      },
+    ],
+  };
+  const conflict = syncConflictView(pending, data);
+  assert.match(conflict, new RegExp(label));
+  assert.doesNotMatch(
+    conflict.slice(0, conflict.indexOf('<details')),
+    /user_rejected_wrong_resume_semantics/,
+  );
+  assert.deepEqual(data.sourceEvents[0].summary, 'SECRET_MESSAGE_BODY');
 });

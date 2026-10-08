@@ -16,6 +16,7 @@ export const ATTRIBUTION_REASONS = Object.freeze({
 export const BOSS_OBSERVATION_REASONS = Object.freeze({
   ...ATTRIBUTION_REASONS,
   resume_semantics_missing: '旧平台卡片缺少可核对的简历发送依据',
+  user_rejected_wrong_resume_semantics: '已人工否决错误简历发送判断',
 });
 
 // Ephemeral candidate associations, never proof of message/job ownership.

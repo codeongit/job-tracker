@@ -2,6 +2,7 @@ import { validateDrafts } from './draft-data.js';
 import { clone, emptyData, GROUPS, validateData, removeOpportunity } from './model.js';
 import { APP_VERSION, BACKUP_VERSION, DATA_VERSION, WORKSPACE_VERSION } from './version.js';
 import { upgradeSourceLedger } from './source-ledger.js';
+import { preserveBossResumeCorrections } from './boss-integration.js';
 
 export function initialWorkspace() {
   return {
@@ -237,7 +238,9 @@ export function restoreWorkspace(current, backup, mode) {
       throw new Error('包含同步冲突的完整备份请使用“回到快照”，以保留双方记录。');
     const restored = incoming.workspace;
     preserveManualJobDetails(before.data, restored.data);
+    restored.data = preserveBossResumeCorrections(before.data, restored.data);
     preserveManualJobDetails(before.data, restored.pending.data);
+    restored.pending.data = preserveBossResumeCorrections(before.data, restored.pending.data);
     restored.generation = s.generation + 1;
     restored.pending.generation = restored.generation;
     restored.lastSync = '';
@@ -263,6 +266,7 @@ export function restoreWorkspace(current, backup, mode) {
     }
   }
   preserveManualJobDetails(before.data, s.data);
+  s.data = preserveBossResumeCorrections(before.data, s.data);
   const originalSchema = backup?.workspace?.data?.schemaVersion ?? backup?.schemaVersion;
   if (originalSchema < 4) {
     for (const group of ['opportunities', 'sourceApplications']) {

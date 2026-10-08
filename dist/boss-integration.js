@@ -591,6 +591,377 @@ export function rejectMisattributedResumeObservation(data, { opportunityId, even
   return validateData(next);
 }
 
+// Explicitly reviewed semantic corrections are separate from automatic import.
+// They revoke selected facts without claiming any new message/job attribution.
+function retractCorrectedResumeStage(data, opportunity, binding) {
+  if (
+    !splitAutoFields(binding).has('stage') ||
+    opportunity.stage !== '沟通中' ||
+    binding.lastAutoStage !== '沟通中' ||
+    live(data.activities).some((activity) => activity.opportunityId === opportunity.id)
+  )
+    return false;
+  opportunity.stage = '已触达';
+  binding.lastAutoStage = '已触达';
+  return true;
+}
+
+export function correctBossResumeSemantics(
+  inputData,
+  { applicationIds, stamp, workspaceSourceId },
+) {
+  const unsafe = () => {
+    throw integrationError(
+      '简历发送误判纠正条件不满足，未改动正式记录。',
+      'BOSS_RESUME_CORRECTION_UNSAFE',
+    );
+  };
+  try {
+    canonicalIso(stamp, 'correctedAt');
+    if (
+      !UUID.test(workspaceSourceId) ||
+      !Array.isArray(applicationIds) ||
+      !applicationIds.length ||
+      applicationIds.length > 100 ||
+      new Set(applicationIds).size !== applicationIds.length ||
+      applicationIds.some(
+        (id) => typeof id !== 'string' || !/^boss-application-[a-f0-9]{64}$/.test(id),
+      )
+    )
+      unsafe();
+    const data = validateData(clone(inputData));
+    const facts = new Map(data.sourceFacts.map((fact) => [fact.id, fact]));
+    const applications = new Map(
+      data.sourceApplications.map((application) => [application.id, application]),
+    );
+    const selectedFacts = new Set();
+    const targets = new Map();
+    const approved = applicationIds.map((id) => {
+      const application = applications.get(id),
+        fact = facts.get(application?.factId);
+      const previouslyRejected =
+        application?.status === 'protected' &&
+        application.reason === 'user_rejected_wrong_resume_semantics';
+      if (
+        !application ||
+        application.deletedAt ||
+        (application.status !== 'applied' && !previouslyRejected) ||
+        application.action !== 'resume_observed' ||
+        application.resolutionSource ||
+        !application.opportunityId ||
+        !fact ||
+        fact.deletedAt ||
+        fact.platform !== 'boss' ||
+        fact.factType !== 'resume_request_sent' ||
+        !hasBossFactIdentity(fact) ||
+        bossFactId(fact) !== fact.id ||
+        bossApplicationId(fact.id) !== application.id ||
+        selectedFacts.has(fact.id)
+      )
+        unsafe();
+      const aliases = data.sourceEvents.filter(
+        (event) =>
+          event.factId === fact.id || (hasBossFactIdentity(event) && bossFactId(event) === fact.id),
+      );
+      if (
+        !aliases.length ||
+        aliases.some(
+          (event) =>
+            event.deletedAt ||
+            event.platform !== 'boss' ||
+            event.eventType !== 'resume_observed' ||
+            event.summary !== 'resume_request_sent' ||
+            !hasBossFactIdentity(event) ||
+            event.factId !== fact.id ||
+            bossFactId(event) !== fact.id ||
+            event.accountNamespace !== fact.accountNamespace ||
+            event.conversationKey !== fact.conversationKey ||
+            event.messageId !== fact.messageId,
+        )
+      )
+        unsafe();
+      const opportunity = data.opportunities.find((row) => row.id === application.opportunityId);
+      const bindings = live(data.sourceBindings).filter(
+        (row) => row.kind === 'opportunity' && row.opportunityId === application.opportunityId,
+      );
+      const binding = bindings.length === 1 ? bindings[0] : null;
+      const accountBindings = live(data.sourceBindings).filter(
+        (row) => row.kind === 'account' && row.accountNamespace === fact.accountNamespace,
+      );
+      if (
+        !opportunity ||
+        opportunity.deletedAt ||
+        !/^boss(?:直聘)?$/i.test((opportunity.platform || '').replace(/\s/g, '')) ||
+        !binding ||
+        binding.platform !== 'boss' ||
+        binding.accountNamespace !== fact.accountNamespace ||
+        binding.id !== opportunityBindingId(fact.accountNamespace, binding.externalJobId) ||
+        accountBindings.length !== 1 ||
+        accountBindings[0].workspaceSourceId !== workspaceSourceId ||
+        (fact.externalJobId && fact.externalJobId !== binding.externalJobId) ||
+        (opportunity.externalId && opportunity.externalId !== binding.externalJobId) ||
+        (opportunity.url &&
+          parseBossJobUrl(opportunity.url)?.canonicalUrl !== binding.canonicalUrl) ||
+        !splitAutoFields(binding).has('resumeState') ||
+        opportunity.resumeState !== (previouslyRejected ? '未知' : '已发送') ||
+        binding.lastAutoResumeState !== opportunity.resumeState
+      )
+        unsafe();
+      const jobBindings = live(data.sourceBindings).filter(
+        (row) =>
+          row.kind === 'opportunity' &&
+          row.accountNamespace === fact.accountNamespace &&
+          row.externalJobId === binding.externalJobId,
+      );
+      if (
+        jobBindings.length !== 1 ||
+        jobBindings[0].opportunityId !== opportunity.id ||
+        aliases.some(
+          (event) =>
+            (event.opportunityId && event.opportunityId !== opportunity.id) ||
+            (event.externalJobId && event.externalJobId !== binding.externalJobId) ||
+            (event.canonicalUrl && event.canonicalUrl !== binding.canonicalUrl),
+        )
+      )
+        unsafe();
+      const targetKey = JSON.stringify([fact.accountNamespace, binding.externalJobId]);
+      if (targets.has(targetKey) && targets.get(targetKey).opportunity.id !== opportunity.id)
+        unsafe();
+      targets.set(targetKey, { opportunity, binding });
+      selectedFacts.add(fact.id);
+      return { application, fact, opportunity, binding, previouslyRejected };
+    });
+    const deniedReasons = new Set([
+      'user_rejected_wrong_conversation',
+      'user_rejected_wrong_resume_semantics',
+      IGNORED_OBSERVATION_REASON,
+    ]);
+    for (const { fact, opportunity, binding } of approved) {
+      const relatedEvents = data.sourceEvents.filter(
+        (event) =>
+          event.eventType === 'resume_observed' &&
+          (event.opportunityId === opportunity.id ||
+            applications.get(bossApplicationId(event.factId))?.opportunityId === opportunity.id ||
+            (event.accountNamespace === fact.accountNamespace &&
+              (event.externalJobId === binding.externalJobId ||
+                (!event.externalJobId && event.conversationKey === fact.conversationKey)))),
+      );
+      const relatedFactIds = new Set(relatedEvents.map((event) => event.factId));
+      for (const application of data.sourceApplications)
+        if (
+          application.action === 'resume_observed' &&
+          application.opportunityId === opportunity.id
+        )
+          relatedFactIds.add(application.factId);
+      for (const candidate of data.sourceFacts)
+        if (
+          candidate.accountNamespace === fact.accountNamespace &&
+          candidate.conversationKey === fact.conversationKey &&
+          (!candidate.externalJobId || candidate.externalJobId === binding.externalJobId)
+        )
+          relatedFactIds.add(candidate.id);
+      for (const id of relatedFactIds) {
+        if (selectedFacts.has(id)) continue;
+        const otherFact = facts.get(id),
+          otherApplication = applications.get(bossApplicationId(id));
+        const aliases = relatedEvents.filter((event) => event.factId === id);
+        if (!otherFact || !otherApplication) unsafe();
+        if (!otherFact.factType.startsWith('resume_')) continue;
+        if (!resumeRule(otherFact.factType).target) continue;
+        if (otherApplication.status === 'protected' && deniedReasons.has(otherApplication.reason))
+          continue;
+        // Any remaining send/receive fact or incomplete ledger may independently
+        // support the current status. A selected false card cannot erase it.
+        if (
+          otherFact.deletedAt ||
+          otherApplication.deletedAt ||
+          !aliases.length ||
+          aliases.some((event) => event.deletedAt)
+        )
+          unsafe();
+        unsafe();
+      }
+    }
+    for (const { opportunity, binding } of targets.values()) {
+      let changed = opportunity.resumeState !== '未知';
+      if (changed) {
+        opportunity.resumeState = '未知';
+        binding.lastAutoResumeState = '未知';
+      }
+      if (retractCorrectedResumeStage(data, opportunity, binding)) changed = true;
+      if (changed) {
+        opportunity.updatedAt = stamp;
+        binding.updatedAt = stamp;
+      }
+    }
+    for (const { application, previouslyRejected } of approved) {
+      if (previouslyRejected) continue;
+      application.status = 'protected';
+      application.reason = 'user_rejected_wrong_resume_semantics';
+      application.appliedAt = '';
+      application.ruleVersion = SOURCE_RULE_VERSION;
+      application.updatedAt = stamp;
+    }
+    return validateData(data);
+  } catch {
+    unsafe();
+  }
+}
+
+export function preserveBossResumeCorrections(beforeData, restoredData) {
+  const unsafe = () => {
+    throw integrationError(
+      '恢复材料与已人工否决的简历观察身份冲突，原工作区未改动。',
+      'BOSS_RESUME_CORRECTION_UNSAFE',
+    );
+  };
+  try {
+    const before = validateData(clone(beforeData), { allowOrphans: true });
+    const data = validateData(clone(restoredData), { allowOrphans: true });
+    const preservedTargets = new Map();
+    for (const previous of before.sourceApplications) {
+      if (
+        previous.deletedAt ||
+        previous.status !== 'protected' ||
+        previous.reason !== 'user_rejected_wrong_resume_semantics'
+      )
+        continue;
+      const fact = before.sourceFacts.find((row) => row.id === previous.factId && !row.deletedAt);
+      const incomingFact = data.sourceFacts.find(
+        (row) => row.id === previous.factId && !row.deletedAt,
+      );
+      const application = data.sourceApplications.find(
+        (row) => row.id === previous.id && !row.deletedAt,
+      );
+      const opportunity = data.opportunities.find(
+        (row) => row.id === previous.opportunityId && !row.deletedAt,
+      );
+      const aliases = live(data.sourceEvents).filter((row) => row.factId === previous.factId);
+      // Missing/deleted entities remain recovery gaps or tombstones. The helper
+      // only preserves a decision where its existing live materials remain.
+      if (!fact || !incomingFact || !application || !opportunity || !aliases.length) continue;
+      if (
+        fact.factType !== 'resume_request_sent' ||
+        bossFactId(fact) !== fact.id ||
+        bossFactId(incomingFact) !== fact.id ||
+        bossApplicationId(fact.id) !== previous.id ||
+        application.factId !== fact.id ||
+        (application.opportunityId && application.opportunityId !== previous.opportunityId)
+      )
+        unsafe();
+      const priorBindings = before.sourceBindings.filter(
+        (row) =>
+          row.kind === 'opportunity' &&
+          row.opportunityId === previous.opportunityId &&
+          row.accountNamespace === fact.accountNamespace,
+      );
+      const priorJobIds = new Set(priorBindings.map((row) => row.externalJobId));
+      if (priorJobIds.size !== 1) unsafe();
+      const expectedJobId = [...priorJobIds][0];
+      const expectedUrl = new URL(`/job_detail/${expectedJobId}.html`, 'https://www.zhipin.com')
+        .href;
+      const bindings = live(data.sourceBindings).filter(
+        (row) => row.kind === 'opportunity' && row.opportunityId === previous.opportunityId,
+      );
+      if (
+        (fact.externalJobId && fact.externalJobId !== expectedJobId) ||
+        (incomingFact.externalJobId && incomingFact.externalJobId !== expectedJobId) ||
+        aliases.some(
+          (row) =>
+            row.platform !== 'boss' ||
+            row.eventType !== 'resume_observed' ||
+            row.summary !== 'resume_request_sent' ||
+            !hasBossFactIdentity(row) ||
+            bossFactId(row) !== fact.id ||
+            (row.opportunityId && row.opportunityId !== opportunity.id) ||
+            (row.externalJobId && row.externalJobId !== expectedJobId) ||
+            (row.canonicalUrl && row.canonicalUrl !== expectedUrl),
+        ) ||
+        (opportunity.externalId && opportunity.externalId !== expectedJobId) ||
+        (opportunity.url && parseBossJobUrl(opportunity.url)?.canonicalUrl !== expectedUrl) ||
+        bindings.some(
+          (row) =>
+            row.accountNamespace !== fact.accountNamespace ||
+            row.externalJobId !== expectedJobId ||
+            row.canonicalUrl !== expectedUrl,
+        ) ||
+        bindings.length > 1
+      )
+        unsafe();
+      Object.assign(application, clone(previous));
+      const priorOpportunity = live(before.opportunities).find((row) => row.id === opportunity.id);
+      const livePriorBindings = live(priorBindings);
+      const stageWasRetracted =
+        priorOpportunity?.stage === '已触达' &&
+        livePriorBindings.length === 1 &&
+        splitAutoFields(livePriorBindings[0]).has('stage') &&
+        livePriorBindings[0].lastAutoStage === '已触达';
+      preservedTargets.set(opportunity.id, {
+        opportunity,
+        binding: bindings[0] ?? null,
+        stamp: stageWasRetracted
+          ? priorOpportunity.updatedAt || previous.updatedAt
+          : previous.updatedAt,
+        stageWasRetracted,
+      });
+    }
+    // Preserve every selected decision before checking the remaining support,
+    // so multiple corrected facts on one job cannot protect each other.
+    for (const { opportunity, binding, stamp, stageWasRetracted } of preservedTargets.values()) {
+      if (
+        !binding ||
+        !/^boss(?:直聘)?$/i.test((opportunity.platform || '').replace(/\s/g, '')) ||
+        !['已发送', '未知'].includes(opportunity.resumeState) ||
+        !splitAutoFields(binding).has('resumeState') ||
+        binding.lastAutoResumeState !== opportunity.resumeState
+      )
+        continue;
+      const independentSupport =
+        data.sourceApplications.some((application) => {
+          if (
+            application.deletedAt ||
+            application.opportunityId !== opportunity.id ||
+            application.action !== 'resume_observed' ||
+            !['applied', 'no_effect'].includes(application.status)
+          )
+            return false;
+          const fact = data.sourceFacts.find(
+            (row) => row.id === application.factId && !row.deletedAt,
+          );
+          return !fact || Boolean(resumeRule(fact.factType).target);
+        }) ||
+        data.sourceEvents.some((event) => {
+          if (
+            event.deletedAt ||
+            event.eventType !== 'resume_observed' ||
+            event.opportunityId !== opportunity.id ||
+            !resumeRule(event.summary).target
+          )
+            return false;
+          const application = data.sourceApplications.find(
+            (row) => row.factId === event.factId && !row.deletedAt,
+          );
+          return !application;
+        });
+      if (independentSupport) continue;
+      let changed = opportunity.resumeState !== '未知';
+      if (changed) {
+        opportunity.resumeState = '未知';
+        binding.lastAutoResumeState = '未知';
+      }
+      if (stageWasRetracted && retractCorrectedResumeStage(data, opportunity, binding))
+        changed = true;
+      if (changed) {
+        opportunity.updatedAt = stamp;
+        binding.updatedAt = stamp;
+      }
+    }
+    return validateData(data, { allowOrphans: true });
+  } catch {
+    unsafe();
+  }
+}
+
 // A navigation candidate is not an attribution decision and never changes data.
 export function bossWaitingReviewTarget(data, applicationId) {
   const application = live(data?.sourceApplications || []).find(
@@ -1583,6 +1954,8 @@ export function latestPlatformObservation(data, opportunityId) {
 export function platformObservationLabel(event, application = null) {
   if (!event) return '';
   if (event.eventType === 'resume_observed' && event.summary === 'resume_request_sent') {
+    if (application?.reason === 'user_rejected_wrong_resume_semantics')
+      return '平台卡片（发送误判已人工否决）';
     if (application?.reason === 'observation_only') return '旧平台卡片（仅存档，未确认发送）';
     if (application?.reason === 'resume_semantics_missing') return '旧平台卡片（发送依据不足）';
     if (['waiting', 'review'].includes(application?.status))

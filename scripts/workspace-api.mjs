@@ -12,6 +12,7 @@ const PUBLIC_WORKSPACE_COMMANDS = new Set([
   'bind_boss_account',
   'correct_boss_resume_request',
   'reject_boss_resume_observation',
+  'correct_boss_resume_semantics',
   'ignore_boss_observations',
   'resolve_boss_job_details',
   'set_boss_job_state',

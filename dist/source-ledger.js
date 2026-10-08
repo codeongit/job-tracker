@@ -85,16 +85,19 @@ export function effectiveSourceEvents(data) {
       opportunityId:
         application.reason.startsWith('attribution_') ||
         application.reason === 'resume_semantics_missing' ||
+        application.reason === 'user_rejected_wrong_resume_semantics' ||
         (application.status === 'no_effect' &&
           application.reason === 'observation_only' &&
           !application.opportunityId)
           ? ''
           : application.opportunityId || event.opportunityId,
       status:
-        ['applied', 'no_effect', 'protected'].includes(application.status) &&
-        application.opportunityId
-          ? 'recorded'
-          : event.status,
+        application.reason === 'user_rejected_wrong_resume_semantics'
+          ? 'skipped'
+          : ['applied', 'no_effect', 'protected'].includes(application.status) &&
+              application.opportunityId
+            ? 'recorded'
+            : event.status,
     };
   });
 }
@@ -136,9 +139,11 @@ export function effectiveSourceFacts(data) {
   for (const event of effectiveSourceEvents(data)) {
     if (event.deletedAt) continue;
     if (
-      ['user_rejected_wrong_conversation', IGNORED_OBSERVATION_REASON].includes(
-        sourceApplicationForEvent(data, event)?.reason,
-      )
+      [
+        'user_rejected_wrong_conversation',
+        'user_rejected_wrong_resume_semantics',
+        IGNORED_OBSERVATION_REASON,
+      ].includes(sourceApplicationForEvent(data, event)?.reason)
     )
       continue;
     const key =

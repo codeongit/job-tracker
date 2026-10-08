@@ -32,6 +32,7 @@ import {
   bindBossAccount,
   rejectMisattributedResumeObservation,
   ignoreBossObservations,
+  correctBossResumeSemantics,
 } from '../dist/boss-integration.js';
 import { MAX_BACKUP_BYTES } from '../dist/limits.js';
 
@@ -59,6 +60,7 @@ const COMMAND_TYPES = new Set([
   'bind_boss_account',
   'correct_boss_resume_request',
   'reject_boss_resume_observation',
+  'correct_boss_resume_semantics',
   'ignore_boss_observations',
   'resolve_boss_job_details',
   'set_boss_job_state',
@@ -985,6 +987,25 @@ export class WorkspaceStore {
           }
         } else if (command.type === 'correct_boss_resume_request') {
           fail('BOSS_RESUME_CORRECTION_SUPERSEDED', '旧简历纠正命令已停用。', 409);
+        } else if (command.type === 'correct_boss_resume_semantics') {
+          object(payload, ['applicationIds']);
+          if (current.workspace.pending)
+            fail('SYNC_CONFLICT', '请先核对同步冲突，再纠正简历发送误判。', 409);
+          workspace = copy(current.workspace);
+          try {
+            workspace.data = correctBossResumeSemantics(workspace.data, {
+              ...payload,
+              workspaceSourceId: current.workspaceId,
+              stamp: this.now(),
+            });
+          } catch (error) {
+            if (error.code === 'BOSS_RESUME_CORRECTION_UNSAFE')
+              fail(error.code, error.message, 409);
+            throw error;
+          }
+          if (equal(workspace.data, current.workspace.data))
+            fail('WORKSPACE_COMMAND_NO_EFFECT', '简历误判纠正没有产生变化。', 409);
+          workspace.generation++;
         } else if (command.type === 'reject_boss_resume_observation') {
           object(payload, ['opportunityId', 'eventId']);
           if (
