@@ -1,3 +1,4 @@
+import { bossDetailSignature, resolveBossJobEvidence } from '../collector/boss/job-evidence.mjs';
 import { createHash } from 'node:crypto';
 import { basename } from 'node:path';
 import { bossBatchDigestInput } from '../dist/boss-batch.js';
@@ -12,14 +13,6 @@ const RESUME_POLICY = 'boss-resume-observation-v3';
 const RESUME_STATUS_WORKFLOW = 'resume-status-linked-v2';
 const TIMEZONE = 'Asia/Shanghai';
 const YESTERDAY_LABEL = '昨天';
-function detailSignature(detail) {
-  const normalized = (value) =>
-    String(value ?? '')
-      .normalize('NFC')
-      .replace(/\s+/gu, ' ')
-      .trim();
-  return JSON.stringify([normalized(detail.name), normalized(detail.company)]);
-}
 function canonical(value) {
   if (Array.isArray(value)) return value.map(canonical);
   if (value && typeof value === 'object')
@@ -129,7 +122,7 @@ function retainedDetailRecords(envelope) {
           parsed.company !== detail.company
         )
           return false;
-        signatures.add(detailSignature(parsed));
+        signatures.add(bossDetailSignature(parsed));
       }
       return signatures.size === 1;
     })
@@ -146,11 +139,6 @@ function retainedDetailRecords(envelope) {
 }
 
 export function resolveJobRows(envelope, { includeRetainedDetails = false } = {}) {
-  const rank = new Map([
-    ['loaded_jobName', includeRetainedDetails ? 2 : 3],
-    ['detail_page_title', includeRetainedDetails ? 3 : 2],
-    ['legacy_named_job', 1],
-  ]);
   const currentByConversation = new Map(
     envelope.jobs.associations
       .filter((item) => item.status === 'current')
@@ -161,77 +149,24 @@ export function resolveJobRows(envelope, { includeRetainedDetails = false } = {}
     : envelope.snapshot.records;
   return records.map((record) => {
     const association = currentByConversation.get(record.key) ?? null;
-    const evidence = association
-      ? envelope.jobs.evidence
-          .filter(
-            (item) => item.jobId === association.jobId && item.detailUrl === association.detailUrl,
-          )
-          .sort(
-            (a, b) =>
-              (rank.get(b.source) ?? 0) - (rank.get(a.source) ?? 0) ||
-              Date.parse(b.observedAt) - Date.parse(a.observedAt),
-          )
-      : [];
-    const details = evidence.filter((item) => item.source === 'detail_page_title');
-    const detailConflict = includeRetainedDetails
-      ? new Set(details.map(detailSignature)).size > 1
-      : details.some(
-          (item) => item.name !== details[0].name || item.company !== details[0].company,
-        );
-    // Keep the legacy fact mapping for resume IDs. Detail delivery uses the
-    // verified employer, which can differ from the company in the chat list.
-    const company = record.company.trim();
-    const nameConflict = includeRetainedDetails
-      ? detailConflict
-      : evidence.some((item) => item.company.trim() && item.company.trim() !== company);
-    const selected = includeRetainedDetails
-      ? detailConflict
-        ? null
-        : (evidence[0] ?? null)
-      : (evidence.find((item) => !item.company.trim() || item.company.trim() === company) ?? null);
-    const confirmed = association
-      ? envelope.jobs.confirmations.some(
-          (item) =>
-            item.conversationKey === record.key &&
-            item.jobId === association.jobId &&
-            item.detailUrl === association.detailUrl &&
-            item.status === 'confirmed_user',
-        )
-      : false;
+    const decision = resolveBossJobEvidence(
+      {
+        association,
+        conversation: record,
+        evidence: envelope.jobs.evidence,
+        confirmations: envelope.jobs.confirmations,
+      },
+      includeRetainedDetails ? 'detail_delivery' : 'legacy_identity',
+    );
     return {
       record,
-      jobDetails: (() => {
-        if (!details.length) return null;
-        if (detailConflict || !details[0].company?.trim())
-          return {
-            jobId: association.jobId,
-            canonicalUrl: association.detailUrl,
-            jobName: '',
-            company: '',
-            source: 'detail_page_conflict',
-          };
-        return {
-          jobId: association.jobId,
-          canonicalUrl: association.detailUrl,
-          jobName: details[0].name,
-          company: details[0].company,
-          source: 'detail_page_title',
-        };
-      })(),
+      jobDetails: decision.jobDetails,
       externalJobId: association?.jobId ?? '',
       canonicalUrl: association?.detailUrl ?? '',
-      jobName:
-        selected?.name ??
-        (includeRetainedDetails && nameConflict ? '' : (record.observedJobName ?? '')),
-      nameSource:
-        selected?.source ??
-        (includeRetainedDetails && nameConflict
-          ? ''
-          : record.observedJobName
-            ? 'loaded_jobName'
-            : ''),
-      nameConflict,
-      linkConfirmation: confirmed ? 'confirmed_user' : 'unverified',
+      jobName: decision.jobName,
+      nameSource: decision.nameSource,
+      nameConflict: decision.nameConflict,
+      linkConfirmation: decision.confirmed ? 'confirmed_user' : 'unverified',
     };
   });
 }

@@ -1,3 +1,4 @@
+import { resolveBossJobEvidence } from './job-evidence.mjs';
 import { BOSS_JOB_ID, parseBossJobUrl, isCanonicalBossJobUrl } from '../../dist/boss-job-url.js';
 import { parseBossDetailTitle } from '../../dist/boss-detail-title.js';
 import { validateAttributionEvidence } from '../../dist/boss-attribution.js';
@@ -1223,31 +1224,6 @@ export function createEnvelopeV2(snapshot) {
   return compareLoadedSnapshotsV2(null, snapshot);
 }
 
-// Detail facts outrank loaded labels; conflicting detail facts stay unresolved.
-function rankedJobEvidence(envelope, association) {
-  const sourceRank = new Map([
-    ['detail_page_title', 3],
-    ['loaded_jobName', 2],
-    ['legacy_named_job', 1],
-  ]);
-  const evidence = association
-    ? envelope.jobs.evidence
-        .filter(
-          (item) => item.jobId === association.jobId && item.detailUrl === association.detailUrl,
-        )
-        .sort(
-          (a, b) =>
-            (sourceRank.get(b.source) ?? 0) - (sourceRank.get(a.source) ?? 0) ||
-            Date.parse(b.observedAt) - Date.parse(a.observedAt),
-        )
-    : [];
-  const details = evidence.filter((item) => item.source === 'detail_page_title');
-  const conflict =
-    new Set(details.map((item) => JSON.stringify([normText(item.name), normText(item.company)])))
-      .size > 1;
-  return { evidence, conflict };
-}
-
 /** Resolve a stable, privacy-minimal export/status view without mutating input. */
 export function resolveJobRowsV2(inputEnvelope) {
   const envelope = validateEnvelope(inputEnvelope);
@@ -1261,17 +1237,15 @@ export function resolveJobRowsV2(inputEnvelope) {
             Date.parse(b.lastObservedAt) - Date.parse(a.lastObservedAt),
         );
       const association = associations[0] ?? null;
-      const { evidence, conflict } = rankedJobEvidence(envelope, association);
-      const selected = conflict ? null : (evidence[0] ?? null);
-      const confirmed = association
-        ? envelope.jobs.confirmations.some(
-            (item) =>
-              item.conversationKey === conversation.key &&
-              item.jobId === association.jobId &&
-              item.detailUrl === association.detailUrl &&
-              item.status === 'confirmed_user',
-          )
-        : false;
+      const { selected, confirmed } = resolveBossJobEvidence(
+        {
+          association,
+          conversation,
+          evidence: envelope.jobs.evidence,
+          confirmations: envelope.jobs.confirmations,
+        },
+        'collector',
+      );
       const candidates = association
         ? envelope.jobs.candidates
             .filter(
@@ -1313,7 +1287,15 @@ export function listEnrichmentTargetsV2(inputEnvelope) {
     .map((association) => {
       const conversation = conversations.get(association.conversationKey);
       if (!conversation) return null;
-      const { evidence, conflict } = rankedJobEvidence(envelope, association);
+      const { evidence, conflict } = resolveBossJobEvidence(
+        {
+          association,
+          conversation,
+          evidence: envelope.jobs.evidence,
+          confirmations: envelope.jobs.confirmations,
+        },
+        'collector',
+      );
       const candidates = envelope.jobs.candidates
         .filter(
           (item) =>
