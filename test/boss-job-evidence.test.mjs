@@ -169,7 +169,7 @@ function legacyBatchProjection(batch) {
   return legacy;
 }
 
-test('evidence projections and stable identities retain baseline outputs across explicit v5 delivery', () => {
+test('evidence projections and stable identities retain baseline outputs across explicit v6 delivery', () => {
   const outputs = characterizedOutputs();
   const hashes = Object.fromEntries(
     Object.entries(outputs).map(([key, value]) => [
@@ -181,8 +181,13 @@ test('evidence projections and stable identities retain baseline outputs across 
   assert.deepEqual(
     Object.fromEntries(
       Object.keys(V5_BATCH_GOLDEN).map((key) => {
-        assert.equal(outputs[key].version, 5);
-        return [key, stableHash(outputs[key])];
+        assert.equal(outputs[key].version, 6);
+        // Preserve the independently recorded v5 output, allowing only the
+        // new wire header and its protocol-bound batch digest. Event/fact IDs,
+        // evidence and every other field still match the original golden.
+        const legacy = { ...outputs[key], version: 5 };
+        legacy.batchId = `boss-batch-${stableHash(bossBatchDigestInput(legacy))}`;
+        return [key, stableHash(legacy)];
       }),
     ),
     V5_BATCH_GOLDEN,

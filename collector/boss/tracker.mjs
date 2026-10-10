@@ -505,7 +505,7 @@ function completedDetailCursor(input, collected, priorCursor) {
 
 function currentDetailSummary(envelope, runtime, now = new Date().toISOString()) {
   const input =
-    envelope && [2, 3, 4, 5].includes(envelope.version)
+    envelope && [2, 3, 4, 5, 6].includes(envelope.version)
       ? fairDetailInputs(envelope, { limit: 1, runtime, now })
       : null;
   return detailRuntimeSummary(runtime, {
@@ -942,7 +942,7 @@ export async function main(argv = process.argv.slice(2)) {
         loadRuntimeState(directory),
       ]);
       const dom =
-        saved && [2, 3, 4, 5].includes(saved.envelope.version)
+        saved && [2, 3, 4, 5, 6].includes(saved.envelope.version)
           ? await domSupplementStatus(directory, saved.envelope)
           : null;
       console.log(
@@ -1138,7 +1138,7 @@ export async function main(argv = process.argv.slice(2)) {
     const commandStartedAt = runStartedAt ?? new Date().toISOString();
 
     if (mode === 'enrich') {
-      if (![2, 3, 4, 5].includes(saved.envelope.version)) throw new Error('V2_CHECK_REQUIRED');
+      if (![2, 3, 4, 5, 6].includes(saved.envelope.version)) throw new Error('V2_CHECK_REQUIRED');
       const identityCheck = await retryReport(() =>
         resumeBrowser(activeConnection, identityOptions),
       );
@@ -1272,7 +1272,7 @@ export async function main(argv = process.argv.slice(2)) {
     }
 
     if (mode === 'resume-scan') {
-      if (![2, 3, 4, 5].includes(saved.envelope.version)) throw new Error('V2_CHECK_REQUIRED');
+      if (![2, 3, 4, 5, 6].includes(saved.envelope.version)) throw new Error('V2_CHECK_REQUIRED');
       const scanned = await collectResume({
         directory,
         connection: activeConnection,
@@ -1460,7 +1460,7 @@ export async function main(argv = process.argv.slice(2)) {
         error: null,
         cursor: runtime.cursors.resume,
       };
-      if ([2, 3, 4, 5].includes(envelope.version) && historyRequests > 0)
+      if ([2, 3, 4, 5, 6].includes(envelope.version) && historyRequests > 0)
         history =
           historyMode === 'backfill'
             ? await collectResume({
@@ -1508,7 +1508,7 @@ export async function main(argv = process.argv.slice(2)) {
         checkpointPending: false,
         nextAllowedAt: null,
       };
-      if (!history.partial && [2, 3, 4, 5].includes(envelope.version) && domLimit > 0) {
+      if (!history.partial && [2, 3, 4, 5, 6].includes(envelope.version) && domLimit > 0) {
         dom = await collectDomSupplement({
           directory,
           envelope,
@@ -1558,7 +1558,7 @@ export async function main(argv = process.argv.slice(2)) {
       if (
         !history.partial &&
         !dom.partial &&
-        [2, 3, 4, 5].includes(envelope.version) &&
+        [2, 3, 4, 5, 6].includes(envelope.version) &&
         detailLimit > 0
       ) {
         const detailAt = new Date().toISOString();

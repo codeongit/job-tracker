@@ -315,8 +315,8 @@ export function bossIntegrationView(
       : Number(attribution.semantic || 0);
   const waitingText =
     waiting > 0
-      ? `<p>等待资料或证据：<strong>${waiting}</strong>${insufficient > 0 ? `，其中 <strong>${insufficient}</strong> 条归属证据不足` : ''}${semantic > 0 ? `，<strong>${semantic}</strong> 条简历发送依据不足` : ''}。</p>`
-      : `${insufficient > 0 ? `<p>归属证据不足：<strong>${insufficient}</strong>。</p>` : ''}${semantic > 0 ? `<p>简历发送依据不足：<strong>${semantic}</strong>。</p>` : ''}`;
+      ? `<p>等待资料或证据：<strong>${waiting}</strong>${insufficient > 0 ? `，其中 <strong>${insufficient}</strong> 条归属证据不足` : ''}${semantic > 0 ? `，<strong>${semantic}</strong> 条简历状态依据不足` : ''}。</p>`
+      : `${insufficient > 0 ? `<p>归属证据不足：<strong>${insufficient}</strong>。</p>` : ''}${semantic > 0 ? `<p>简历状态依据不足：<strong>${semantic}</strong>。</p>` : ''}`;
   const waitingItems = messageGroups.map((item) => ({
       ...waitingItemDetails(item, data),
       ...item,
@@ -366,10 +366,10 @@ export function bossIntegrationView(
         '旧消息缺少联系人、会话或参与者的对应依据，未用于更新简历状态。可核对聊天后自行编辑岗位；忽略只结束这条旧观察的自动处理。',
     },
     {
-      title: '简历发送依据不足',
+      title: '简历状态依据不足',
       matches: (item) => item.status !== 'review' && item.reason === 'resume_semantics_missing',
       explanation:
-        '旧记录仅保存了平台卡片类别，缺少能核对的系统文案；不能据此认定简历已发送。核对真实聊天后可自行编辑岗位；不再采用的旧观察可单独忽略。',
+        '现有观察缺少可核对的系统状态依据；不能据此认定简历已发送或已接收。核对真实聊天后可自行编辑岗位；不再采用的旧观察可单独忽略。',
     },
     {
       title: '其他等待项',
@@ -438,9 +438,9 @@ export function bossIntegrationView(
               item.status === 'review'
                 ? '核对具体矛盾及相关岗位，修复原因后重新检查。'
                 : semanticMissing
-                  ? '核对真实聊天后自行编辑岗位；编辑不会补齐发送依据，不再采用的旧观察可单独确认忽略。'
+                  ? '核对真实聊天后自行编辑岗位；编辑不会补齐平台状态依据，不再采用的旧观察可单独确认忽略。'
                   : '先核对候选岗位；普通资料可确认对应，不再采用的旧等待项可单独确认忽略。';
-            return `<li class="boss-observation-card"><label class="boss-observation-choice">${item.waitingApplicationIds.length ? `<input type="checkbox" id="boss-ignore-${esc(item.applicationId)}" data-boss-ignore-item="${esc(item.waitingApplicationIds.join(','))}" ${item.waitingApplicationIds.every((id) => selected.has(id)) ? 'checked' : ''} ${selectionDisabled ? 'disabled' : ''}>` : ''}<span><strong>${candidateLabel(item)}</strong><span class="boss-observation-meta">${esc(item.contact || '联系人未取得')} · 包含 ${item.observations.length} 项观察 · ${esc(dateLabel)}</span>${item.platformJobState !== 'unknown' ? `<span class="badge">${esc(PLATFORM_JOB_LABELS[item.platformJobState] || '平台状态需核对')}</span>` : ''}</span></label><dl class="issue-steps"><dt>发生了什么</dt><dd>${esc(problem)}${item.reason === 'missing_job_details' && item.missingFields?.length ? `：${esc(item.missingFields.join('、'))}未取得` : ''}</dd><dt>影响</dt><dd>${semanticMissing ? '这项观察不能证明简历已发送，也不确认岗位归属。' : `此处尚未处理的观察未用于更新岗位${reviewCount ? '；矛盾材料继续拦截' : ''}。`}</dd><dt>下一步</dt><dd>${esc(next)}</dd></dl><p>可忽略 ${item.waitingApplicationIds.length} 项等待观察${reviewCount ? `；仍需核对 ${reviewCount} 项矛盾观察，勾选不会关闭这些矛盾` : ''}。</p>${review}${relatedView}${confirmAction}<details data-settings-details="boss-message-${esc(item.applicationId)}"><summary>技术详情 · ${item.observations.length} 项观察</summary>${item.observations.map((observation) => `<p>${esc(observation.observationType)} · ${esc(bossObservationReason(observation))}</p>`).join('')}</details></li>`;
+            return `<li class="boss-observation-card"><label class="boss-observation-choice">${item.waitingApplicationIds.length ? `<input type="checkbox" id="boss-ignore-${esc(item.applicationId)}" data-boss-ignore-item="${esc(item.waitingApplicationIds.join(','))}" ${item.waitingApplicationIds.every((id) => selected.has(id)) ? 'checked' : ''} ${selectionDisabled ? 'disabled' : ''}>` : ''}<span><strong>${candidateLabel(item)}</strong><span class="boss-observation-meta">${esc(item.contact || '联系人未取得')} · 包含 ${item.observations.length} 项观察 · ${esc(dateLabel)}</span>${item.platformJobState !== 'unknown' ? `<span class="badge">${esc(PLATFORM_JOB_LABELS[item.platformJobState] || '平台状态需核对')}</span>` : ''}</span></label><dl class="issue-steps"><dt>发生了什么</dt><dd>${esc(problem)}${item.reason === 'missing_job_details' && item.missingFields?.length ? `：${esc(item.missingFields.join('、'))}未取得` : ''}</dd><dt>影响</dt><dd>${semanticMissing ? '这项观察不能证明简历已发送或已接收，也不确认岗位归属。' : `此处尚未处理的观察未用于更新岗位${reviewCount ? '；矛盾材料继续拦截' : ''}。`}</dd><dt>下一步</dt><dd>${esc(next)}</dd></dl><p>可忽略 ${item.waitingApplicationIds.length} 项等待观察${reviewCount ? `；仍需核对 ${reviewCount} 项矛盾观察，勾选不会关闭这些矛盾` : ''}。</p>${review}${relatedView}${confirmAction}<details data-settings-details="boss-message-${esc(item.applicationId)}"><summary>技术详情 · ${item.observations.length} 项观察</summary>${item.observations.map((observation) => `<p>${esc(observation.observationType)} · ${esc(bossObservationReason(observation))}</p>`).join('')}</details></li>`;
           })
           .join('')}</ul></section>`;
       })

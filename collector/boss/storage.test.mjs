@@ -111,7 +111,7 @@ test('version-2 CDP binding persists browser instance and exact target identity'
   }
 });
 
-test('latest accepts version 2 through 5 envelopes while keeping version 1 compatibility', async () => {
+test('latest accepts version 2 through 6 envelopes while keeping version 1 compatibility', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'boss-tracker-v2-'));
   try {
     const path = await commit(directory, {
@@ -132,7 +132,7 @@ test('latest accepts version 2 through 5 envelopes while keeping version 1 compa
     });
     assert.equal((await latest(directory)).path, v3);
     assert.equal((await latest(directory)).envelope.version, 3);
-    for (const version of [4, 5]) {
+    for (const version of [4, 5, 6]) {
       const path = await commit(directory, {
         version,
         state: { records: [] },

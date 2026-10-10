@@ -96,9 +96,51 @@ export function classifyResumeEvidence(message, rules, classifyText) {
     !Number.isSafeInteger(messageType) ||
     messageType < 1 ||
     messageType > 1000 ||
-    [1, 4].includes(messageType)
+    messageType === 1
   )
     return null;
+  // Shapes established from loaded messages and the platform's normalization
+  // code. Keep discriminants so the consumer can independently recheck them.
+  const marker = (value) =>
+    value === null || value === undefined
+      ? null
+      : Number.isSafeInteger(value) && value >= 0 && value <= 1000
+        ? value
+        : undefined;
+  const shape = {
+    bizType: marker(message?.bizType),
+    bodyType: marker(body?.type),
+    templateId: marker(body?.templateId),
+    hyperLinkType: marker(body?.hyperLink?.hyperLinkType),
+  };
+  const explicit = (kind, field, text) => ({
+    kind,
+    evidence: { version: 2, messageType, field, text, ...shape },
+  });
+  if (
+    messageType === 3 &&
+    shape.bizType === 13 &&
+    shape.bodyType === 12 &&
+    shape.templateId === 1 &&
+    shape.hyperLinkType === 6 &&
+    classifyText(body?.hyperLink?.text, rules) === 'attachment_sent'
+  )
+    return explicit(
+      'attachment_sent',
+      'body.hyperLink.text',
+      '您的附件简历 [attachment] 已发送给Boss',
+    );
+  if (messageType === 4) {
+    if (
+      shape.bizType === null &&
+      shape.bodyType === 1 &&
+      shape.templateId === 3 &&
+      shape.hyperLinkType === null &&
+      classifyText(body?.text, rules) === 'viewed_confirmed'
+    )
+      return explicit('viewed_confirmed', 'body.text', '对方已查看了您的附件简历');
+    return null;
+  }
   for (const [field, value] of [
     ['message.text', message?.text],
     ['message.content', message?.content],
@@ -154,18 +196,28 @@ export function validateResumeEvidence(value) {
     typeof value?.text === 'string' &&
     (RESUME_RULES.some((rule) => rule.text === value.text) ||
       value.text === '您的附件简历 [attachment] 已发送给Boss');
+  const fields = ['version', 'messageType', 'field', 'text'];
+  if (value?.version === 2) fields.push('bizType', 'bodyType', 'templateId', 'hyperLinkType');
   if (
     !value ||
     typeof value !== 'object' ||
     Array.isArray(value) ||
-    Object.keys(value).length !== 4 ||
-    Object.keys(value).some((key) => !['version', 'messageType', 'field', 'text'].includes(key)) ||
-    value.version !== 1 ||
+    Object.keys(value).length !== fields.length ||
+    Object.keys(value).some((key) => !fields.includes(key)) ||
+    ![1, 2].includes(value.version) ||
     !Number.isSafeInteger(value.messageType) ||
     value.messageType < 1 ||
     value.messageType > 1000 ||
-    !RESUME_EVIDENCE_FIELDS.includes(value.field) ||
-    (value.field === 'none' ? value.messageType !== 4 || value.text !== '' : !validText)
+    ![...RESUME_EVIDENCE_FIELDS, ...(value.version === 2 ? ['body.hyperLink.text'] : [])].includes(
+      value.field,
+    ) ||
+    (value.field === 'none' ? value.messageType !== 4 || value.text !== '' : !validText) ||
+    (value.version === 2 &&
+      ['bizType', 'bodyType', 'templateId', 'hyperLinkType'].some(
+        (field) =>
+          value[field] !== null &&
+          (!Number.isSafeInteger(value[field]) || value[field] < 0 || value[field] > 1000),
+      ))
   )
     throw Object.assign(new Error('RESUME_EVIDENCE_INVALID'), { code: 'RESUME_EVIDENCE_INVALID' });
   return { ...value };
@@ -177,11 +229,24 @@ export function resumeEvidenceMeaning(summary, value) {
   const observation = { meaning: RESUME_MEANING.OBSERVATION, target: null };
   if (!rule.target || evidence?.field === 'none')
     return { status: 'observation_only', ...observation };
-  if (
-    !evidence ||
-    [1, 4].includes(evidence.messageType) ||
-    classifyResumeText(evidence.text, RESUME_RULES) !== rule.kind
-  )
+  const shapeMatches =
+    evidence?.version === 2
+      ? (rule.kind === 'attachment_sent' &&
+          evidence.messageType === 3 &&
+          evidence.field === 'body.hyperLink.text' &&
+          evidence.bizType === 13 &&
+          evidence.bodyType === 12 &&
+          evidence.templateId === 1 &&
+          evidence.hyperLinkType === 6) ||
+        (rule.kind === 'viewed_confirmed' &&
+          evidence.messageType === 4 &&
+          evidence.field === 'body.text' &&
+          evidence.bizType === null &&
+          evidence.bodyType === 1 &&
+          evidence.templateId === 3 &&
+          evidence.hyperLinkType === null)
+      : evidence && ![1, 4].includes(evidence.messageType);
+  if (!evidence || !shapeMatches || classifyResumeText(evidence.text, RESUME_RULES) !== rule.kind)
     return { status: 'insufficient', ...observation };
   return { status: 'verified', meaning: rule.meaning, target: rule.target };
 }

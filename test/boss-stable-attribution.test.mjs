@@ -49,9 +49,22 @@ function delivery({
   ordinary = false,
   ...overrides
 } = {}) {
+  const systemText = {
+    resume_sent_confirmed: '对方已同意，您的附件简历已发送给对方',
+    resume_viewed_confirmed: '对方已查看了您的附件简历',
+  }[overrides.summary ?? 'resume_sent_confirmed'];
   const event = {
     eventId: '',
-    ...(!ordinary ? { eventType: 'resume_observed', attribution } : {}),
+    ...(!ordinary
+      ? {
+          eventType: 'resume_observed',
+          attribution,
+          resumeEvidence: systemText
+            ? { version: 1, messageType: 5, field: 'body.text', text: systemText }
+            : null,
+        }
+      : {}),
+    ...(!ordinary ? { jobDetails: null } : {}),
     conversationKey: '1'.repeat(64),
     friendId: 'friend-1',
     friendSource: 'source-1',
@@ -78,7 +91,7 @@ function delivery({
   };
   const batch = {
     format: 'job-tracker-boss-batch',
-    version: ordinary ? 1 : 3,
+    version: ordinary ? 1 : 5,
     batchId: '',
     platform: 'boss',
     accountNamespace: account,
@@ -170,6 +183,8 @@ test('旧队列已回执的纯卡片等待项通过真实服务重评存档，�
   input.version = 1;
   input.policy.id = 'boss-resume-observation-v1';
   delete input.events[0].attribution;
+  delete input.events[0].jobDetails;
+  delete input.events[0].resumeEvidence;
   input.events[0].eventId = `boss-event-${workspaceDigest(bossEventDigestInput(input, input.events[0]))}`;
   input.batchId = `boss-batch-${workspaceDigest(bossBatchDigestInput(input))}`;
   const data = legacyCardWaiting(input);

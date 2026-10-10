@@ -216,7 +216,7 @@ function renderV2Jobs(envelope, resolveV2) {
 
 /** Render only the current baseline's job directory; never render chat content. */
 export function renderJobs(envelope, { resolveV2 = resolveJobRowsV2 } = {}) {
-  if ([2, 3, 4, 5].includes(envelope?.version)) return renderV2Jobs(envelope, resolveV2);
+  if ([2, 3, 4, 5, 6].includes(envelope?.version)) return renderV2Jobs(envelope, resolveV2);
   if (!envelope || typeof envelope !== 'object' || envelope.version !== 1 || !envelope.snapshot) {
     throw new TypeError('A version-1 or resolvable version-2 snapshot envelope is required');
   }

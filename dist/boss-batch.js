@@ -112,6 +112,8 @@ function validateEvent(event, batch) {
   if (batch.version >= 4) validateJobDetails(event.jobDetails, event);
   if (batch.version >= 5 && eventType === 'resume_observed') {
     const evidence = validateResumeEvidence(event.resumeEvidence);
+    if (batch.version < 6 && evidence?.version === 2)
+      throw integrationError('BOSS 旧批次不能携带新版简历语义依据。', 'BATCH_INVALID');
     if (
       evidence &&
       (evidence.field === 'none'
@@ -247,7 +249,7 @@ export function validateBossBatch(input) {
     throw integrationError('BOSS 队列批次结构无效。', 'BATCH_INVALID');
   if (
     input.format !== 'job-tracker-boss-batch' ||
-    ![1, 2, 3, 4, 5].includes(input.version) ||
+    ![1, 2, 3, 4, 5, 6].includes(input.version) ||
     !BATCH_ID.test(input.batchId) ||
     input.platform !== 'boss' ||
     !ACCOUNT_NAMESPACE.test(input.accountNamespace) ||

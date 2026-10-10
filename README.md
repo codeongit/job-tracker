@@ -158,9 +158,10 @@ pnpm format:check
 
 - [领域术语](CONTEXT.md)
 - [关键决策索引与历史 ADR](docs/DECISIONS.md)
-- [架构与代码职责](docs/ARCHITECTURE.md)
+- [当前架构与代码职责](docs/ARCHITECTURE.md)
+- [架构重构清单](docs/ARCHITECTURE_REFACTOR_PLAN.md)
 - [数据升级与恢复](docs/DATA_AND_RECOVERY.md)
 - [开发、发布与排障](docs/MAINTENANCE.md)
 - [更新记录](CHANGELOG.md)
 
-同步数据上限统一为最终文件的 5MB。共享数据与工作区升为 v3，备份外层继续为 v2；本机存储及协议各为 v1。旧格式逐级迁移，未知格式停止写入。迁移前关闭旧版页面并保留完整备份；所有静态端升级后再手动同步 v3 数据。首次真实迁移、页面关闭后台录入及手机往返同步仍须人工验收。
+同步数据上限统一为最终文件的 5MB。共享数据、工作区、备份及本机存储的当前版本统一见[版本与两种存储模式](docs/DATA_AND_RECOVERY.md#版本与两种存储模式)。旧格式逐级迁移，未知格式停止写入。迁移前关闭旧版页面并保留完整备份；静态端升级后再手动同步。真实迁移、页面关闭后台录入及手机往返同步按维护手册完成对应人工验收。

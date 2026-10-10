@@ -16,6 +16,12 @@ export function correctionBatch(
     jobId = `synthetic-job-${suffix}`;
   const conversationKey = stableHash(['synthetic-conversation', suffix]);
   const resolvedMessageId = messageId ?? (ordinary ? `ordinary-${suffix}` : `resume-${suffix}`);
+  const systemTexts = {
+    resume_request_sent: '附件简历请求已发送',
+    resume_sent_confirmed: '对方已同意，您的附件简历已发送给对方',
+    resume_attachment_sent: '您的附件简历 [attachment] 已发送给Boss',
+    resume_viewed_confirmed: '对方已查看了您的附件简历',
+  };
   const event = {
     eventId: '',
     ...(!ordinary
@@ -36,10 +42,9 @@ export function correctionBatch(
             recipientId: 'self-1',
             messageJobId: jobId,
           },
-          resumeEvidence:
-            summary === 'resume_request_sent'
-              ? { version: 1, messageType: 5, field: 'body.text', text: '附件简历请求已发送' }
-              : null,
+          resumeEvidence: systemTexts[summary]
+            ? { version: 1, messageType: 5, field: 'body.text', text: systemTexts[summary] }
+            : null,
         }
       : {}),
     jobDetails: null,

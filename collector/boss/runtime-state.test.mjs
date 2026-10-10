@@ -506,7 +506,7 @@ test('runtime and resume checkpoints are private, atomic and reloadable', async 
     assert.deepEqual(await loadResumeCheckpoint(directory), checkpoint);
     for (const invalid of [
       { ...checkpoint, unknownField: true },
-      { ...checkpoint, version: 4 },
+      { ...checkpoint, version: 5 },
       { ...checkpoint, head: 'message~a' },
       { ...checkpoint, nextConversationKey: 'job~a' },
     ])
@@ -522,7 +522,7 @@ test('runtime and resume checkpoints are private, atomic and reloadable', async 
   }
 });
 
-test('语义依据仅在 v3 检查点保存，旧格式拒绝依据且失败保留已有进度', async () => {
+test('v1 语义依据保留 v3 检查点兼容，旧格式拒绝依据且失败保留已有进度', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'boss-checkpoint-proof-'));
   try {
     const observation = {
@@ -562,7 +562,7 @@ test('语义依据仅在 v3 检查点保存，旧格式拒绝依据且失败保�
       const checkpointPath = await save(directory, checkpoint);
       assert.deepEqual(await load(directory), checkpoint);
       for (const invalid of [
-        { ...checkpoint, version: 4 },
+        { ...checkpoint, version: 5 },
         ...[1, 2].map((version) => ({ ...checkpoint, version })),
         { ...checkpoint, observations: [{ ...observation, futureSemanticField: 'synthetic' }] },
         {
@@ -605,6 +605,91 @@ test('语义依据仅在 v3 检查点保存，旧格式拒绝依据且失败保�
         await save(directory, legacy);
         assert.deepEqual(await load(directory), legacy);
       }
+    }
+  } finally {
+    await rm(directory, { recursive: true });
+  }
+});
+
+test('v2 语义依据仅在 v4 检查点保存，两种恢复链路保持依据和旧进度', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'boss-checkpoint-v2-proof-'));
+  try {
+    const observation = {
+      conversationKey: 'c'.repeat(64),
+      friendId: '301',
+      friendSource: '0',
+      messageId: 'synthetic-viewed',
+      direction: 'system',
+      messageType: 4,
+      kind: 'viewed_confirmed',
+      platformTime: '2026-09-21T10:00:00.000Z',
+      externalJobId: null,
+      source: 'geek_history_status_message',
+      resumeEvidence: {
+        version: 2,
+        messageType: 4,
+        field: 'body.text',
+        text: '对方已查看了您的附件简历',
+        bizType: null,
+        bodyType: 1,
+        templateId: 3,
+        hyperLinkType: null,
+      },
+    };
+    const checkpoint = {
+      version: 4,
+      capturedAt: '2026-09-21T10:00:01.000Z',
+      nextConversationKey: 'c'.repeat(64),
+      nextPage: 2,
+      observations: [observation],
+      unresolved: [],
+      coverage: { requestedConversations: 1 },
+      usage: { historyRequests: 2 },
+      partial: false,
+      error: null,
+    };
+    for (const [save, load] of [
+      [saveResumeCheckpoint, loadResumeCheckpoint],
+      [saveChangeCheckpoint, loadChangeCheckpoint],
+    ]) {
+      const path = await save(directory, checkpoint);
+      assert.equal((await stat(path)).mode & 0o777, 0o600);
+      assert.deepEqual(await load(directory), checkpoint);
+      for (const invalid of [
+        ...[1, 2, 3, 5].map((version) => ({ ...checkpoint, version })),
+        {
+          ...checkpoint,
+          observations: [
+            { ...observation, resumeEvidence: { ...observation.resumeEvidence, rawBody: {} } },
+          ],
+        },
+        {
+          ...checkpoint,
+          observations: [
+            { ...observation, resumeEvidence: { ...observation.resumeEvidence, messageType: 3 } },
+          ],
+        },
+      ]) {
+        await assert.rejects(() => save(directory, invalid), /RESUME_CHECKPOINT_INVALID/);
+        assert.deepEqual(await load(directory), checkpoint);
+      }
+      const legacy = {
+        ...checkpoint,
+        version: 3,
+        observations: [
+          {
+            ...observation,
+            resumeEvidence: { version: 1, messageType: 4, field: 'none', text: '' },
+            kind: 'resume_card_other',
+            direction: 'inbound',
+            source: 'geek_history_type_4',
+          },
+        ],
+      };
+      await save(directory, legacy);
+      assert.deepEqual(await load(directory), legacy);
+      await save(directory, checkpoint);
+      assert.deepEqual(await load(directory), checkpoint);
     }
   } finally {
     await rm(directory, { recursive: true });

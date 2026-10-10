@@ -10,7 +10,7 @@ import { effectiveSourceEvents, effectiveSourceFacts } from '../dist/source-ledg
 import { platformObservationLabel } from '../dist/boss-integration.js';
 
 const reason = 'resume_semantics_missing';
-const label = '旧平台卡片缺少可核对的简历发送依据';
+const label = '缺少可核对的简历状态依据';
 function observationData() {
   const data = initialWorkspace().data;
   for (const [index, status, applicationReason, eventType] of [
@@ -109,11 +109,11 @@ test('语义等待卡片明确系统文案缺失、发送未证明、候选未�
     },
     { data },
   );
-  assert.match(html, /简历发送依据不足 · 1 条/);
-  assert.match(html, /旧记录仅保存了平台卡片类别，缺少能核对的系统文案/);
-  assert.match(html, /这项观察不能证明简历已发送，也不确认岗位归属/);
+  assert.match(html, /简历状态依据不足 · 1 条/);
+  assert.match(html, /现有观察缺少可核对的系统状态依据/);
+  assert.match(html, /这项观察不能证明简历已发送或已接收，也不确认岗位归属/);
   assert.match(html, /候选岗位：&lt;合成公司&gt; \/ &lt;合成岗位&gt;/);
-  assert.match(html, /编辑不会补齐发送依据/);
+  assert.match(html, /编辑不会补齐平台状态依据/);
   assert.match(html, /可忽略 1 项等待观察/);
   assert.equal((html.match(new RegExp(label, 'g')) || []).length, 2);
   assert.doesNotMatch(
@@ -129,7 +129,7 @@ test('只有只读摘要时仍展示发送依据不足及候选，不误称归�
     serverManaged: true,
     attribution: summary,
   });
-  assert.match(html, /简历发送依据不足：<strong>1<\/strong>/);
+  assert.match(html, /简历状态依据不足：<strong>1<\/strong>/);
   assert.match(html, new RegExp(label));
   assert.match(html, /候选岗位：&lt;合成公司&gt; \/ &lt;合成岗位&gt;/);
   assert.doesNotMatch(html, /归属证据不足|缺少岗位资料|SECRET_MESSAGE_BODY/);
@@ -141,7 +141,7 @@ test('只有只读摘要时仍展示发送依据不足及候选，不误称归�
     attribution: bossAttributionSummary(mixed),
   });
   assert.match(mixedHtml, /归属证据不足：<strong>1<\/strong>/);
-  assert.match(mixedHtml, /简历发送依据不足：<strong>1<\/strong>/);
+  assert.match(mixedHtml, /简历状态依据不足：<strong>1<\/strong>/);
 });
 
 test('同步冲突中的新等待原因使用相同中文说明，原原因码仍保留在技术详情', () => {

@@ -276,7 +276,7 @@ function associationId(conversationKey, jobId) {
 
 function emptyEnvelope(snapshot) {
   return {
-    version: 5,
+    version: 6,
     scope: V2_SCOPE,
     accountNamespace: snapshot.accountNamespace,
     createdAt: snapshot.capturedAt,
@@ -546,6 +546,8 @@ function validateEnvelopeVersion(input, allowedVersions) {
     else if (Object.hasOwn(record, 'attribution')) fail('legacy observation contains attribution');
     if (envelope.version >= 5) {
       const proof = validateResumeEvidence(record.resumeEvidence);
+      if (proof?.version === 2 && envelope.version < 6)
+        fail('resume evidence version requires envelope v6');
       if (proof && proof.messageType !== record.messageType)
         fail('resume evidence message type is inconsistent');
     } else if (Object.hasOwn(record, 'resumeEvidence'))
@@ -701,20 +703,20 @@ export function validateEnvelopeV2(input) {
   return validateEnvelopeVersion(input, [2]);
 }
 
-/** Validate the current v5 envelope format. */
+/** Validate the current v6 envelope format. */
 export function validateCurrentEnvelope(input) {
-  return validateEnvelopeVersion(input, [5]);
+  return validateEnvelopeVersion(input, [6]);
 }
 
 /** Read supported versions without upgrading a read-only operation. */
 export function validateEnvelope(input) {
-  return validateEnvelopeVersion(input, [2, 3, 4, 5]);
+  return validateEnvelopeVersion(input, [2, 3, 4, 5, 6]);
 }
 
 /** Explicit, shape-preserving adapter used before every mutation or new commit. */
 export function upgradeEnvelope(input) {
   const envelope = validateEnvelope(input);
-  envelope.version = 5;
+  envelope.version = 6;
   for (const observation of envelope.resume.observations) {
     observation.attribution ??= null;
     observation.resumeEvidence ??= null;

@@ -518,7 +518,7 @@ export function validateTrackerEnvelope(input) {
     'resume',
   ]);
   if (
-    ![2, 3, 4, 5].includes(value.version) ||
+    ![2, 3, 4, 5, 6].includes(value.version) ||
     value.scope !== 'loaded-chat-list' ||
     !requiredString(value.accountNamespace, { max: 75, pattern: ACCOUNT_NAMESPACE }) ||
     !isIso(value.createdAt) ||
@@ -579,7 +579,8 @@ export function validateTrackerEnvelope(input) {
       }
       if (
         proof &&
-        (proof.messageType !== observation.messageType ||
+        ((value.version < 6 && proof.version === 2) ||
+          proof.messageType !== observation.messageType ||
           (proof.field === 'none'
             ? !['request_sent', 'sent_candidate', 'resume_card_other'].includes(observation.kind)
             : classifyResumeText(proof.text, RESUME_RULES) !== observation.kind))

@@ -108,6 +108,146 @@ test('发送依据保留精确字段和固定文案，附件文件名不进入�
   );
 });
 
+test('真实字段模式的附件发送与查看确认保留最小可重验依据', () => {
+  const cases = [
+    {
+      message: {
+        type: 3,
+        bizType: 13,
+        body: {
+          type: 12,
+          templateId: 1,
+          hyperLink: {
+            hyperLinkType: 6,
+            text: '您的附件简历 private-synthetic.pdf 已发送给Boss点击查看附件',
+            url: 'https://example.invalid/private-resume',
+          },
+        },
+      },
+      kind: 'attachment_sent',
+      evidence: {
+        version: 2,
+        messageType: 3,
+        field: 'body.hyperLink.text',
+        text: '您的附件简历 [attachment] 已发送给Boss',
+        bizType: 13,
+        bodyType: 12,
+        templateId: 1,
+        hyperLinkType: 6,
+      },
+      target: '已发送',
+    },
+    {
+      message: {
+        type: 4,
+        body: { type: 1, templateId: 3, text: '对方已查看了您的附件简历' },
+      },
+      kind: 'viewed_confirmed',
+      evidence: {
+        version: 2,
+        messageType: 4,
+        field: 'body.text',
+        text: '对方已查看了您的附件简历',
+        bizType: null,
+        bodyType: 1,
+        templateId: 3,
+        hyperLinkType: null,
+      },
+      target: '对方已接收',
+    },
+  ];
+  for (const { message, kind, evidence, target } of cases) {
+    assert.deepEqual(classifyResumeEvidence(message, RESUME_RULES, classifyResumeText), {
+      kind,
+      evidence,
+    });
+    assert.deepEqual(validateResumeEvidence(evidence), evidence);
+    assert.equal(resumeEvidenceMeaning(resumeRule(kind).summary, evidence).target, target);
+    for (const privateValue of ['private-synthetic', 'private-resume', 'https://'])
+      assert.equal(JSON.stringify(evidence).includes(privateValue), false);
+  }
+});
+
+test('新增字段或类型四系统文案缺少已核实结构时仍不推进', () => {
+  const send = {
+    type: 3,
+    bizType: 13,
+    body: {
+      type: 12,
+      templateId: 1,
+      hyperLink: { hyperLinkType: 6, text: '您的附件简历 synthetic.pdf 已发送给Boss' },
+    },
+  };
+  const viewed = {
+    type: 4,
+    body: { type: 1, templateId: 3, text: '对方已查看了您的附件简历' },
+  };
+  for (const message of [
+    { ...send, type: 1 },
+    { ...send, bizType: 317 },
+    { ...send, body: { ...send.body, type: 16 } },
+    { ...send, body: { ...send.body, templateId: 2 } },
+    { ...send, body: { ...send.body, hyperLink: { ...send.body.hyperLink, hyperLinkType: 5 } } },
+    {
+      ...send,
+      body: { ...send.body, hyperLink: { ...send.body.hyperLink, hyperLinkType: undefined } },
+    },
+    { ...send, body: { ...send.body, hyperLink: { ...send.body.hyperLink, text: '请发送简历' } } },
+    { ...send, body: { ...send.body, hyperLink: { type: 6, text: send.body.hyperLink.text } } },
+    { ...viewed, type: 1 },
+    { ...viewed, bizType: 317 },
+    { ...viewed, body: { ...viewed.body, type: 16 } },
+    { ...viewed, body: { ...viewed.body, templateId: undefined } },
+    { ...viewed, body: { ...viewed.body, templateId: 1 } },
+    { ...viewed, body: { ...viewed.body, text: '他说：对方已查看了您的附件简历' } },
+    { ...viewed, body: { ...viewed.body, hyperLink: { hyperLinkType: 6 } } },
+  ])
+    assert.equal(classifyResumeEvidence(message, RESUME_RULES, classifyResumeText), null);
+});
+
+test('v2 依据重验结构，旧依据不因新规则变成可信类型四', () => {
+  const viewed = {
+    version: 2,
+    messageType: 4,
+    field: 'body.text',
+    text: '对方已查看了您的附件简历',
+    bizType: null,
+    bodyType: 1,
+    templateId: 3,
+    hyperLinkType: null,
+  };
+  assert.equal(resumeEvidenceMeaning('resume_viewed_confirmed', viewed).status, 'verified');
+  for (const evidence of [
+    { ...viewed, messageType: 1 },
+    { ...viewed, bizType: 317 },
+    { ...viewed, bodyType: 16 },
+    { ...viewed, templateId: 1 },
+    { ...viewed, hyperLinkType: 6 },
+    { ...viewed, field: 'message.text' },
+  ])
+    assert.equal(resumeEvidenceMeaning('resume_viewed_confirmed', evidence).status, 'insufficient');
+  assert.equal(resumeEvidenceMeaning('resume_request_sent', viewed).status, 'insufficient');
+  for (const invalid of [
+    { ...viewed, version: 3 },
+    { ...viewed, rawBody: {} },
+    { ...viewed, field: 'body.hyperLink.url' },
+    { ...viewed, templateId: '3' },
+    { ...viewed, bodyType: 1001 },
+    { ...viewed, hyperLinkType: -1 },
+    { ...viewed, bizType: undefined },
+  ])
+    assert.throws(() => validateResumeEvidence(invalid), /RESUME_EVIDENCE_INVALID/);
+  assert.equal(
+    resumeEvidenceMeaning('resume_viewed_confirmed', {
+      version: 1,
+      messageType: 4,
+      field: 'body.text',
+      text: viewed.text,
+    }).status,
+    'insufficient',
+  );
+});
+
 test('缺依据与普通消息不能变成发送证据，旧类型四观察允许只存档', () => {
   assert.deepEqual(resumeEvidenceMeaning('resume_request_sent', null), {
     status: 'insufficient',

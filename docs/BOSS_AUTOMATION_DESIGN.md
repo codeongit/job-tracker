@@ -40,7 +40,7 @@
 
 正常链路不调用模型。采集、排队和正式消费共用归属规则，并各自使用该阶段可见材料；正式应用前重新判断。每轮分别记录采集、排队、业务应用及回执结果，快照成功或已入队不能证明已正式录入。工作台页面关闭时，本机服务仍可消费已绑定账号的队列；持续采集还要求跟踪已开始、Chrome/CDP 与登录有效。
 
-控制器负责生命周期和编排，采集器负责证据与进度，私有队列负责交付，来源账本负责业务应用。模块职责及业务链路见 [架构说明](ARCHITECTURE.md#boss-导入收敛d033v090)；首次迁移、账号绑定、两种存储模式和当前版本见 [数据与恢复](DATA_AND_RECOVERY.md#版本与两种存储模式)。
+控制器负责生命周期和编排，采集器负责证据与进度，私有队列负责交付，来源账本负责业务应用。模块职责及业务链路见 [架构的 BOSS 导入流程](ARCHITECTURE.md#2-boss-导入)；首次迁移、账号绑定、两种存储模式和当前版本见 [数据与恢复](DATA_AND_RECOVERY.md#版本与两种存储模式)。
 
 ### 变化驱动与手动回填
 
@@ -76,14 +76,16 @@ DOM 额度只表示受控补采上限。生产策略默认关闭，只有用户�
 
 领域术语见 [CONTEXT](../CONTEXT.md)。具体规则由对应文档集中维护：
 
-- 账号、会话及岗位身份，统一归属与候选上下文：见 [架构的 BOSS 导入收敛及后续章节](ARCHITECTURE.md#boss-导入收敛d033v090)，决策 [D033](adr/0033-boss-import-convergence.md)、[D034](adr/0034-boss-cross-observation-attribution.md)、[D035](adr/0035-boss-conversation-association-application.md)、[D040](adr/0040-boss-repeated-work-and-stable-reevaluation.md)。
+- 账号、会话及岗位身份，统一归属与候选上下文：见 [架构的归属判断](ARCHITECTURE.md#归属判断)，决策 [D033](adr/0033-boss-import-convergence.md)、[D034](adr/0034-boss-cross-observation-attribution.md)、[D035](adr/0035-boss-conversation-association-application.md)、[D040](adr/0040-boss-repeated-work-and-stable-reevaluation.md)。
 - 人工字段所有权、事实/应用账本及同步冲突：见 [来源事实、应用与冲突](DATA_AND_RECOVERY.md#来源事实应用与冲突)。
-- 岗位详情依据、用人公司、平台关闭及人工资料：见 [BOSS 资料与观察边界](ARCHITECTURE.md#boss-资料与观察边界0100)，决策 [D037](adr/0037-boss-existing-job-details.md)、[D038](adr/0038-boss-job-details-and-observation-groups.md)、[D039](adr/0039-boss-manual-retired-job-resolution.md)。
-- 等待项、人工忽略及页面核对入口：见 [历史等待与人工忽略](ARCHITECTURE.md#历史等待与人工忽略0916)，决策 [D036](adr/0036-boss-waiting-observation-ignore.md)，操作见 [维护手册](MAINTENANCE.md#历史等待处理0916)。
+- 岗位详情依据、用人公司、平台关闭及人工资料：见 [岗位资料与平台状态](ARCHITECTURE.md#岗位资料与平台状态)，决策 [D037](adr/0037-boss-existing-job-details.md)、[D038](adr/0038-boss-job-details-and-observation-groups.md)、[D039](adr/0039-boss-manual-retired-job-resolution.md)。
+- 等待项、人工忽略及页面核对入口：见 [应用结果与页面核对](ARCHITECTURE.md#应用结果与页面核对)，决策 [D036](adr/0036-boss-waiting-observation-ignore.md)，操作见 [维护手册](MAINTENANCE.md#历史等待处理0916)。
 
 ### 精确简历状态
 
 精确平台文案与状态转换以 [`dist/resume-rules.js`](../dist/resume-rules.js) 为唯一规则定义，维护方法见 [架构的简历规则](ARCHITECTURE.md#简历规则的维护)，用户确认样例见 [D025](adr/0025-controlled-conversation-detail-read.md)。通用卡片模板不能证明简历发送；0.10.15 的语义依据与旧材料边界见 [D044](adr/0044-boss-card-semantics-evidence.md)。规则含义、归属和应用条件分别见 [D030](adr/0030-reject-misattributed-resume-observation.md)、[D031](adr/0031-explicit-resume-semantics.md) 和 [D035](adr/0035-boss-conversation-association-application.md)；本机消息/阶段联动见 [架构的数据流](ARCHITECTURE.md#数据流)。
+
+0.10.18 按 [D047](adr/0047-boss-explicit-system-confirmations.md) 补读已核实的链接发送文字，并严格识别类型 4 中的明确查看系统消息；普通卡片与引用文字仍不联动。新证据保存最小判别字段，所有业务简历观察共用消费重验，不新增平台请求或自动补录。列表指纹没有变化的已完成历史不会因此主动重新读取；用户确认的定点记录可通过既有人工编辑修正，旧卡片不会凭升级变成确认事实。
 
 ### 已授权历史日期
 

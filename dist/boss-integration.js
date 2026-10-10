@@ -380,9 +380,9 @@ export function bossReceiptGap(data, batch) {
 function resolveResumeEvent(data, batch, event, context) {
   let attribution = assessBossAttribution(batch.accountNamespace, event, context);
   let observationOnly = !resumeRule(event.summary).target;
-  // request_sent keeps its historical identity and business meaning. A producer
-  // label alone cannot prove that the source was an actual system confirmation.
-  if (event.summary === 'resume_request_sent' && attribution.status !== 'conflict') {
+  // All status observations need their own recheckable system semantics. Keep
+  // historical labels and IDs, but never promote a producer's label to proof.
+  if (!observationOnly && attribution.status !== 'conflict') {
     const identity = { ...event, platform: 'boss', accountNamespace: batch.accountNamespace };
     const factId = bossFactId(identity);
     const candidates = [...(context?.factAssociations?.get(factId) ?? []), identity];

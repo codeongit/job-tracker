@@ -30,6 +30,26 @@ const JOB_ID = 'synthetic-job';
 const JOB_URL = `https://www.zhipin.com/job_detail/${JOB_ID}.html`;
 const SENT = { version: 1, messageType: 5, field: 'body.text', text: '附件简历请求已发送' };
 const CARD = { version: 1, messageType: 4, field: 'none', text: '' };
+const ATTACHMENT_SENT = {
+  version: 2,
+  messageType: 3,
+  field: 'body.hyperLink.text',
+  text: '您的附件简历 [attachment] 已发送给Boss',
+  bizType: 13,
+  bodyType: 12,
+  templateId: 1,
+  hyperLinkType: 6,
+};
+const VIEWED = {
+  version: 2,
+  messageType: 4,
+  field: 'body.text',
+  text: '对方已查看了您的附件简历',
+  bizType: null,
+  bodyType: 1,
+  templateId: 3,
+  hyperLinkType: null,
+};
 
 function attribution(overrides = {}) {
   return {
@@ -308,7 +328,7 @@ test('卡片证明不掩盖明确归属冲突，人工决定、已应用与删�
 
 test('批次证明未知版本字段、摘要矛盾均拒绝，正文不进入证明', () => {
   for (const proof of [
-    { ...SENT, version: 2 },
+    { ...SENT, version: 3 },
     { ...SENT, token: 'synthetic-secret' },
     { ...SENT, text: '私人正文' },
     { ...SENT, text: '对方已查看了您的附件简历' },
@@ -324,7 +344,7 @@ test('批次证明未知版本字段、摘要矛盾均拒绝，正文不进入�
   const legacy = delivery({ version: 4 });
   legacy.events[0].resumeEvidence = SENT;
   assert.throws(() => validateBossBatch(legacy));
-  assert.throws(() => validateBossBatch({ ...delivery(), version: 6 }));
+  assert.throws(() => validateBossBatch({ ...delivery(), version: 7 }));
 });
 
 test('同事实候选顺序不改变结果，旧缺证明不能否定完整新证明，完整矛盾保守等待', () => {
@@ -360,14 +380,180 @@ test('同事实候选顺序不改变结果，旧缺证明不能否定完整新�
   assert.equal(chatText.sourceApplications.at(-1).reason, 'resume_semantics_missing');
 });
 
-test('其它已确认简历含义继续使用旧语义，不要求 request_sent 的新证明', () => {
-  const result = applyBossBatch(
+test('所有有业务目标的简历观察均须有可重算的语义证明，旧标签不能直接推进', () => {
+  for (const summary of [
+    'resume_request_sent',
+    'resume_sent_confirmed',
+    'resume_attachment_sent',
+    'resume_viewed_confirmed',
+  ]) {
+    for (const version of [3, 4, 5]) {
+      const result = applyBossBatch(
+        seed(),
+        delivery({ version, summary, proof: null }),
+        options,
+      ).data;
+      assert.equal(result.opportunities[0].resumeState, '未知', `${summary} v${version}`);
+      assert.equal(result.sourceApplications.at(-1).status, 'waiting');
+      assert.equal(result.sourceApplications.at(-1).reason, 'resume_semantics_missing');
+    }
+  }
+});
+
+test('其它合法 v1 系统证明仍可应用，语义与独立归属不能来自不同观察', () => {
+  const meanings = [
+    ['resume_sent_confirmed', '对方已同意，您的附件简历已发送给对方', '已发送'],
+    ['resume_attachment_sent', '您的附件简历 [attachment] 已发送给Boss', '已发送'],
+    ['resume_viewed_confirmed', '对方已查看了您的附件简历', '对方已接收'],
+  ];
+  for (const [summary, text, expected] of meanings) {
+    const proof = { version: 1, messageType: 5, field: 'body.text', text };
+    const complete = delivery({ summary, proof });
+    const applied = applyBossBatch(seed(), complete, options).data;
+    assert.equal(applied.opportunities[0].resumeState, expected);
+    assert.equal(applied.sourceApplications.at(-1).status, 'applied');
+
+    const semanticOnly = delivery({ summary, proof, evidence: null });
+    const identityOnly = delivery({ summary, version: 4 });
+    for (const pool of [
+      [semanticOnly, identityOnly],
+      [identityOnly, semanticOnly],
+    ]) {
+      const result = applyBossBatch(seed(), pool[0], {
+        ...options,
+        attributionObservations: observations(pool),
+      }).data;
+      assert.equal(result.opportunities[0].resumeState, '未知', summary);
+      assert.equal(result.sourceApplications.at(-1).status, 'waiting');
+      assert.equal(result.sourceApplications.at(-1).reason, 'attribution_evidence_missing');
+    }
+  }
+});
+
+test('精确链接发送与已查看证明独立应用，旧同消息卡片及其稳定身份保持存档', () => {
+  const oldCard = delivery({
+    summary: 'resume_card_other',
+    proof: CARD,
+    messageId: 'view-message',
+    evidence: attribution({ messageId: 'view-message' }),
+  });
+  const archived = applyBossBatch(seed(), oldCard, options).data;
+  const oldEvent = structuredClone(archived.sourceEvents.at(-1));
+  const oldFact = structuredClone(archived.sourceFacts.at(-1));
+  const oldApplication = structuredClone(archived.sourceApplications.at(-1));
+  const sent = delivery({ version: 6, summary: 'resume_attachment_sent', proof: ATTACHMENT_SENT });
+  const viewed = delivery({
+    version: 6,
+    summary: 'resume_viewed_confirmed',
+    proof: VIEWED,
+    messageId: 'view-message',
+    evidence: attribution({ messageId: 'view-message' }),
+    sequence: 3,
+  });
+  const afterSent = applyBossBatch(archived, sent, options).data;
+  assert.equal(afterSent.opportunities[0].resumeState, '已发送');
+  const received = applyBossBatch(afterSent, viewed, options).data;
+  assert.equal(received.opportunities[0].resumeState, '对方已接收');
+  assert.equal(received.opportunities[0].readState, '已读');
+  assert.equal(received.opportunities[0].stage, '沟通中');
+  assert.deepEqual(
+    received.sourceEvents.find((row) => row.id === oldEvent.id),
+    oldEvent,
+  );
+  assert.deepEqual(
+    received.sourceFacts.find((row) => row.id === oldFact.id),
+    oldFact,
+  );
+  assert.deepEqual(
+    received.sourceApplications.find((row) => row.id === oldApplication.id),
+    oldApplication,
+  );
+  assert.equal(received.sourceApplications.at(-1).status, 'applied');
+  assert.deepEqual(applyBossBatch(received, sent, options).data, received);
+  assert.deepEqual(applyBossBatch(received, viewed, options).data, received);
+});
+
+test('新查看证明须在同一观察有归属，联系人冲突优先；旧 type4 文案没有新可信地位', () => {
+  const semanticOnly = delivery({
+    version: 6,
+    summary: 'resume_viewed_confirmed',
+    proof: VIEWED,
+    evidence: null,
+  });
+  const identityOnly = delivery({ summary: 'resume_viewed_confirmed', proof: null });
+  for (const pool of [
+    [semanticOnly, identityOnly],
+    [identityOnly, semanticOnly],
+  ]) {
+    const result = applyBossBatch(seed(), pool[0], {
+      ...options,
+      attributionObservations: observations(pool),
+    }).data;
+    assert.equal(result.opportunities[0].resumeState, '未知');
+    assert.equal(result.sourceApplications.at(-1).reason, 'attribution_evidence_missing');
+  }
+  const conflict = applyBossBatch(
     seed(),
-    delivery({ version: 4, summary: 'resume_sent_confirmed' }),
+    delivery({
+      version: 6,
+      summary: 'resume_viewed_confirmed',
+      proof: VIEWED,
+      evidence: attribution({ responseFriendId: 'wrong-friend' }),
+    }),
     options,
   ).data;
-  assert.equal(result.opportunities[0].resumeState, '已发送');
+  assert.equal(conflict.sourceApplications.at(-1).status, 'review');
+  assert.equal(conflict.sourceApplications.at(-1).reason, 'attribution_contact_conflict');
+  const oldType4 = applyBossBatch(
+    seed(),
+    delivery({
+      summary: 'resume_viewed_confirmed',
+      proof: { version: 1, messageType: 4, field: 'body.text', text: VIEWED.text },
+    }),
+    options,
+  ).data;
+  assert.equal(oldType4.opportunities[0].resumeState, '未知');
+  assert.equal(oldType4.sourceApplications.at(-1).reason, 'resume_semantics_missing');
+});
+
+test('新明确语义不覆盖人工字段或恢复已忽略的旧事实，会话新消息独立处理', () => {
+  const viewed = delivery({ version: 6, summary: 'resume_viewed_confirmed', proof: VIEWED });
+  const manual = seed();
+  manual.opportunities[0].resumeState = '已发送';
+  markManualFields(manual, manual.opportunities[0].id, ['resumeState']);
+  const protectedResult = applyBossBatch(manual, viewed, options).data;
+  assert.equal(protectedResult.opportunities[0].resumeState, '已发送');
+  assert.equal(protectedResult.sourceApplications.at(-1).status, 'protected');
+  assert.equal(protectedResult.sourceApplications.at(-1).reason, 'manual_resume_state');
+
+  const waiting = applyBossBatch(
+    seed(),
+    delivery({
+      summary: 'resume_viewed_confirmed',
+      proof: null,
+    }),
+    options,
+  ).data;
+  const ignored = ignoreBossObservations(waiting, {
+    ...options,
+    applicationIds: [waiting.sourceApplications.at(-1).id],
+  });
+  assert.deepEqual(applyBossBatch(ignored, viewed, options).data, ignored);
+  const newMessage = delivery({
+    version: 6,
+    summary: 'resume_viewed_confirmed',
+    proof: VIEWED,
+    messageId: 'new-view-message',
+    evidence: attribution({ messageId: 'new-view-message' }),
+    sequence: 3,
+  });
+  const result = applyBossBatch(ignored, newMessage, options).data;
+  assert.equal(result.opportunities[0].resumeState, '对方已接收');
   assert.equal(result.sourceApplications.at(-1).status, 'applied');
+  assert.equal(
+    result.sourceApplications.find((row) => row.id === ignored.sourceApplications.at(-1).id).reason,
+    'user_ignored_unresolved_observation',
+  );
 });
 
 test('转换旧 type4 request_sent 为普通卡片证明；旧 type5 不合成系统文案', () => {
@@ -376,7 +562,7 @@ test('转换旧 type4 request_sent 为普通卡片证明；旧 type5 不合成�
   assert.deepEqual(oldCard.resumeEvidence, CARD);
   assert.equal(oldSystem.resumeEvidence, null);
   const verified = createResumeBatch(snapshot(envelope({ proof: SENT })), 2);
-  assert.equal(verified.version, 5);
+  assert.equal(verified.version, 6);
   assert.deepEqual(verified.events[0].resumeEvidence, SENT);
   assert.equal(verified.events[0].eventId, oldSystem.eventId);
   const incremental = createIncrementalBatch(

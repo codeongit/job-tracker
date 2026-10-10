@@ -340,7 +340,7 @@ export async function runResumeHistoryRequests({
   if (initialHead && startConversationKey) heads.set(startConversationKey, initialHead);
   const checkpoint = async (nextConversationKey, nextPage, metadata = {}) =>
     onCheckpoint({
-      version: 3,
+      version: 4,
       capturedAt: now(),
       nextConversationKey,
       nextPage,

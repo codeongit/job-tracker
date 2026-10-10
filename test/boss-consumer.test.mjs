@@ -183,16 +183,21 @@ function resumeBatch(events, { sequence = 2, version = 1 } = {}) {
 function verifiedResumeBatch(events, options) {
   const input = resumeBatch(events, options);
   input.version = 5;
+  const systemTexts = {
+    resume_request_sent: '附件简历请求已发送',
+    resume_sent_confirmed: '对方已同意，您的附件简历已发送给对方',
+    resume_attachment_sent: '您的附件简历 [attachment] 已发送给Boss',
+    resume_viewed_confirmed: '对方已查看了您的附件简历',
+  };
   input.events = events.map((event) =>
     event.eventType !== 'resume_observed'
       ? { ...event, jobDetails: null }
       : {
           ...event,
           jobDetails: null,
-          resumeEvidence:
-            event.summary === 'resume_request_sent'
-              ? { version: 1, messageType: 5, field: 'body.text', text: '附件简历请求已发送' }
-              : null,
+          resumeEvidence: systemTexts[event.summary]
+            ? { version: 1, messageType: 5, field: 'body.text', text: systemTexts[event.summary] }
+            : null,
           attribution: {
             version: 1,
             source: 'history',
@@ -1550,7 +1555,7 @@ test('同批跨岗位重复先扫描全部候选，事件顺序不影响拦截�
     );
     assert.equal(one.status, 'review');
     assert.equal(one.reason, 'attribution_message_multiple_jobs');
-    assert.equal(one.ruleVersion, 'boss-application-v12');
+    assert.equal(one.ruleVersion, 'boss-application-v13');
     assert.equal(data.opportunities.find((o) => o.externalId === JOB_ID).resumeState, '未知');
     assert.equal(
       data.opportunities.find((o) => o.externalId === 'second-job').resumeState,
@@ -1692,7 +1697,7 @@ test('缺少消息岗位身份时依据会话应用新消息和历史等待项�
     applied.sourceApplications.at(-1).reason,
     'resume_status_advanced_conversation_association',
   );
-  assert.equal(applied.sourceApplications.at(-1).ruleVersion, 'boss-application-v12');
+  assert.equal(applied.sourceApplications.at(-1).ruleVersion, 'boss-application-v13');
   assert.deepEqual(applySynthetic(applied, input), applied);
   const restored = structuredClone(waiting);
   restored.sourceFacts.pop();

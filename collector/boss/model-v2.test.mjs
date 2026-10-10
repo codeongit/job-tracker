@@ -132,11 +132,22 @@ test('legacy v2 envelopes upgrade explicitly and without changing their safe sha
   const legacy = { ...structuredClone(current), version: 2 };
   assert.equal(validateEnvelopeV2(legacy).version, 2);
   const upgraded = upgradeEnvelope(legacy);
-  assert.equal(upgraded.version, 5);
+  assert.equal(upgraded.version, 6);
   assert.deepEqual({ ...upgraded, version: 2 }, legacy);
   const next = compareLoadedSnapshotsV2(legacy, snapshot([row('a')], 1)).envelope;
-  assert.equal(next.version, 5);
+  assert.equal(next.version, 6);
   assert.equal(legacy.version, 2);
+});
+
+test('v3-v5 快照读取与显式升级仅改变外层版本，不获得新的语义证据', () => {
+  const current = compareLoadedSnapshotsV2(null, snapshot([row('a')], 0)).envelope;
+  for (const version of [3, 4, 5]) {
+    const legacy = { ...structuredClone(current), version };
+    const upgraded = upgradeEnvelope(legacy);
+    assert.equal(upgraded.version, 6);
+    assert.deepEqual({ ...upgraded, version }, legacy);
+    assert.equal(legacy.version, version);
+  }
 });
 
 test('message IDs gate receipt transitions', () => {

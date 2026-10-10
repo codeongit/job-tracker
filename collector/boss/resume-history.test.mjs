@@ -383,6 +383,131 @@ test('page classifier accepts exact platform system fields but not chat text or 
   }
 });
 
+test('历史与兼容入口识别真实系统模式，普通卡片同次保留且正文不交付', async () => {
+  const target = { conversationKey, friendId: '301', friendSource: '0' };
+  const messages = [
+    {
+      mid: 'synthetic-send',
+      type: 3,
+      bizType: 13,
+      time: 1_790_000_007,
+      from: { uid: 'boss_301' },
+      to: { uid: 'self_301' },
+      body: {
+        type: 12,
+        templateId: 1,
+        hyperLink: {
+          hyperLinkType: 6,
+          text: '您的附件简历 private-synthetic.pdf 已发送给Boss',
+          url: 'https://example.invalid/private-resume',
+        },
+      },
+    },
+    {
+      mid: 'synthetic-viewed',
+      type: 4,
+      time: 1_790_000_009,
+      from: { uid: 'boss_301' },
+      to: { uid: 'self_301' },
+      body: { type: 1, templateId: 3, text: '对方已查看了您的附件简历' },
+    },
+    {
+      mid: 'synthetic-job-card',
+      type: 4,
+      bizType: 317,
+      time: 1_790_000_010,
+      from: { uid: 'boss_301' },
+      to: { uid: 'self_301' },
+      body: { type: 16, templateId: 1, articles: [{ title: 'Synthetic company role' }] },
+    },
+    {
+      mid: 'synthetic-user-quote',
+      type: 1,
+      time: 1_790_000_011,
+      from: { uid: 'self_301' },
+      to: { uid: 'boss_301' },
+      body: { type: 1, templateId: 3, text: '对方已查看了您的附件简历' },
+    },
+  ];
+  class FakeXHR {
+    open(_method, url) {
+      this.url = url;
+    }
+    setRequestHeader() {}
+    send() {
+      this.status = 200;
+      this.responseText = JSON.stringify({
+        code: 0,
+        zpData: this.url.includes('getGeekFriendList')
+          ? { result: [{ uid: 'boss_301', securityId: 'synthetic-security' }] }
+          : { messages },
+      });
+      queueMicrotask(() => this.onload());
+    }
+  }
+  const { envelope } = createEnvelopeV2(snapshot);
+  const collected = [];
+  for (const expression of [
+    createResumePageExpression({
+      target,
+      identity: { bossId: 'boss_301', securityId: 'synthetic-security' },
+      page: 1,
+    }),
+    createResumeHistoryExpression({ targets: [target], pages: 1 }),
+  ]) {
+    const value = await vm.runInNewContext(expression, {
+      setTimeout: (callback) => {
+        callback();
+        return 0;
+      },
+      location: { origin: 'https://www.zhipin.com', pathname: '/web/geek/chat' },
+      XMLHttpRequest: FakeXHR,
+      URL,
+      Date,
+      JSON,
+      Number,
+      String,
+      Object,
+      Array,
+      RegExp,
+      encodeURIComponent,
+      queueMicrotask,
+    });
+    const observations = JSON.parse(JSON.stringify(value.observations));
+    assert.deepEqual(
+      observations.map((item) => [item.messageId, item.kind]),
+      [
+        ['synthetic-send', 'attachment_sent'],
+        ['synthetic-viewed', 'viewed_confirmed'],
+        ['synthetic-job-card', 'resume_card_other'],
+      ],
+    );
+    assert.deepEqual(
+      observations.map((item) => item.resumeEvidence.version),
+      [2, 2, 1],
+    );
+    for (const privateValue of [
+      'private-synthetic',
+      'private-resume',
+      'synthetic-security',
+      'Synthetic company role',
+    ])
+      assert.equal(JSON.stringify(observations).includes(privateValue), false);
+    const result = toResumeHistoryResult(payload(observations), envelope);
+    const applied = applyResumeHistoryV2(envelope, result);
+    assert.equal(applied.envelope.version, 6);
+    assert.deepEqual(
+      applyResumeHistoryV2(applied.envelope, result).envelope.resume.observations,
+      applied.envelope.resume.observations,
+    );
+    const legacy = structuredClone(applied.envelope);
+    legacy.version = 5;
+    assert.throws(() => upgradeEnvelope(legacy), /resume evidence version/);
+    collected.push(result.observations.map((item) => item.id));
+  }
+  assert.deepEqual(collected[0], collected[1]);
+});
+
 test('bounded history runner checkpoints every request and reports actual coverage and usage', async () => {
   const targets = [
     { conversationKey, friendId: '301', friendSource: '0' },
@@ -435,7 +560,7 @@ test('bounded history runner checkpoints every request and reports actual covera
   });
   assert.equal(checkpoints.length, 5);
   assert.equal(
-    checkpoints.every((item) => item.version === 3),
+    checkpoints.every((item) => item.version === 4),
     true,
   );
   assert.equal(waits.length, 4);
@@ -629,7 +754,7 @@ test('new snapshots retain partial identity evidence and enrich observations wit
     first.envelope,
     toResumeHistoryResult(payload([{ ...raw, attribution: evidence }]), first.envelope),
   );
-  assert.equal(second.envelope.version, 5);
+  assert.equal(second.envelope.version, 6);
   assert.equal(second.envelope.resume.observations.length, 1);
   assert.equal(second.envelope.resume.observations[0].id, first.envelope.resume.observations[0].id);
   assert.equal(second.envelope.resume.observations[0].attribution.responseFriendId, null);
@@ -661,7 +786,7 @@ test('v4 类型四误分类升级保留原观察身份，并显式缺少发送�
   legacy.version = 4;
   delete legacy.resume.observations[0].resumeEvidence;
   const upgraded = upgradeEnvelope(legacy);
-  assert.equal(upgraded.version, 5);
+  assert.equal(upgraded.version, 6);
   assert.equal(upgraded.resume.observations[0].resumeEvidence, null);
   assert.equal(upgraded.resume.observations[0].kind, 'request_sent');
   assert.equal(upgraded.resume.observations[0].id, current.resume.observations[0].id);
