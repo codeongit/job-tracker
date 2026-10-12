@@ -160,6 +160,7 @@ pnpm format:check
 - [关键决策索引与历史 ADR](docs/DECISIONS.md)
 - [当前架构与代码职责](docs/ARCHITECTURE.md)
 - [架构重构清单](docs/ARCHITECTURE_REFACTOR_PLAN.md)
+- [产品体验设计草案（待实施）](docs/PRODUCT_EXPERIENCE_DESIGN.md)
 - [数据升级与恢复](docs/DATA_AND_RECOVERY.md)
 - [开发、发布与排障](docs/MAINTENANCE.md)
 - [更新记录](CHANGELOG.md)

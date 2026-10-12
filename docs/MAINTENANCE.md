@@ -18,7 +18,7 @@ pnpm service status
 
 ## 每次改动
 
-模块职责和四条关键流程见[当前架构](ARCHITECTURE.md)；后续分离工作及阶段验收见[架构重构清单](ARCHITECTURE_REFACTOR_PLAN.md)。清单中的待实施项不代表现有接口或规则已经改变。
+模块职责和四条关键流程见[当前架构](ARCHITECTURE.md)；BOSS 采集链路的收敛方向与阶段验收见[架构重构清单](ARCHITECTURE_REFACTOR_PLAN.md)。清单中的待实施项不代表现有接口或规则已经改变。
 
 代理改动按[现状理解与目标核对](agents/change-workflow.md)执行，检查范围随影响调整；该页统一维护修改前核对、独立测试预期及审查步骤。
 

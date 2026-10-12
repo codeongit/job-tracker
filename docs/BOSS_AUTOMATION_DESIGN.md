@@ -1,6 +1,6 @@
 # BOSS 采集、队列与本机录入
 
-更新日期：2026-10-10；核对实现版本：v0.10.21。本页集中说明 BOSS 的运行入口、采集链路、调度、动作预算和阶段故障行为；授权及操作边界见 [AUTOMATION_POLICY](AUTOMATION_POLICY.md)。脚本、协议和合成数据测试不等于真实环境验收，验收分工见 [维护手册](MAINTENANCE.md#真实浏览器测试分工)。
+更新日期：2026-10-12；职责核对基线：`68187539e26899042a4add76b10b5bec9a8a18fb`，实现版本 v0.10.21。本页集中说明 BOSS 的运行入口、采集链路、调度、动作预算和阶段故障行为；授权及操作边界见 [AUTOMATION_POLICY](AUTOMATION_POLICY.md)。脚本、协议和合成数据测试不等于真实环境验收，验收分工见 [维护手册](MAINTENANCE.md#真实浏览器测试分工)。
 
 当前运行方式依据 [D026](adr/0026-local-authoritative-workspace.md) 和 [D028](adr/0028-change-driven-history.md)；业务收敛与后续调整见 [决策索引](DECISIONS.md)。首批规则保留于 [D023](adr/0023-boss-private-queue-integration.md) 和 [D024](adr/0024-boss-date-label-import.md)，旧版关页积压、仅手动单轮、45 分钟/每天 16 次等运行限制已由 D026 替代。
 
@@ -41,6 +41,31 @@
 正常链路不调用模型。采集、排队和正式消费共用归属规则，并各自使用该阶段可见材料；正式应用前重新判断。每轮分别记录采集、排队、业务应用及回执结果，快照成功或已入队不能证明已正式录入。工作台页面关闭时，本机服务仍可消费已绑定账号的队列；持续采集还要求跟踪已开始、Chrome/CDP 与登录有效。
 
 控制器负责生命周期和编排，采集器负责证据与进度，私有队列负责交付，来源账本负责业务应用。模块职责及业务链路见 [架构的 BOSS 导入流程](ARCHITECTURE.md#2-boss-导入)；首次迁移、账号绑定、两种存储模式和当前版本见 [数据与恢复](DATA_AND_RECOVERY.md#版本与两种存储模式)。
+
+### 当前采集模块与状态所有者
+
+日常 CLI 由 `scripts/boss-control.mjs` 请求本机控制入口，实际轮次经过两层子进程：controller 调用 integration，integration 再调用 tracker。当前调用与交付顺序如下；纯本机恢复复用保存材料，不经过平台读取阶段。
+
+```text
+boss-controller / boss-runtime（跟踪授权、预算与单次票据）
+  → boss-integration（生产者锁、恢复已有交付）
+  → collector/boss/tracker（账号锁；列表 → history → DOM → detail）
+  → 私有不可变快照
+  → boss-integration 校验 / boss-conversion 转换 / boss-inbox 入队
+  → workspace-consumer 重算正式应用 / workspace-store 提交
+  → 提交成功后确认队列回执
+```
+
+| 状态或责任       | 当前所有者                                                                                      | 负责确认的结果                                                                                                                                   |
+| ---------------- | ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 跟踪授权与预算   | `scripts/boss-runtime.mjs`、`scripts/boss-controller.mjs`                                       | runtime 保存生命周期、调度和持久动作预留/结算；controller 校验工作区、签发绑定本轮额度与模式的单次票据并调用子进程。服务重启不恢复平台访问授权。 |
+| 采集进度与证据   | `collector/boss/tracker.mjs`、history/DOM/detail 模块及采集存储                                 | tracker 持有账号锁并编排阶段，维护任务、水位、游标、退避、连接和私有快照；采集完成或快照保存只说明这一层的结果。                                 |
+| 交付检查点与队列 | `scripts/boss-integration.mjs`、`scripts/boss-conversion.mjs`、`scripts/boss-inbox.mjs`         | integration 持有生产者锁，核对旧快照与摘要，生成确定性批次；入队后推进交付检查点和来源序号。生产者暂停与交付游标不等于跟踪授权或正式应用状态。   |
+| 正式应用与回执   | `scripts/workspace-consumer.mjs`、共用业务规则、`scripts/workspace-store.mjs`、`boss-inbox.mjs` | consumer 依据当前正式工作区重算语义、归属、所有权和冲突，由 store 唯一提交；提交成功后才确认回执。恢复后的事实存在性仍须独立核对。               |
+
+这些状态分别用于授权与额度控制、取材恢复、材料交付和正式业务提交，不能由一个完成标记代替。变化驱动历史已由 `history-commit.mjs` 集中执行“保存证据 → 保存进度 → 移除检查点”；该职责当前没有统一覆盖回填、DOM 和详情。DOM 当前在返回观察前保存任务完成状态并移除检查点，观察由 tracker 后续保存，因此不能宣称它已满足相同提交顺序；生产策略仍默认禁用。
+
+变化驱动历史与手动回填已经共用 `runResumeHistoryRequests`、消息解析及共用简历规则。历史上下文的恢复、前后身份守卫和平台版本读取仍在两条编排中重复；独立详情命令与整轮采集仍分别编排选择、读取、应用、退避和游标提交。普通轮次与 `recover-saved` 的交付及本机消费结果整理也尚未集中。后续职责收敛见[架构重构清单](ARCHITECTURE_REFACTOR_PLAN.md)；其中新代码阶段均未实施，不改变本文所列当前所有者和操作边界。
 
 ### 变化驱动与手动回填
 
