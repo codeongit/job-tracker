@@ -2,6 +2,8 @@
 
 本目录负责**从 BOSS 读取资料，整理并保存本机采集材料**。岗位的正式更新由目录外的服务完成。
 
+完整当前流程与业务规则见 [BOSS 主文档](../../docs/BOSS_AUTOMATION_DESIGN.md#数据链路)；本文维护采集器的文件职责、调用关系与阅读顺序。
+
 核对日期：2026-10-12；代码基线：`68187539`，应用 `0.10.21`。目录共有 **19 个实现文件、17 个测试文件、3 份说明文档**。以下介绍现有实现，后续建议见[重构清单](../../docs/ARCHITECTURE_REFACTOR_PLAN.md)。
 
 ## 先理解主链路
@@ -54,7 +56,7 @@ flowchart TD
 | [platform-reference.mjs](platform-reference.mjs) | 保存已核实的公开平台版本参考；读取当前已加载脚本 URL，判断新的不透明动作扩展是否适用；提供显式字节指纹比较函数                      | `tracker` 在实际历史读取前调用，再把契约传给 `resume-history`。URL 匹配不证明本轮源码字节相同；它不自动下载源码                         |
 | [dom-supplement.mjs](dom-supplement.mjs)         | 在特定历史读取不足时，从聊天页面补读白名单系统状态；管理独立的人工验收策略、轮转进度和切换检查点                                    | 由 `tracker` 可选调用，转换复用 `resume-history`。须有账号绑定验收策略和明确零未读依据；生产默认关闭，选择器仍待人工验收                |
 
-**这里的区别：** `change-history` 决定读谁，`resume-history` 执行历史读取，`receipt` 解释列表回执。简历发送含义和岗位归属仍需各自核对，`strong` 只是采集侧的分类标签，不能代替服务应用判定。
+**这里的区别：** `change-history` 决定读谁，`resume-history` 执行历史读取，`receipt` 解释列表回执。[简历发送含义](../../docs/BOSS_AUTOMATION_DESIGN.md#简历规则的维护)和[岗位归属](../../docs/BOSS_AUTOMATION_DESIGN.md#归属判断)仍需各自核对，`strong` 只是采集侧的分类标签，不能代替服务应用判定。
 
 ### 4. 采集数据与岗位资料
 
@@ -68,7 +70,7 @@ flowchart TD
 
 `model-v2.mjs` 中的 **v2 是历史文件名**，当前正常升级/写入的采集容器是 **v8**；它与工作台共享数据版本是两件事。当前版本表见[数据与恢复](../../docs/DATA_AND_RECOVERY.md#版本与两种存储模式)。
 
-详情的用人公司可以与聊天中的招聘方不同；精确岗位身份一致时，这个名称差异不单独构成冲突。详情证据选择与工作台的普通资料应用仍是两个步骤，具体规则见[岗位资料与平台状态](../../docs/ARCHITECTURE.md#岗位资料与平台状态)。
+详情的用人公司可以与聊天中的招聘方不同；精确岗位身份一致时，这个名称差异不单独构成冲突。详情证据选择与工作台的普通资料应用仍是两个步骤，具体规则见[岗位资料与平台状态](../../docs/BOSS_AUTOMATION_DESIGN.md#岗位资料与平台状态)。
 
 ### 5. 保存、恢复与导出
 
@@ -153,7 +155,7 @@ scripts/workspace-consumer + workspace-store
 | [AGENTS.md](AGENTS.md)         | 代理执行采集、排障时的只读、授权和操作边界     |
 | [SAVE_RULES.md](SAVE_RULES.md) | 采集字段、身份、保存和隐私要求，含历史演进规则 |
 
-运行入口、现行预算与故障处理统一见[BOSS 接入设计](../../docs/BOSS_AUTOMATION_DESIGN.md)；当前业务规则见[系统架构](../../docs/ARCHITECTURE.md)、[数据与恢复](../../docs/DATA_AND_RECOVERY.md)及[决策索引](../../docs/DECISIONS.md)。版本演进按关联 ADR 核对，避免把历史阶段规则当作当前行为。
+运行入口、当前流程与业务规则、预算及故障处理统一见 [BOSS 主文档](../../docs/BOSS_AUTOMATION_DESIGN.md)；目录外的系统职责见[系统架构](../../docs/ARCHITECTURE.md)，格式兼容与恢复见[数据与恢复](../../docs/DATA_AND_RECOVERY.md)，决定来源及历史演进见[决策索引与 ADR](../../docs/DECISIONS.md)。
 
 ## 建议阅读顺序
 

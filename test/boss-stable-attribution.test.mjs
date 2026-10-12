@@ -178,6 +178,213 @@ function legacyCardWaiting(input) {
   return data;
 }
 
+const HISTORICAL_VIEWED_FACT_ID =
+  'boss-fact-fe131184dccdc567ac7b646e989061867cc45944d0d5ced771f648bd013d63d8';
+
+function historicalUrlConflict(input) {
+  const data = seed();
+  const opportunity = data.opportunities[0];
+  Object.assign(opportunity, {
+    url: `${JOB_URL}?ka=synthetic#detail`,
+    resumeState: '对方已接收',
+    readState: '已读',
+    stage: '沟通中',
+  });
+  data.sourceBindings.find((row) => row.kind === 'opportunity').autoFields = '';
+  const event = input.events[0];
+  // Describe the old decision directly: the fixed application rule must not
+  // generate the historical conflict that this regression is meant to resolve.
+  data.sourceEvents.push({
+    id: event.eventId,
+    batchId: input.batchId,
+    factId: HISTORICAL_VIEWED_FACT_ID,
+    platform: 'boss',
+    accountNamespace: ACCOUNT,
+    conversationKey: event.conversationKey,
+    friendId: event.friendId,
+    friendSource: event.friendSource,
+    uniqueId: event.uniqueId,
+    externalJobId: JOB_ID,
+    opportunityId: opportunity.id,
+    eventType: 'resume_observed',
+    messageId: 'message-1',
+    messageDirection: 'outbound',
+    receiptStatus: 'not_applicable',
+    receiptSource: '',
+    summary: 'resume_viewed_confirmed',
+    timeLabel: '',
+    contact: event.contact,
+    company: event.company,
+    jobName: event.jobName,
+    nameSource: event.nameSource,
+    canonicalUrl: JOB_URL,
+    linkConfirmation: 'unverified',
+    observedAt: STAMP,
+    evidenceDate: '',
+    appliedAtSource: '',
+    sourceSnapshot: 'synthetic.json#sha256:' + 'c'.repeat(64),
+    sourceSequence: '1',
+    status: 'review',
+    importPolicy: 'boss-resume-observation-v3',
+    createdAt: STAMP,
+    deletedAt: '',
+  });
+  data.sourceFacts.push({
+    id: HISTORICAL_VIEWED_FACT_ID,
+    platform: 'boss',
+    accountNamespace: ACCOUNT,
+    conversationKey: '1'.repeat(64),
+    messageId: 'message-1',
+    factType: 'resume_viewed_confirmed',
+    deletedAt: '',
+  });
+  data.sourceApplications.push({
+    id: 'boss-application-fe131184dccdc567ac7b646e989061867cc45944d0d5ced771f648bd013d63d8',
+    factId: HISTORICAL_VIEWED_FACT_ID,
+    opportunityId: opportunity.id,
+    ruleVersion: 'boss-application-v16',
+    action: 'resume_observed',
+    status: 'review',
+    reason: 'job_identity_conflict',
+    appliedAt: '',
+    updatedAt: STAMP,
+    deletedAt: '',
+  });
+  return data;
+}
+
+for (const [label, url] of [
+  ['query', `${JOB_URL}?ka=synthetic`],
+  ['hash', `${JOB_URL}#detail`],
+  ['query and hash', `${JOB_URL}?ka=synthetic#detail`],
+]) {
+  test(`verified resume observation accepts the same BOSS job URL with ${label}`, () => {
+    const data = seed();
+    data.opportunities[0].url = url;
+    const input = delivery({
+      attribution: evidence({ messageJobId: JOB_ID }),
+      summary: 'resume_viewed_confirmed',
+    });
+    const result = applyBossBatch(data, input, {
+      workspaceSourceId: SOURCE_ID,
+      stamp: STAMP,
+    }).data;
+    assert.equal(result.sourceApplications.at(-1).status, 'applied');
+    assert.equal(result.sourceApplications.at(-1).reason, 'resume_status_advanced');
+    assert.equal(result.opportunities[0].resumeState, '对方已接收');
+    assert.equal(result.opportunities[0].readState, '已读');
+    assert.equal(result.opportunities[0].stage, '沟通中');
+    assert.equal(result.opportunities[0].url, url);
+    assert.equal(result.opportunities.length, 1);
+    assert.deepEqual(result.activities, data.activities);
+    assert.deepEqual(result.tasks, data.tasks);
+    assert.deepEqual(result.imports, data.imports);
+  });
+}
+
+for (const [label, url] of [
+  ['wrong domain', `https://example.com/job_detail/${JOB_ID}.html?ka=synthetic`],
+  ['different job ID', 'https://www.zhipin.com/job_detail/different-job.html?ka=synthetic'],
+  ['invalid URL', `https://www.zhipin.com/job_detail/${JOB_ID}.html/invalid`],
+]) {
+  test(`verified resume observation rejects an opportunity URL with ${label}`, () => {
+    const data = seed();
+    data.opportunities[0].url = url;
+    const input = delivery({ attribution: evidence({ messageJobId: JOB_ID }) });
+    const result = applyBossBatch(data, input, {
+      workspaceSourceId: SOURCE_ID,
+      stamp: STAMP,
+    }).data;
+    assert.equal(result.sourceApplications.at(-1).status, 'review');
+    assert.equal(result.sourceApplications.at(-1).reason, 'job_identity_conflict');
+    assert.deepEqual(result.opportunities, data.opportunities);
+    assert.deepEqual(result.sourceBindings, data.sourceBindings);
+  });
+}
+
+test('historical URL-only review becomes manual protection without changing evidence or entities', () => {
+  const input = delivery({
+    attribution: evidence(),
+    summary: 'resume_viewed_confirmed',
+  });
+  const data = historicalUrlConflict(input);
+  const result = applyBossBatch(data, input, {
+    workspaceSourceId: SOURCE_ID,
+    stamp: '2026-10-12T01:00:00.000Z',
+  }).data;
+  const application = result.sourceApplications.at(-1);
+  assert.equal(application.status, 'protected');
+  assert.equal(application.reason, 'manual_resume_state');
+  assert.equal(application.id, data.sourceApplications.at(-1).id);
+  assert.equal(application.factId, HISTORICAL_VIEWED_FACT_ID);
+  assert.equal(application.opportunityId, data.opportunities[0].id);
+  assert.equal(application.appliedAt, '');
+  for (const group of [
+    'opportunities',
+    'activities',
+    'tasks',
+    'imports',
+    'sourceBindings',
+    'sourceEvents',
+    'sourceFacts',
+  ])
+    assert.deepEqual(result[group], data[group]);
+  assert.equal(result.sourceApplications.length, data.sourceApplications.length);
+});
+
+test('processed queue rechecks historical URL review once and preserves the manual target', async (t) => {
+  const input = delivery({
+    attribution: evidence(),
+    summary: 'resume_viewed_confirmed',
+  });
+  const { store, inbox, consumer } = await fixture(t, [input], {
+    data: historicalUrlConflict(input),
+  });
+  const before = await store.read();
+  const historyBefore = await store.auditHistory();
+  await inbox.acknowledge(input.batchId, {
+    format: 'job-tracker-boss-receipt',
+    version: 2,
+    batchId: input.batchId,
+    workspaceSourceId: before.workspaceId,
+    status: 'processed',
+    processedAt: STAMP,
+    counts: { added: 0, linked: 0, observed: 0, reviewed: 1, skipped: 0 },
+    errorCode: '',
+  });
+  const summary = await consumer.run();
+  assert.equal(summary.isolated.length, 0);
+  assert.equal(summary.restoreReview.length, 0);
+  const after = await store.read();
+  const application = after.workspace.data.sourceApplications.at(-1);
+  assert.equal(application.status, 'protected');
+  assert.equal(application.reason, 'manual_resume_state');
+  assert.equal(application.id, before.workspace.data.sourceApplications.at(-1).id);
+  assert.equal(application.factId, HISTORICAL_VIEWED_FACT_ID);
+  assert.equal(application.opportunityId, before.workspace.data.opportunities[0].id);
+  for (const group of [
+    'opportunities',
+    'activities',
+    'tasks',
+    'imports',
+    'sourceBindings',
+    'sourceEvents',
+    'sourceFacts',
+  ])
+    assert.deepEqual(after.workspace.data[group], before.workspace.data[group]);
+  assert.equal(
+    after.workspace.data.sourceApplications.length,
+    before.workspace.data.sourceApplications.length,
+  );
+  assert.equal(after.revision, before.revision + 1);
+  const historyAfter = await store.auditHistory();
+  assert.equal(historyAfter.commits, historyBefore.commits + 1);
+  await consumer.run();
+  await consumer.run();
+  assert.deepEqual(await store.read(), after);
+  assert.deepEqual(await store.auditHistory(), historyAfter);
+});
+
 test('旧队列已回执的纯卡片等待项通过真实服务重评存档，不重复事实或提交', async (t) => {
   const input = delivery({ summary: 'resume_card_other' });
   input.version = 1;

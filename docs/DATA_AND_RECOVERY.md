@@ -1,11 +1,13 @@
 # 数据升级、备份与恢复
 
+本文维护数据版本、提交、迁移、同步、备份与恢复。当前 BOSS 流程与业务规则集中在 [BOSS 主文档](BOSS_AUTOMATION_DESIGN.md)；下方版本章节记录当时的格式兼容与恢复要求，查阅现行 BOSS 规则时以主文为准。
+
 ## 版本与两种存储模式
 
 | 层次                    | 当前版本           | 含义                                                                         |
 | ----------------------- | ------------------ | ---------------------------------------------------------------------------- |
-| 应用                    | 0.10.21            | package.json 与 APP_VERSION 一致                                             |
-| BOSS 应用规则           | 16                 | 业务应用判定版本；稳定来源身份与共享结构不随规则升版变化                     |
+| 应用                    | 0.10.22            | package.json 与 APP_VERSION 一致                                             |
+| BOSS 应用规则           | 17                 | 业务应用判定版本；稳定来源身份与共享结构不随规则升版变化                     |
 | 共享数据                | schemaVersion 4    | 原业务集合、sourceBindings/sourceEvents，以及 sourceFacts/sourceApplications |
 | 工作区                  | workspaceVersion 3 | data、base、config、generation、lastSync、pending；完整迁移各侧              |
 | 完整备份外层            | backupVersion 2    | 完整工作区及草稿，仍兼容旧备份                                               |

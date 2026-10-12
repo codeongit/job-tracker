@@ -42,6 +42,8 @@ BOSS 岗位选择简历“已发送”或“对方已接收”时，表单会将
 
 ## BOSS 只读接入
 
+BOSS 的完整当前流程与业务规则集中在 [BOSS 流程与规则](docs/BOSS_AUTOMATION_DESIGN.md)，包括采集与交付、归属判断、简历状态、岗位资料及处理结果；采集器文件职责见 [目录导览](collector/boss/README.md)。
+
 先在私有 `.local/config.json` 设置 BOSS 账号标签及固定初始快照名，完成本机工作区迁移和 BOSS 账号绑定。采集器源码已包含在 `collector/boss/`，不再配置外部路径；私有快照和浏览器状态保存在 `.local/boss-collector/`。正常链路由固定脚本执行：专用 Chrome 的直接 CDP 连接 → 不可变采集快照 → 私有队列 → 本机正式提交 → 回执。网页关闭后，只要本机服务、已开始的跟踪会话和 BOSS 登录仍有效，采集与正式录入均可继续。不会回复、投递、发送简历或自动同步 GitHub。
 
 ```sh

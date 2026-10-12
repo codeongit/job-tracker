@@ -450,7 +450,7 @@ function resolveResumeEvent(data, batch, event, context) {
     !isBossPlatform(opportunity.platform || '') ||
     (opportunity.externalId && opportunity.externalId !== externalJobId) ||
     binding.canonicalUrl !== canonicalUrl ||
-    opportunity.url !== canonicalUrl
+    parseBossJobUrl(opportunity.url)?.canonicalUrl !== canonicalUrl
   )
     return {
       status: 'review',
