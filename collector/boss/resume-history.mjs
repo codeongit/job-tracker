@@ -4,7 +4,7 @@ import {
   RESUME_RULES,
   RESUME_KINDS,
   RESUME_STATUS_KINDS,
-  classifyResumeEvidence,
+  assessResumeEvidence,
   classifyResumeText,
   validateResumeEvidence,
 } from '../../dist/resume-rules.js';
@@ -99,6 +99,28 @@ function normalizeTarget(target) {
   return { friendId, friendSource, conversationKey };
 }
 
+function normalizePlatformContract(value) {
+  if (value !== null && (typeof value !== 'string' || !/^[A-Za-z0-9_-]{1,100}$/.test(value)))
+    throw new TypeError('RESUME_SCAN_INPUT_INVALID');
+  return value;
+}
+
+function normalizeUnresolved(value) {
+  if (
+    !value ||
+    typeof value !== 'object' ||
+    Array.isArray(value) ||
+    Object.keys(value).length !== 2 ||
+    Object.keys(value).some((key) => !['conversationKey', 'reason'].includes(key))
+  )
+    throw new TypeError('RESUME_SCAN_INPUT_INVALID');
+  const conversationKey = clean(value.conversationKey, 128),
+    reason = clean(value.reason, 100);
+  if (!/^[a-f0-9]{64}$/.test(conversationKey ?? '') || !/^[A-Z][A-Z0-9_]{2,80}$/.test(reason ?? ''))
+    throw new TypeError('RESUME_SCAN_INPUT_INVALID');
+  return { conversationKey, reason };
+}
+
 function requestPrelude(target, timeoutMs) {
   return `
     const expected = ${JSON.stringify(expectedUrl)};
@@ -165,8 +187,15 @@ export function createResumeFriendExpression({ target, timeoutMs = 15_000 }) {
 }
 
 /** One expression performs exactly one history-page request. */
-export function createResumePageExpression({ target, identity, page, timeoutMs = 15_000 }) {
+export function createResumePageExpression({
+  target,
+  identity,
+  page,
+  timeoutMs = 15_000,
+  platformContract = null,
+}) {
   const safeTarget = normalizeTarget(target);
+  const safeContract = normalizePlatformContract(platformContract);
   const bossId = clean(identity?.bossId, 128),
     securityId = clean(identity?.securityId, 500);
   if (
@@ -204,8 +233,9 @@ export function createResumePageExpression({ target, identity, page, timeoutMs =
       const number=Number(value),millis=Number.isFinite(number)?(number>0&&number<100000000000?number*1000:number):NaN;
       const date=new Date(millis);return Number.isFinite(date.getTime())?date.toISOString():null;
     };
-    const statusEvidence = message => (${classifyResumeEvidence.toString()})(
-      message, ${JSON.stringify(RESUME_RULES)}, (${classifyResumeText.toString()}));
+    const statusAssessment = message => (${assessResumeEvidence.toString()})(
+      message, ${JSON.stringify(RESUME_RULES)}, (${classifyResumeText.toString()}),
+      {platformContract:${JSON.stringify(safeContract)}});
     const endpoint='https://www.zhipin.com/wapi/zpchat/geek/historyMsg?bossId='+encodeURIComponent(identity.bossId)+
       '&securityId='+encodeURIComponent(identity.securityId)+'&page='+page+'&c=20&src='+encodeURIComponent(target.friendSource);
     const response=await request('GET',endpoint);
@@ -221,8 +251,11 @@ export function createResumePageExpression({ target, identity, page, timeoutMs =
     for (const message of messages) {
       const id=messageId(message),platformTime=isoTime(message.time ?? message.msgTime ?? message.timestamp);
       if (id) messageIds.push(id);
-      const status=statusEvidence(message);
-      if (status) {
+      const status=statusAssessment(message);
+      if (status.status==='unsupported') {
+        unresolved.push({conversationKey:target.conversationKey,reason:status.reason});continue;
+      }
+      if (status.status==='classified') {
         if (!id || !platformTime) { unresolved.push({conversationKey:target.conversationKey,reason:'RESUME_STATUS_IDENTITY_INCOMPLETE'});continue; }
         observations.push({conversationKey:target.conversationKey,friendId:target.friendId,
           friendSource:target.friendSource,messageId:id,direction:'system',messageType:Number(message?.type)||5,
@@ -259,10 +292,12 @@ export async function runResumeHistoryRequests({
   maxRequests = 20,
   requestDelayMs = 3000,
   initialObservations = [],
+  initialUnresolved = [],
   initialHead = null,
   startConversationKey = null,
   startPage = 1,
   knownMessageIds = [],
+  platformContract = null,
   execute,
   onCheckpoint = async () => {},
   wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
@@ -279,6 +314,7 @@ export async function runResumeHistoryRequests({
     maxRequests < 1 ||
     maxRequests > 20 ||
     !Array.isArray(initialObservations) ||
+    !Array.isArray(initialUnresolved) ||
     (initialHead !== null && !MESSAGE_ID.test(initialHead)) ||
     (startConversationKey !== null && !/^[a-f0-9]{64}$/.test(startConversationKey)) ||
     !Number.isInteger(startPage) ||
@@ -295,6 +331,7 @@ export async function runResumeHistoryRequests({
   ) {
     throw new TypeError('RESUME_SCAN_INPUT_INVALID');
   }
+  const safeContract = normalizePlatformContract(platformContract);
   let safeTargets = targets.map(normalizeTarget);
   if (startConversationKey !== null) {
     const startIndex = safeTargets.findIndex(
@@ -318,7 +355,18 @@ export async function runResumeHistoryRequests({
       ...structuredClone(item),
       resumeEvidence: validateResumeEvidence(item.resumeEvidence ?? null),
     })),
-    unresolved = [];
+    unresolved = [],
+    unresolvedKeys = new Set();
+  const addUnresolved = (...items) => {
+    for (const item of items) {
+      const normalized = normalizeUnresolved(item),
+        key = JSON.stringify([normalized.conversationKey, normalized.reason]);
+      if (unresolvedKeys.has(key)) continue;
+      unresolvedKeys.add(key);
+      unresolved.push(normalized);
+    }
+  };
+  for (const item of initialUnresolved) addUnresolved(item);
   const coverage = {
     requestedConversations: safeTargets.length,
     resolvedConversations: 0,
@@ -340,7 +388,7 @@ export async function runResumeHistoryRequests({
   if (initialHead && startConversationKey) heads.set(startConversationKey, initialHead);
   const checkpoint = async (nextConversationKey, nextPage, metadata = {}) =>
     onCheckpoint({
-      version: 4,
+      version: 6,
       capturedAt: now(),
       nextConversationKey,
       nextPage,
@@ -383,20 +431,20 @@ export async function runResumeHistoryRequests({
     }
     if (friend.failed) {
       continuation = { conversationKey: target.conversationKey, page: firstPage };
-      unresolved.push({ conversationKey: target.conversationKey, reason: error });
+      addUnresolved({ conversationKey: target.conversationKey, reason: error });
       await checkpoint(target.conversationKey, firstPage);
       break;
     }
     if (!friend.payload?.ok) {
       const reason = scanError({ message: friend.payload?.reason }, 'FRIEND_INFO_UNAVAILABLE');
-      unresolved.push({ conversationKey: target.conversationKey, reason });
+      addUnresolved({ conversationKey: target.conversationKey, reason });
       coverage.failedConversations += 1;
       cursor = target.conversationKey;
       await checkpoint(null, 0);
       continue;
     }
     if (!friend.payload.identity) {
-      unresolved.push({
+      addUnresolved({
         conversationKey: target.conversationKey,
         reason: friend.payload.reason ?? 'HISTORY_IDENTITY_MISSING',
       });
@@ -416,7 +464,12 @@ export async function runResumeHistoryRequests({
       lastPage = page;
       coverage.requestedPages += 1;
       const pageResult = await request(
-        createResumePageExpression({ target, identity: friend.payload.identity, page }),
+        createResumePageExpression({
+          target,
+          identity: friend.payload.identity,
+          page,
+          platformContract: safeContract,
+        }),
         { kind: 'history_page', conversationKey: target.conversationKey, page },
       );
       if (!pageResult.budget) {
@@ -426,7 +479,7 @@ export async function runResumeHistoryRequests({
       if (pageResult.failed) {
         completed = false;
         continuation = { conversationKey: target.conversationKey, page };
-        unresolved.push({ conversationKey: target.conversationKey, reason: error });
+        addUnresolved({ conversationKey: target.conversationKey, reason: error });
         await checkpoint(target.conversationKey, page);
         break;
       }
@@ -438,7 +491,7 @@ export async function runResumeHistoryRequests({
         pageResult.payload.messageIds.some((id) => typeof id !== 'string' || !MESSAGE_ID.test(id))
       ) {
         const reason = scanError({ message: pageResult.payload?.reason }, 'HISTORY_UNAVAILABLE');
-        unresolved.push({ conversationKey: target.conversationKey, reason });
+        addUnresolved({ conversationKey: target.conversationKey, reason });
         completed = false;
         coverage.failedConversations += 1;
         continuation = { conversationKey: target.conversationKey, page };
@@ -454,14 +507,14 @@ export async function runResumeHistoryRequests({
           resumeEvidence: validateResumeEvidence(item.resumeEvidence ?? null),
         })),
       );
-      unresolved.push(...pageResult.payload.unresolved);
+      addUnresolved(...pageResult.payload.unresolved);
       if (
         pageResult.payload.unresolved.some((item) =>
           /IDENTITY_INCOMPLETE/.test(item?.reason ?? ''),
         ) ||
         (!pageResult.payload.messageIds.length && pageResult.payload.unresolved.length)
       ) {
-        unresolved.push({
+        addUnresolved({
           conversationKey: target.conversationKey,
           reason: 'HISTORY_MESSAGE_ID_MISSING',
         });
@@ -534,7 +587,7 @@ export async function runResumeHistoryRequests({
 }
 
 // Compatibility entry point composes exactly the same request expressions as the paged runner.
-export function createResumeHistoryExpression({ targets, pages = 2 }) {
+export function createResumeHistoryExpression({ targets, pages = 2, platformContract = null }) {
   if (
     !Array.isArray(targets) ||
     !targets.length ||
@@ -545,12 +598,14 @@ export function createResumeHistoryExpression({ targets, pages = 2 }) {
     targets.length * (pages + 1) > 20
   )
     throw new TypeError('RESUME_SCAN_INPUT_INVALID');
+  const safeContract = normalizePlatformContract(platformContract);
   const tasks = targets.map(normalizeTarget).map((target) => {
     const reads = Array.from({ length: pages }, (_, offset) => {
       const expression = createResumePageExpression({
         target,
         identity: { bossId: 'runtime_boss', securityId: 'runtime_security' },
         page: offset + 1,
+        platformContract: safeContract,
       });
       return `async () => ${expression.replace(JSON.stringify({ bossId: 'runtime_boss', securityId: 'runtime_security', responseFriendId: null, responseFriendSource: null }), 'friend.identity')}`;
     });

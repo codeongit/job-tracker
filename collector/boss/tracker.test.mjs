@@ -16,12 +16,15 @@ import {
   trackerFailureReport,
 } from './tracker.mjs';
 import { latest } from './storage.mjs';
+import { assessLoadedPlatformReference } from './platform-reference.mjs';
+import { accountNamespace } from './extract.mjs';
 import { applyDetailEvidenceV2, compareLoadedSnapshotsV2, conversationKeyV2 } from './model-v2.mjs';
 import {
   loadChangeCheckpoint,
   normalizeRuntimeState,
   recordDetailFailure,
   saveChangeCheckpoint,
+  saveResumeCheckpoint,
 } from './runtime-state.mjs';
 import { observeHistoryList, pendingHistory } from './change-history.mjs';
 
@@ -147,7 +150,7 @@ test('status summary for v6 reports coverage and job counts without chat content
   };
   const envelope = compareLoadedSnapshotsV2(null, snapshot).envelope;
   const summary = summarizeEnvelope(envelope);
-  assert.equal(summary.version, 6);
+  assert.equal(summary.version, 8);
   assert.equal(summary.trackedRecords, 1);
   assert.equal(summary.jobs.named, 1);
   assert.equal(summary.jobs.linked, 1);
@@ -506,6 +509,7 @@ test('unknown history request outcome is counted once and never replayed by a CD
       pages: 1,
       maxRequests: 2,
       reportOperation: async () => ({ ok: true, report: {} }),
+      readPlatformReference: async () => assessLoadedPlatformReference([]),
       evaluate: async () => {
         calls += 1;
         throw new Error('CDP_CONNECTION_CLOSED');
@@ -576,6 +580,7 @@ test('change-driven history saves an ordinary-message watermark and makes no rep
         requestDelayMs: 0,
         betweenTargetsDelayMs: 0,
         reportOperation: async () => ({ ok: true, report: {} }),
+        readPlatformReference: async () => assessLoadedPlatformReference([]),
         saveEvidence: async () => {
           commits += 1;
         },
@@ -666,6 +671,7 @@ test('completed-page checkpoint replays locally after progress write fails', asy
       requestDelayMs: 0,
       betweenTargetsDelayMs: 0,
       reportOperation: async () => ({ ok: true, report: {} }),
+      readPlatformReference: async () => assessLoadedPlatformReference([]),
       saveEvidence: async () => {
         commits += 1;
       },
@@ -716,8 +722,7 @@ test('completed-page checkpoint replays locally after progress write fails', asy
   }
 });
 
-function changedHistoryFixture(count = 1) {
-  const namespace = `boss-geek:${'d'.repeat(64)}`;
+function changedHistoryFixture(count = 1, namespace = `boss-geek:${'d'.repeat(64)}`) {
   const record = {
     key: conversationKeyV2(namespace, '901', '0'),
     platformIdentity: { friendId: '901', friendSource: '0', uniqueId: '901-0' },
@@ -768,6 +773,191 @@ function changedHistoryFixture(count = 1) {
   return { envelope, history, record };
 }
 
+test('both history continuations retain an unsupported-only prior page when the next page is empty', async (t) => {
+  for (const [collect, save] of [
+    [collectResume, saveResumeCheckpoint],
+    [collectChangedResume, saveChangeCheckpoint],
+  ]) {
+    await t.test(collect.name, async (t) => {
+      const directory = await mkdtemp(join(privateTemporaryRoot, 'boss-unsupported-recovery-'));
+      t.after(() => rm(directory, { recursive: true, force: true }));
+      const { envelope, history, record } = changedHistoryFixture();
+      const reason = {
+        conversationKey: record.key,
+        reason: 'RESUME_ACTION_PLATFORM_CONTRACT_UNVERIFIED',
+      };
+      await save(directory, {
+        version: 6,
+        capturedAt: '2026-09-24T02:01:00.000Z',
+        nextConversationKey: record.key,
+        nextPage: 2,
+        observations: [],
+        unresolved: [reason],
+        coverage: { requestedConversations: 1, resolvedConversations: 1, pagesPerConversation: 1 },
+        usage: { historyRequests: 2 },
+        partial: false,
+        error: null,
+        ...(collect === collectChangedResume
+          ? {
+              targetFingerprint: history.conversations[0].task.fingerprint,
+              head: 'unsupported-message',
+            }
+          : {}),
+      });
+      let issued = 0;
+      const result = await collect({
+        directory,
+        connection: {},
+        envelope,
+        runtime: { history, cursors: { resume: null, detail: null } },
+        maxRequests: 2,
+        limit: 1,
+        pages: 1,
+        requestDelayMs: 0,
+        betweenTargetsDelayMs: 0,
+        reportOperation: async () => ({ ok: true, report: {} }),
+        readPlatformReference: async () => assessLoadedPlatformReference([]),
+        saveEvidence: async (next) => assert.deepEqual(next.resume.lastUnresolved, [reason]),
+        saveProgress: async () => {},
+        evaluate: async (_connection, _expression, metadata) => {
+          issued++;
+          if (metadata.kind === 'friend')
+            return { ok: true, identity: { bossId: '901', securityId: 'synthetic-security' } };
+          assert.equal(metadata.page, 2);
+          return {
+            ok: true,
+            observations: [],
+            unresolved: [],
+            messageIds: [],
+            exhausted: true,
+            messageCount: 0,
+          };
+        },
+      });
+      assert.equal(issued, 2);
+      assert.deepEqual(result.envelope.resume.lastUnresolved, [reason]);
+      assert.equal(result.usage.historyRequests, 2);
+    });
+  }
+});
+
+test('both history entry points inspect loaded code before requests and gate only the opaque contract', async (t) => {
+  const reviewed = [
+    'https://static.zhipin.com/fe-zhipin-geek/web/chat-new/v5550/static/js/app.4d4a6ac8.js',
+    'https://static.zhipin.com/fe-zhipin-geek/web/chat-new/v5550/static/js/chat.4d4a6ac8.js',
+  ];
+  for (const collect of [collectResume, collectChangedResume]) {
+    for (const [status, urls, contract] of [
+      ['known', reviewed, 'boss-action40-v5550-4d4a6ac8'],
+      ['changed', reviewed.map((url) => url.replace('v5550', 'v5551')), null],
+      ['unavailable', [], null],
+    ]) {
+      await t.test(`${collect.name} ${status}`, async (t) => {
+        const directory = await mkdtemp(join(privateTemporaryRoot, 'boss-reference-history-'));
+        t.after(() => rm(directory, { recursive: true, force: true }));
+        const namespace = accountNamespace('1001');
+        const { envelope, history } = changedHistoryFixture(1, namespace);
+        const calls = [];
+        const result = await collect({
+          directory,
+          connection: { accountNamespace: namespace },
+          envelope,
+          runtime: { history, cursors: { resume: null, detail: null } },
+          limit: 1,
+          pages: 1,
+          maxRequests: 2,
+          requestDelayMs: 0,
+          betweenTargetsDelayMs: 0,
+          reportOperation: async () => ({ ok: true, report: {} }),
+          saveEvidence: async () => {},
+          saveProgress: async () => {},
+          evaluate: async (_connection, expression, metadata) => {
+            calls.push(metadata.kind);
+            if (metadata.kind === 'platform_reference')
+              return {
+                ok: true,
+                beforeAccountId: '1001',
+                afterAccountId: '1001',
+                reference: { ok: true, loadedScriptUrls: urls },
+              };
+            if (metadata.kind === 'friend')
+              return {
+                ok: true,
+                identity: { bossId: 'synthetic-boss', securityId: 'synthetic-security' },
+              };
+            assert.ok(expression.includes(`{platformContract:${JSON.stringify(contract)}}`));
+            return {
+              ok: true,
+              observations: [],
+              unresolved: [],
+              messageIds: ['ordinary-action'],
+              exhausted: true,
+              page: metadata.page,
+            };
+          },
+        });
+        assert.deepEqual(calls, ['platform_reference', 'friend', 'history_page']);
+        assert.equal(result.usage.historyRequests, 2);
+        assert.equal(result.partial, false);
+        assert.equal(result.envelope.version, 8);
+      });
+    }
+  }
+});
+
+test('reference identity failure stops before history and consumes no platform request budget', async (t) => {
+  const directory = await mkdtemp(join(privateTemporaryRoot, 'boss-reference-identity-failure-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const namespace = accountNamespace('1001');
+  const { envelope, history } = changedHistoryFixture(1, namespace);
+  let calls = 0;
+  await assert.rejects(
+    collectChangedResume({
+      directory,
+      connection: { accountNamespace: namespace },
+      envelope,
+      runtime: { history },
+      maxRequests: 2,
+      reportOperation: async () => ({ ok: true, report: {} }),
+      saveEvidence: async () => assert.fail('identity drift cannot commit'),
+      saveProgress: async () => assert.fail('identity drift cannot advance'),
+      evaluate: async (_connection, _expression, metadata) => {
+        assert.equal(metadata.kind, 'platform_reference');
+        calls += 1;
+        return {
+          ok: true,
+          beforeAccountId: '1001',
+          afterAccountId: '1002',
+          reference: { ok: true, loadedScriptUrls: [] },
+        };
+      },
+    }),
+    (error) => {
+      assert.equal(error.message, 'ACCOUNT_NAMESPACE_CHANGED');
+      assert.deepEqual(error.usage, { historyRequests: 0 });
+      return true;
+    },
+  );
+  assert.equal(calls, 1);
+});
+
+test('backfill without room for lookup and one page does not inspect loaded script URLs', async (t) => {
+  const directory = await mkdtemp(join(privateTemporaryRoot, 'boss-reference-small-budget-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const { envelope } = changedHistoryFixture();
+  const result = await collectResume({
+    directory,
+    connection: {},
+    envelope,
+    runtime: { cursors: { resume: null, detail: null } },
+    maxRequests: 1,
+    reportOperation: async () => ({ ok: true, report: {} }),
+    readPlatformReference: async () => assert.fail('no request can interpret an opaque action'),
+    evaluate: async () => assert.fail('insufficient quota cannot issue a lookup'),
+  });
+  assert.equal(result.usage.historyRequests, 0);
+});
+
 test('completed checkpoint replay never bypasses the budget for later queued conversations', async (t) => {
   for (const [maxRequests, expectedRequests, expectedPending, expectedCommits] of [
     [20, 20, 1, 11],
@@ -805,6 +995,7 @@ test('completed checkpoint replay never bypasses the budget for later queued con
         requestDelayMs: 0,
         betweenTargetsDelayMs: 0,
         reportOperation: async () => ({ ok: true, report: {} }),
+        readPlatformReference: async () => assessLoadedPlatformReference([]),
         saveEvidence: async () => {
           commits += 1;
         },
@@ -918,6 +1109,7 @@ test('evidence save failure retains issued history usage and replays without ano
     requestDelayMs: 0,
     betweenTargetsDelayMs: 0,
     reportOperation: async () => ({ ok: true, report: {} }),
+    readPlatformReference: async () => assessLoadedPlatformReference([]),
     saveProgress: async (value) => {
       history = value;
     },
@@ -999,6 +1191,7 @@ test('checkpoint write failure retains the issued request count for both history
           runtime: { history, cursors: { resume: null, detail: null } },
           maxRequests: 4,
           reportOperation: async () => ({ ok: true, report: {} }),
+          readPlatformReference: async () => assessLoadedPlatformReference([]),
           evaluate: async () => {
             requests += 1;
             await mkdir(join(directory, checkpointName));
@@ -1029,6 +1222,7 @@ test('history export failure retains issued usage and local recovery failures us
     requestDelayMs: 0,
     betweenTargetsDelayMs: 0,
     reportOperation: async () => ({ ok: true, report: {} }),
+    readPlatformReference: async () => assessLoadedPlatformReference([]),
     saveProgress: async () => {},
     saveEvidence: (value) =>
       saveEnvelope(directory, value, {
@@ -1143,7 +1337,7 @@ test('v6 本地状态命令仍计算详情待处理和 DOM 状态，不访问浏
     { env: { ...process.env, JOB_TRACKER_BOSS_DATA_ROOT: root } },
   );
   const status = JSON.parse(stdout);
-  assert.equal(status.version, 6);
+  assert.equal(status.version, 8);
   assert.equal(status.connectionSaved, false);
   assert.equal(status.detailEnrichment.pending, 0);
   assert.notEqual(status.dom, null);

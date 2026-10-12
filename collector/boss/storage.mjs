@@ -23,7 +23,7 @@ export async function latest(directory) {
     throw new Error('SAVED_SNAPSHOT_UNREADABLE');
   }
   if (
-    ![1, 2, 3, 4, 5, 6].includes(envelope.version) ||
+    ![1, 2, 3, 4, 5, 6, 7, 8].includes(envelope.version) ||
     !envelope.state ||
     !envelope.snapshot ||
     !envelope.report

@@ -2,6 +2,7 @@ import {
   RESUME_RULES,
   classifyResumeText,
   classifyResumeEvidence,
+  assessResumeEvidence,
 } from '../../dist/resume-rules.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, open, readFile, rename, unlink, lstat } from 'node:fs/promises';
@@ -370,7 +371,7 @@ export function createDomSupplementReadExpression(target, { allowSwitch = true }
     const normalizeTime=value=>{const text=clean(value);if(!text)return null;const numeric=Number(text);
       const millis=Number.isFinite(numeric)?(numeric>0&&numeric<100000000000?numeric*1000:numeric):Date.parse(text);
       const date=new Date(millis);return Number.isFinite(date.getTime())?date.toISOString():null;};
-    const statusEvidence = text => (${classifyResumeEvidence.toString()})({type:5,content:text}, ${JSON.stringify(RESUME_RULES)}, (${classifyResumeText.toString()}));
+    const statusEvidence = text => (${classifyResumeEvidence.toString()})({type:5,content:text}, ${JSON.stringify(RESUME_RULES)}, (${classifyResumeText.toString()}), {platformContract:null}, (${assessResumeEvidence.toString()}));
     const observations=[],unresolved=[],seen=new Set();
     for(const node of panels[0].querySelectorAll('[data-message-id][data-message-time]')){
       const statusNode=node.querySelector('.system-text');

@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import { assessBossAttribution } from '../../dist/boss-attribution.js';
+import { BOSS_ACTION40_PLATFORM_CONTRACT } from '../../dist/resume-rules.js';
 import {
   createEnvelopeV2,
   conversationKeyV2,
@@ -60,6 +61,60 @@ function payload(observations) {
     observations,
     unresolved: [],
     coverage: { requestedConversations: 1, resolvedConversations: 1, pagesPerConversation: 2 },
+  };
+}
+
+function syntheticHistoryFixture(messages) {
+  const requests = [];
+  class FakeXHR {
+    open(method, url) {
+      this.method = method;
+      this.url = url;
+    }
+    setRequestHeader() {}
+    send() {
+      requests.push({ method: this.method, url: this.url });
+      this.status = 200;
+      this.responseText = JSON.stringify({
+        code: 0,
+        zpData: this.url.includes('getGeekFriendList')
+          ? { result: [{ uid: 'boss_301', friendSource: '0', securityId: 'synthetic-security' }] }
+          : { messages },
+      });
+      queueMicrotask(() => this.onload());
+    }
+  }
+  return {
+    requests,
+    context: {
+      setTimeout: (callback) => {
+        callback();
+        return 0;
+      },
+      location: { origin: 'https://www.zhipin.com', pathname: '/web/geek/chat' },
+      XMLHttpRequest: FakeXHR,
+      URL,
+      Date,
+      JSON,
+      Number,
+      String,
+      Object,
+      Array,
+      RegExp,
+      encodeURIComponent,
+      queueMicrotask,
+    },
+  };
+}
+
+function syntheticActionNotice(mid, extend) {
+  return {
+    mid,
+    type: 1,
+    time: 1_790_000_006,
+    from: { uid: 'self_301' },
+    to: { uid: 'boss_301' },
+    body: { type: 4, templateId: 1, action: { aid: 40, extend } },
   };
 }
 
@@ -385,7 +440,21 @@ test('page classifier accepts exact platform system fields but not chat text or 
 
 test('历史与兼容入口识别真实系统模式，普通卡片同次保留且正文不交付', async () => {
   const target = { conversationKey, friendId: '301', friendSource: '0' };
+  const actionNotice = {
+    mid: 'synthetic-action-send',
+    type: 1,
+    time: 1_790_000_006,
+    from: { uid: 'self_301' },
+    to: { uid: 'boss_301' },
+    body: {
+      type: 4,
+      templateId: 1,
+      action: { aid: 40, extend: '{"fileName":"private-action.pdf","url":"private-action-link"}' },
+    },
+  };
   const messages = [
+    actionNotice,
+    actionNotice,
     {
       mid: 'synthetic-send',
       type: 3,
@@ -427,6 +496,24 @@ test('历史与兼容入口识别真实系统模式，普通卡片同次保留�
       from: { uid: 'self_301' },
       to: { uid: 'boss_301' },
       body: { type: 1, templateId: 3, text: '对方已查看了您的附件简历' },
+    },
+    {
+      ...actionNotice,
+      mid: 'synthetic-portfolio',
+      text: '附件简历请求已发送',
+      body: { ...actionNotice.body, action: { aid: 40, extend: '{"annexType":1}' } },
+    },
+    {
+      ...actionNotice,
+      mid: 'synthetic-malformed-action',
+      text: '附件简历请求已发送',
+      body: { ...actionNotice.body, action: { aid: 40, extend: '{' } },
+    },
+    {
+      ...actionNotice,
+      mid: 'synthetic-phone-action',
+      text: '附件简历请求已发送',
+      body: { ...actionNotice.body, action: { aid: 27, extend: '' } },
     },
   ];
   class FakeXHR {
@@ -477,6 +564,8 @@ test('历史与兼容入口识别真实系统模式，普通卡片同次保留�
     assert.deepEqual(
       observations.map((item) => [item.messageId, item.kind]),
       [
+        ['synthetic-action-send', 'request_sent'],
+        ['synthetic-action-send', 'request_sent'],
         ['synthetic-send', 'attachment_sent'],
         ['synthetic-viewed', 'viewed_confirmed'],
         ['synthetic-job-card', 'resume_card_other'],
@@ -484,18 +573,38 @@ test('历史与兼容入口识别真实系统模式，普通卡片同次保留�
     );
     assert.deepEqual(
       observations.map((item) => item.resumeEvidence.version),
-      [2, 2, 1],
+      [3, 3, 2, 2, 1],
     );
+    assert.deepEqual(observations[0].resumeEvidence, {
+      version: 3,
+      messageType: 1,
+      field: 'body.action',
+      text: '附件简历请求已发送',
+      bodyType: 4,
+      templateId: 1,
+      actionAid: 40,
+      annexType: null,
+    });
+    assert.equal(observations[0].direction, 'system');
+    assert.equal(observations[0].attribution.senderId, 'self_301');
+    assert.equal(observations[0].attribution.recipientId, 'boss_301');
     for (const privateValue of [
       'private-synthetic',
       'private-resume',
       'synthetic-security',
       'Synthetic company role',
+      'private-action',
+      'fileName',
+      'extend',
     ])
       assert.equal(JSON.stringify(observations).includes(privateValue), false);
     const result = toResumeHistoryResult(payload(observations), envelope);
+    assert.equal(
+      result.observations.filter((item) => item.messageId === 'synthetic-action-send').length,
+      1,
+    );
     const applied = applyResumeHistoryV2(envelope, result);
-    assert.equal(applied.envelope.version, 6);
+    assert.equal(applied.envelope.version, 8);
     assert.deepEqual(
       applyResumeHistoryV2(applied.envelope, result).envelope.resume.observations,
       applied.envelope.resume.observations,
@@ -506,6 +615,222 @@ test('历史与兼容入口识别真实系统模式，普通卡片同次保留�
     collected.push(result.observations.map((item) => item.id));
   }
   assert.deepEqual(collected[0], collected[1]);
+});
+
+test('生成的历史表达式按已核实契约接收合成不透明动作，并保留不足诊断', async () => {
+  const target = { conversationKey, friendId: '301', friendSource: '0' };
+  const messages = [
+    syntheticActionNotice('opaque-send', 'synthetic-opaque-action-token'),
+    syntheticActionNotice('json-send', '{"annexType":0,"fileName":"synthetic-private.pdf"}'),
+    syntheticActionNotice('portfolio', '{"annexType":1}'),
+    syntheticActionNotice('malformed-json', '{"annexType":1'),
+    syntheticActionNotice('unknown-annex', '{"annexType":2}'),
+    { ...syntheticActionNotice('changed-action-shape', ''), type: '1' },
+    {
+      ...syntheticActionNotice('unrelated-action', ''),
+      body: { type: 4, templateId: 1, action: { aid: 27, extend: '' } },
+    },
+    {
+      mid: 'chat-quote',
+      type: 1,
+      body: { type: 1, text: '附件简历请求已发送' },
+    },
+    {
+      mid: 'ordinary-card',
+      type: 4,
+      time: 1_790_000_007,
+      from: { uid: 'boss_301' },
+      to: { uid: 'self_301' },
+      body: { type: 16, templateId: 1, articles: [{ title: 'Synthetic role' }] },
+    },
+  ];
+  for (const platformContract of [BOSS_ACTION40_PLATFORM_CONTRACT, null, 'future-contract']) {
+    for (const compatibility of [false, true]) {
+      const fixture = syntheticHistoryFixture(messages);
+      const expression = compatibility
+        ? createResumeHistoryExpression({ targets: [target], pages: 1, platformContract })
+        : createResumePageExpression({
+            target,
+            identity: { bossId: 'boss_301', securityId: 'synthetic-security' },
+            page: 1,
+            platformContract,
+          });
+      const value = JSON.parse(
+        JSON.stringify(await vm.runInNewContext(expression, fixture.context)),
+      );
+      assert.equal(value.ok, true);
+      const verified = platformContract === BOSS_ACTION40_PLATFORM_CONTRACT;
+      assert.deepEqual(
+        value.observations.map((item) => [item.messageId, item.kind, item.resumeEvidence.version]),
+        [
+          ...(verified ? [['opaque-send', 'request_sent', 4]] : []),
+          ['json-send', 'request_sent', 3],
+          ['ordinary-card', 'resume_card_other', 1],
+        ],
+      );
+      assert.deepEqual(value.unresolved, [
+        ...(!verified
+          ? [{ conversationKey, reason: 'RESUME_ACTION_PLATFORM_CONTRACT_UNVERIFIED' }]
+          : []),
+        { conversationKey, reason: 'RESUME_ACTION_EXTENSION_INVALID' },
+        { conversationKey, reason: 'RESUME_ACTION_ANNEX_TYPE_UNSUPPORTED' },
+        { conversationKey, reason: 'RESUME_ACTION_SHAPE_UNSUPPORTED' },
+      ]);
+      assert.equal(fixture.requests.length, compatibility ? 2 : 1);
+      for (const privateValue of [
+        'synthetic-opaque-action-token',
+        'synthetic-private.pdf',
+        'synthetic-security',
+        'fileName',
+        'extend',
+      ])
+        assert.equal(JSON.stringify(value).includes(privateValue), false);
+      const { envelope } = createEnvelopeV2(snapshot);
+      assert.doesNotThrow(() =>
+        toResumeHistoryResult(
+          { ...payload(value.observations), unresolved: value.unresolved },
+          envelope,
+        ),
+      );
+      if (verified) {
+        assert.equal(value.observations[0].resumeEvidence.extensionFormat, 'opaque_string');
+        assert.equal(value.observations[0].resumeEvidence.platformContract, platformContract);
+        assert.equal(value.observations[0].attribution.senderId, 'self_301');
+        assert.equal(value.observations[0].attribution.recipientId, 'boss_301');
+      }
+    }
+  }
+});
+
+test('有界历史读取将契约传入实际生成表达式，v6 检查点不泄露请求私有字段', async () => {
+  const target = { conversationKey, friendId: '301', friendSource: '0' };
+  const fixture = syntheticHistoryFixture([
+    syntheticActionNotice('opaque-send', 'synthetic-opaque-action-token'),
+    syntheticActionNotice('malformed-json', '{'),
+    syntheticActionNotice('portfolio', '{"annexType":1}'),
+  ]);
+  const checkpoints = [],
+    calls = [];
+  const result = await runResumeHistoryRequests({
+    targets: [target],
+    pages: 1,
+    maxRequests: 2,
+    requestDelayMs: 0,
+    platformContract: BOSS_ACTION40_PLATFORM_CONTRACT,
+    onCheckpoint: async (value) => checkpoints.push(value),
+    execute: async (expression, metadata) => {
+      calls.push(metadata.kind);
+      return JSON.parse(JSON.stringify(await vm.runInNewContext(expression, fixture.context)));
+    },
+  });
+  assert.deepEqual(calls, ['friend', 'history_page']);
+  assert.equal(fixture.requests.length, 2);
+  assert.equal(result.usage.historyRequests, 2);
+  assert.equal(result.partial, false);
+  assert.equal(result.payload.coverage.completedPages, 1);
+  assert.deepEqual(
+    result.payload.observations.map((item) => item.resumeEvidence.version),
+    [4],
+  );
+  assert.deepEqual(result.payload.unresolved, [
+    { conversationKey, reason: 'RESUME_ACTION_EXTENSION_INVALID' },
+  ]);
+  assert.equal(checkpoints.length, 2);
+  assert.equal(
+    checkpoints.every((item) => item.version === 6),
+    true,
+  );
+  assert.equal(checkpoints.at(-1).usage.historyRequests, 2);
+  assert.deepEqual(checkpoints.at(-1).observations, result.payload.observations);
+  assert.deepEqual(checkpoints.at(-1).unresolved, result.payload.unresolved);
+  for (const privateValue of [
+    'synthetic-opaque-action-token',
+    'synthetic-security',
+    'responseText',
+    'extend',
+  ])
+    assert.equal(JSON.stringify(checkpoints).includes(privateValue), false);
+});
+
+test('历史执行失败仍计入已发请求，v6 检查点保留失败页而不保存私有错误正文', async () => {
+  const target = { conversationKey, friendId: '301', friendSource: '0' };
+  const checkpoints = [];
+  const result = await runResumeHistoryRequests({
+    targets: [target],
+    pages: 1,
+    maxRequests: 2,
+    requestDelayMs: 0,
+    onCheckpoint: async (value) => checkpoints.push(value),
+    execute: async (_expression, metadata) => {
+      if (metadata.kind === 'friend')
+        return { ok: true, identity: { bossId: 'boss_301', securityId: 'synthetic-security' } };
+      throw new Error('synthetic-private-error');
+    },
+  });
+  assert.equal(result.usage.historyRequests, 2);
+  assert.equal(result.partial, true);
+  assert.equal(result.error, 'HISTORY_SCAN_FAILED');
+  assert.deepEqual(result.continuation, { conversationKey, page: 1 });
+  assert.equal(checkpoints.at(-1).version, 6);
+  assert.equal(checkpoints.at(-1).usage.historyRequests, 2);
+  assert.equal(checkpoints.at(-1).nextPage, 1);
+  assert.equal(JSON.stringify(checkpoints).includes('synthetic-private-error'), false);
+});
+
+test('恢复历史读取继承并按会话及原因去重 initial unresolved，不覆盖已保存不足', async () => {
+  const target = { conversationKey, friendId: '301', friendSource: '0' };
+  const initialUnresolved = [
+    { conversationKey, reason: 'RESUME_ACTION_SHAPE_UNSUPPORTED' },
+    { conversationKey, reason: 'RESUME_ACTION_EXTENSION_INVALID' },
+    { conversationKey, reason: 'RESUME_ACTION_SHAPE_UNSUPPORTED' },
+  ];
+  const fixture = syntheticHistoryFixture([
+    syntheticActionNotice('malformed-json', '{'),
+    { ...syntheticActionNotice('changed-shape', ''), type: '1' },
+  ]);
+  const checkpoints = [];
+  const result = await runResumeHistoryRequests({
+    targets: [target],
+    pages: 1,
+    maxRequests: 2,
+    requestDelayMs: 0,
+    initialUnresolved,
+    onCheckpoint: async (value) => checkpoints.push(value),
+    execute: async (expression) =>
+      JSON.parse(JSON.stringify(await vm.runInNewContext(expression, fixture.context))),
+  });
+  const expected = initialUnresolved.slice(0, 2);
+  assert.equal(initialUnresolved.length, 3);
+  assert.deepEqual(result.payload.unresolved, expected);
+  assert.deepEqual(checkpoints[0].unresolved, expected);
+  assert.deepEqual(checkpoints.at(-1).unresolved, expected);
+  assert.equal(result.usage.historyRequests, 2);
+});
+
+test('initial unresolved 拒绝未知字段及不合白名单的身份或原因，不发请求', async () => {
+  for (const initialUnresolved of [
+    null,
+    {},
+    [{ conversationKey, reason: 'RESUME_ACTION_SHAPE_UNSUPPORTED', rawExtend: 'synthetic' }],
+    [{ conversationKey }],
+    [{ conversationKey: 'short-key', reason: 'RESUME_ACTION_SHAPE_UNSUPPORTED' }],
+    [{ conversationKey, reason: 'private free text' }],
+    [{ conversationKey, reason: 'resume_action_shape_unsupported' }],
+  ]) {
+    let requests = 0;
+    await assert.rejects(
+      runResumeHistoryRequests({
+        targets: [{ conversationKey, friendId: '301', friendSource: '0' }],
+        initialUnresolved,
+        execute: async () => {
+          requests++;
+          return {};
+        },
+      }),
+      /RESUME_SCAN_INPUT_INVALID/,
+    );
+    assert.equal(requests, 0);
+  }
 });
 
 test('bounded history runner checkpoints every request and reports actual coverage and usage', async () => {
@@ -560,7 +885,7 @@ test('bounded history runner checkpoints every request and reports actual covera
   });
   assert.equal(checkpoints.length, 5);
   assert.equal(
-    checkpoints.every((item) => item.version === 4),
+    checkpoints.every((item) => item.version === 6),
     true,
   );
   assert.equal(waits.length, 4);
@@ -754,7 +1079,7 @@ test('new snapshots retain partial identity evidence and enrich observations wit
     first.envelope,
     toResumeHistoryResult(payload([{ ...raw, attribution: evidence }]), first.envelope),
   );
-  assert.equal(second.envelope.version, 6);
+  assert.equal(second.envelope.version, 8);
   assert.equal(second.envelope.resume.observations.length, 1);
   assert.equal(second.envelope.resume.observations[0].id, first.envelope.resume.observations[0].id);
   assert.equal(second.envelope.resume.observations[0].attribution.responseFriendId, null);
@@ -786,7 +1111,7 @@ test('v4 类型四误分类升级保留原观察身份，并显式缺少发送�
   legacy.version = 4;
   delete legacy.resume.observations[0].resumeEvidence;
   const upgraded = upgradeEnvelope(legacy);
-  assert.equal(upgraded.version, 6);
+  assert.equal(upgraded.version, 8);
   assert.equal(upgraded.resume.observations[0].resumeEvidence, null);
   assert.equal(upgraded.resume.observations[0].kind, 'request_sent');
   assert.equal(upgraded.resume.observations[0].id, current.resume.observations[0].id);

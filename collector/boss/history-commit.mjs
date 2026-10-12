@@ -10,7 +10,8 @@ const checkpointKey = (checkpoint) =>
   checkpoint?.nextConversationKey ?? checkpoint?.completedConversationKey;
 
 function replayEvidence(envelope, checkpoint) {
-  if (!checkpoint?.observations.length) return envelope;
+  if (!checkpoint || (!checkpoint.observations.length && !checkpoint.unresolved?.length))
+    return envelope;
   const result = toResumeHistoryResult(
     {
       ok: true,
@@ -71,7 +72,7 @@ export function createHistoryCommit({
       const task = pending.find((item) => item.key === checkpointKey(prior));
       if (prior && task && prior.targetFingerprint !== task.task.fingerprint) {
         // The older page remains evidence even though the list now names a new target.
-        if (prior.observations.length) {
+        if (prior.observations.length || prior.unresolved?.length) {
           const recovered = replayEvidence(currentEnvelope, prior);
           await saveEvidence(recovered);
           currentEnvelope = recovered;

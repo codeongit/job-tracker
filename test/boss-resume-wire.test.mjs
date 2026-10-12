@@ -28,11 +28,11 @@ function batch(version, proof = viewedProof) {
 }
 
 test('new private v6 batch explicitly carries v2 semantics and refuses future/legacy containers', () => {
-  assert.equal(BOSS_INTEGRATION_VERSION, 6);
+  assert.equal(BOSS_INTEGRATION_VERSION, 8);
   for (const validate of [validateStructure, validateBossBatch]) {
     assert.equal(validate(batch(6)).events[0].resumeEvidence.version, 2);
     assert.throws(() => validate(batch(5)));
-    assert.throws(() => validate(batch(7)));
+    assert.throws(() => validate(batch(9)));
     assert.equal(
       validate(
         batch(5, {

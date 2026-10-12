@@ -506,7 +506,7 @@ test('runtime and resume checkpoints are private, atomic and reloadable', async 
     assert.deepEqual(await loadResumeCheckpoint(directory), checkpoint);
     for (const invalid of [
       { ...checkpoint, unknownField: true },
-      { ...checkpoint, version: 5 },
+      { ...checkpoint, version: 7 },
       { ...checkpoint, head: 'message~a' },
       { ...checkpoint, nextConversationKey: 'job~a' },
     ])
@@ -562,7 +562,7 @@ test('v1 语义依据保留 v3 检查点兼容，旧格式拒绝依据且失败�
       const checkpointPath = await save(directory, checkpoint);
       assert.deepEqual(await load(directory), checkpoint);
       for (const invalid of [
-        { ...checkpoint, version: 5 },
+        { ...checkpoint, version: 7 },
         ...[1, 2].map((version) => ({ ...checkpoint, version })),
         { ...checkpoint, observations: [{ ...observation, futureSemanticField: 'synthetic' }] },
         {
@@ -611,7 +611,7 @@ test('v1 语义依据保留 v3 检查点兼容，旧格式拒绝依据且失败�
   }
 });
 
-test('v2 语义依据仅在 v4 检查点保存，两种恢复链路保持依据和旧进度', async () => {
+test('v2 语义依据至少需要 v4 检查点，两种恢复链路保持依据和旧进度', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'boss-checkpoint-v2-proof-'));
   try {
     const observation = {
@@ -656,7 +656,7 @@ test('v2 语义依据仅在 v4 检查点保存，两种恢复链路保持依据�
       assert.equal((await stat(path)).mode & 0o777, 0o600);
       assert.deepEqual(await load(directory), checkpoint);
       for (const invalid of [
-        ...[1, 2, 3, 5].map((version) => ({ ...checkpoint, version })),
+        ...[1, 2, 3, 7].map((version) => ({ ...checkpoint, version })),
         {
           ...checkpoint,
           observations: [
@@ -690,6 +690,117 @@ test('v2 语义依据仅在 v4 检查点保存，两种恢复链路保持依据�
       assert.deepEqual(await load(directory), legacy);
       await save(directory, checkpoint);
       assert.deepEqual(await load(directory), checkpoint);
+      for (const version of [5, 6]) {
+        const upgraded = { ...checkpoint, version };
+        await save(directory, upgraded);
+        assert.deepEqual(await load(directory), upgraded);
+      }
+    }
+  } finally {
+    await rm(directory, { recursive: true });
+  }
+});
+
+test('v3/v4 动作依据分别需要 v5/v6 检查点，拒绝旧容器且保留已有进度', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'boss-checkpoint-action-proof-'));
+  try {
+    const actionProof = {
+      version: 3,
+      messageType: 1,
+      field: 'body.action',
+      text: '附件简历请求已发送',
+      bodyType: 4,
+      templateId: 1,
+      actionAid: 40,
+      annexType: null,
+    };
+    const opaqueProof = {
+      ...actionProof,
+      version: 4,
+      extensionFormat: 'opaque_string',
+      platformContract: 'boss-action40-v5550-4d4a6ac8',
+    };
+    const observation = {
+      conversationKey: 'c'.repeat(64),
+      friendId: '301',
+      friendSource: '0',
+      messageId: 'synthetic-action-sent',
+      direction: 'system',
+      messageType: 1,
+      kind: 'request_sent',
+      platformTime: '2026-09-21T10:00:00.000Z',
+      externalJobId: null,
+      source: 'geek_history_status_message',
+    };
+    const checkpoint = {
+      version: 6,
+      capturedAt: '2026-09-21T10:00:01.000Z',
+      nextConversationKey: 'c'.repeat(64),
+      nextPage: 2,
+      observations: [{ ...observation, resumeEvidence: opaqueProof }],
+      unresolved: [],
+      coverage: { requestedConversations: 1 },
+      usage: { historyRequests: 2 },
+      partial: false,
+      error: null,
+      head: 'synthetic-action-sent',
+      targetFingerprint: 'd'.repeat(64),
+    };
+    for (const [save, load] of [
+      [saveResumeCheckpoint, loadResumeCheckpoint],
+      [saveChangeCheckpoint, loadChangeCheckpoint],
+    ]) {
+      const path = await save(directory, checkpoint);
+      assert.equal((await stat(path)).mode & 0o777, 0o600);
+      assert.deepEqual(await load(directory), checkpoint);
+      for (const [proof, acceptedVersions, rejectedVersions] of [
+        [actionProof, [5, 6], [1, 2, 3, 4, 7]],
+        [opaqueProof, [6], [1, 2, 3, 4, 5, 7]],
+      ]) {
+        for (const version of acceptedVersions) {
+          const compatible = {
+            ...checkpoint,
+            version,
+            observations: [{ ...observation, resumeEvidence: proof }],
+          };
+          await save(directory, compatible);
+          assert.deepEqual(await load(directory), compatible);
+          const original = JSON.stringify(compatible, null, 4) + '\n';
+          await writeFile(path, original);
+          assert.deepEqual(await load(directory), compatible);
+          assert.equal(await readFile(path, 'utf8'), original);
+        }
+        await save(directory, checkpoint);
+        for (const version of rejectedVersions) {
+          const invalid = {
+            ...checkpoint,
+            version,
+            observations: [{ ...observation, resumeEvidence: proof }],
+          };
+          await assert.rejects(() => save(directory, invalid), /RESUME_CHECKPOINT_INVALID/);
+          assert.deepEqual(await load(directory), checkpoint);
+          await writeFile(path, JSON.stringify(invalid));
+          await assert.rejects(() => load(directory), /RESUME_CHECKPOINT_INVALID/);
+          await save(directory, checkpoint);
+        }
+      }
+      for (const proof of [
+        { ...opaqueProof, rawExtension: 'synthetic-opaque-value' },
+        { ...opaqueProof, platformContract: 'unknown-contract' },
+        { ...opaqueProof, extensionFormat: 'json_object' },
+        { ...opaqueProof, annexType: 0 },
+        { ...opaqueProof, messageType: 5 },
+      ]) {
+        const invalid = {
+          ...checkpoint,
+          observations: [{ ...observation, resumeEvidence: proof }],
+        };
+        await assert.rejects(() => save(directory, invalid), /RESUME_CHECKPOINT_INVALID/);
+        assert.deepEqual(await load(directory), checkpoint);
+        await writeFile(path, JSON.stringify(invalid));
+        await assert.rejects(() => load(directory), /RESUME_CHECKPOINT_INVALID/);
+        await save(directory, checkpoint);
+      }
     }
   } finally {
     await rm(directory, { recursive: true });

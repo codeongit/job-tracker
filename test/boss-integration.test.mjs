@@ -175,7 +175,9 @@ test('采集快照 v6 携带新版简历语义依据，旧 v2-v5 仍可读取', 
   assert.equal(validateTrackerEnvelope({ ...fixture({ rows: 1 }), version: 4 }).version, 4);
   assert.equal(validateTrackerEnvelope({ ...fixture({ rows: 1 }), version: 5 }).version, 5);
   assert.equal(validateTrackerEnvelope({ ...fixture({ rows: 1 }), version: 6 }).version, 6);
-  assert.throws(() => validateTrackerEnvelope({ ...fixture({ rows: 1 }), version: 7 }));
+  assert.equal(validateTrackerEnvelope({ ...fixture({ rows: 1 }), version: 7 }).version, 7);
+  assert.equal(validateTrackerEnvelope({ ...fixture({ rows: 1 }), version: 8 }).version, 8);
+  assert.throws(() => validateTrackerEnvelope({ ...fixture({ rows: 1 }), version: 9 }));
 });
 
 test('采集快照只有 v6 能携带可重验的查看确认结构', () => {
@@ -206,6 +208,48 @@ test('采集快照只有 v6 能携带可重验的查看确认结构', () => {
   };
   assert.equal(validateTrackerEnvelope(envelope).resume.observations[0].resumeEvidence.version, 2);
   assert.throws(() => validateTrackerEnvelope({ ...envelope, version: 5 }));
+});
+
+test('动作确认快照从 v7 携带 v3 依据，旧读取入口不能洗成可信批次', () => {
+  const envelope = { ...fixture({ rows: 1 }), version: 7 };
+  envelope.resume = {
+    observations: [
+      resumeObservation(envelope, {
+        messageType: 1,
+        kind: 'request_sent',
+        direction: 'system',
+        source: 'geek_history_status_message',
+        attribution: null,
+        resumeEvidence: {
+          version: 3,
+          messageType: 1,
+          field: 'body.action',
+          text: '附件简历请求已发送',
+          bodyType: 4,
+          templateId: 1,
+          actionAid: 40,
+          annexType: null,
+        },
+      }),
+    ],
+    lastScanAt: null,
+    lastCoverage: null,
+    lastUnresolved: [],
+  };
+  assert.equal(validateTrackerEnvelope(envelope).resume.observations[0].resumeEvidence.version, 3);
+  assert.doesNotThrow(() => validateTrackerEnvelope({ ...envelope, version: 8 }));
+  for (const version of [5, 6, 9])
+    assert.throws(() => validateTrackerEnvelope({ ...envelope, version }));
+  const opaque = structuredClone(envelope);
+  opaque.version = 8;
+  opaque.resume.observations[0].resumeEvidence = {
+    ...opaque.resume.observations[0].resumeEvidence,
+    version: 4,
+    extensionFormat: 'opaque_string',
+    platformContract: 'boss-action40-v5550-4d4a6ac8',
+  };
+  assert.doesNotThrow(() => validateTrackerEnvelope(opaque));
+  assert.throws(() => validateTrackerEnvelope({ ...opaque, version: 7 }));
 });
 
 test('v3 接受经私有策略验收的 DOM 状态证据，但拒绝未知来源', () => {
@@ -532,6 +576,47 @@ test('initial import refuses changed bytes even when counts remain 30/10/60', as
   assert.equal((await inbox.list()).length, 0);
 });
 
+test('targeted resume conversion selects observations before mapping and keeps default identities', () => {
+  const envelope = fixture({ rows: 2 });
+  envelope.resume = {
+    observations: envelope.snapshot.records.map((record, index) => ({
+      id: String(index + 1).repeat(64),
+      conversationKey: record.key,
+      platformIdentity: structuredClone(record.platformIdentity),
+      messageId: `target-resume-${index}`,
+      direction: 'system',
+      messageType: 5,
+      kind: 'request_sent',
+      platformTime: START,
+      externalJobId: `job_${index + 1}`,
+      observedAt: START,
+      source: 'geek_history_status_message',
+      status: 'review',
+    })),
+    lastScanAt: START,
+    lastCoverage: null,
+    lastUnresolved: [],
+  };
+  const all = createResumeEvents(envelope, { sourceSequence: 2 });
+  const scoped = createResumeEvents(envelope, {
+    sourceSequence: 2,
+    observationIds: ['1'.repeat(64)],
+  });
+  assert.equal(all.length, 2);
+  assert.deepEqual(scoped, [all[0]]);
+  for (const observationIds of [['f'.repeat(64)], ['1'.repeat(64), '1'.repeat(64)], 'all'])
+    assert.throws(
+      () => createResumeEvents(envelope, { sourceSequence: 2, observationIds }),
+      /BOSS_RESUME_OBSERVATION_SCOPE_INVALID/,
+    );
+  // Unselected material must not run through business mapping at all.
+  envelope.resume.observations[1].kind = 'synthetic-unsupported';
+  assert.deepEqual(
+    createResumeEvents(envelope, { sourceSequence: 2, observationIds: ['1'.repeat(64)] }),
+    scoped,
+  );
+});
+
 test('company-mismatched title evidence stays review-only', async (t) => {
   const { data } = await tempProject(t, fixture({ rows: 1, companyConflict: true }));
   const snapshot = await readTrackerSnapshot(join(data, FIRST_NAME));
@@ -587,7 +672,7 @@ test('inbox is immutable, private, and does not chmod a shared parent', async (t
   const beforeMode = (await lstat(root)).mode & 0o777;
   const snapshot = await readTrackerSnapshot(join(data, FIRST_NAME));
   const batch = createInitialBatch(snapshot, 1);
-  assert.equal(batch.version, 6);
+  assert.equal(batch.version, 8);
   // Queue v3 binds attribution material in its batch digest. Repeated writes remain immutable.
   const first = await inbox.enqueue(batch);
   const second = await inbox.enqueue(batch);

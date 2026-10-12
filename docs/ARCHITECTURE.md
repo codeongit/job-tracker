@@ -1,6 +1,6 @@
 # 当前系统架构
 
-本文描述当前实现：运行结构、模块职责、数据所有者与关键流程。本次整理核对的代码基线为 `6fd11e4`，应用为 0.10.17；当前格式版本以[数据与恢复](DATA_AND_RECOVERY.md#版本与两种存储模式)为准。历史决定及替代关系保留在 [ADR 索引](DECISIONS.md)，后续工作见[架构重构清单](ARCHITECTURE_REFACTOR_PLAN.md)。
+本文描述当前实现：运行结构、模块职责、数据所有者与关键流程。普通资料规则的 0.10.19 修复以 `5138a1a` 为代码基线，当前应用为 0.10.21；当前格式版本以[数据与恢复](DATA_AND_RECOVERY.md#版本与两种存储模式)为准。历史决定及替代关系保留在 [ADR 索引](DECISIONS.md)，后续工作见[架构重构清单](ARCHITECTURE_REFACTOR_PLAN.md)。
 
 ## 阅读入口
 
@@ -62,6 +62,7 @@ flowchart LR
 | 岗位查询与行动建议 | `jobs.js`、`today.js`、`daily.js`、`planning.js`                             | 页面与详情共用纯查询；日期查询展示当前岗位信息，不推断历史阶段   |
 | 简历语义与状态转换 | `resume-rules.js`；联动规则在 `model.js`                                     | 采集、转换、应用与展示共用；识别结果不授予归属或人工字段所有权   |
 | 岗位资料证据       | `collector/boss/job-evidence.mjs`、`boss-detail-title.js`、`boss-job-url.js` | 采集展示、详情交付和旧身份映射共用；三种用途的兼容语义分别保留   |
+| 普通资料应用判断   | `boss-job-materials.js`                                                      | 完整与缺标题观察、当前重评及恢复共用纯判断；原始观察不改写       |
 | 归属判断           | `boss-attribution.js`                                                        | 对各完整观察独立核对；上下文按当前材料构建，候选不等于已确认归属 |
 | 批次与来源身份     | `boss-batch.js`、`source-identity.js`                                        | 校验与稳定 ID 共用；旧事件身份不随规则升级改写                   |
 | 应用与人工决定     | `boss-integration.js`、`boss-observations.js`、`source-ledger.js`            | 正式消费和固定人工命令执行规则；事实与应用决定分别保存           |
@@ -181,13 +182,15 @@ sequenceDiagram
 
 `resume-rules.js` 是简历观察枚举、业务含义和转换的唯一规则定义。精确文案“附件简历请求已发送”保持已发送含义；旧 `request_sent` / `resume_request_sent` 是兼容标识，不按名称重新解释。通用卡片模板、泛化关键词、送达或已读不能单独证明发送。
 
-服务对所有有业务目标的简历观察重算批次携带的最小 `resumeEvidence` 后再判断归属和字段所有权，语义与归属须在同一观察内完整；旧材料缺可核对状态依据时等待，不因兼容版本取得可信地位。v2 依据额外携带最小结构判别字段，严格识别链接消息中的附件发送确认及类型 4 中的查看系统确认，不能全面放开普通类型 4 卡片；固定字段与精确文案的边界见 [D047](adr/0047-boss-explicit-system-confirmations.md)。两个 `target === null` 的纯卡片观察在不足或已验证时存档为 `no_effect / observation_only`，正式目标为空；明确冲突仍 review，缺稳定消息身份仍作为采集问题处理。依据不保存正文、简历或凭据，附件名使用固定占位；诊断只保留必要字段存在情况、身份摘要、阶段和判定。
+服务对所有有业务目标的简历观察重算批次携带的最小 `resumeEvidence` 后再判断归属和字段所有权，语义与归属须在同一观察内完整；旧材料缺可核对状态依据时等待，不因兼容版本取得可信地位。v2 依据额外携带最小结构判别字段，严格识别链接消息中的附件发送确认及类型 4 中的查看系统确认，不能全面放开普通类型 4 卡片；固定字段与精确文案的边界见 [D047](adr/0047-boss-explicit-system-confirmations.md)。v3 依据补充已核实的 `type=1 / body.type=4 / body.templateId=1 / body.action.aid=40` 动作确认，只接受缺省或明确非作品集的扩展判别；系统发送文案由该动作生成，普通 type 1 聊天或引用文字、旧 v1/v2 type 1 依据均不足。八个白名单字段及扩展边界见 [D048](adr/0048-boss-action-resume-confirmation.md)。两个 `target === null` 的纯卡片观察在不足或已验证时存档为 `no_effect / observation_only`，正式目标为空；明确冲突仍 review，缺稳定消息身份仍作为采集问题处理。依据不保存正文、简历或凭据，附件名使用固定占位；诊断只保留必要字段存在情况、身份摘要、阶段和判定。
 
 满足条件的自动发送/接收通过 `model.js` 的联动规则推进已读和沟通中；人工字段、较高阶段及对方已接收的状态不回退。明确清单的语义纠错将符合条件的自动已发送改为未知，并撤回仍由该误判维护且无人工活动的自动沟通中，消息已读保持；恢复只保护已经完成的阶段纠正，不扩大旧的仅简历纠正决定。完整边界见 [D031](adr/0031-explicit-resume-semantics.md)、[D043](adr/0043-boss-observation-only-archive.md)、[D044](adr/0044-boss-card-semantics-evidence.md)、[D045](adr/0045-boss-reviewed-resume-semantics-correction.md)、[D046](adr/0046-boss-resume-correction-linked-stage.md)。
 
 ### 岗位资料与平台状态
 
 `job-evidence.mjs` 在已选会话关联上核对岗位 ID、规范链接、证据排序及确认记录。详情名称和用人公司优先于聊天列表，招聘方可以不同；详情证据必须属于同一岗位，多份证据或身份矛盾继续拦截。匿名用人公司原样保留，缺字段可用精确且唯一的有效本机绑定补齐，不能猜公司。旧身份映射的文字比较、排序和缺省值保持，避免改动历史 ID。
+
+`boss-job-materials.js` 的 `assessBossJobMaterials({ event, accountNamespace, opportunities, bindings })` 统一普通资料的当前工作区判断，返回判定、目标与绑定、字段资料来源、有效应用输入及允许更新字段。完整观察、缺标题观察、waiting/review 重评与恢复共用它。复用本机资料时，账号、岗位 ID、规范链接与唯一未删除目标须一致；招聘方与用人公司名称不同不单独拦截，聊天公司不能覆盖已保存的用人公司。无详情的非空标题与已有岗位名矛盾时，即使仍有自动所有权也需核对；一致的详情仍可更新自动资料。缺标题可复用完整且精确一致的本机资料，记录 `no_effect / bound_job_details_available` 或 `existing_job_details_available`，不补写原始观察、不取得自动字段所有权；身份、详情的真实矛盾及旧非空标题的 review 材料继续核对。
 
 平台 `unknown / open / closed` 与个人招聘阶段独立。关闭不自动结束跟进、删除或忽略观察；页面读取失败不证明关闭。人工资料确认只结束允许的普通资料问题，不确认简历含义或归属。见 [D038](adr/0038-boss-job-details-and-observation-groups.md)、[D039](adr/0039-boss-manual-retired-job-resolution.md)。
 
@@ -218,3 +221,11 @@ sequenceDiagram
 改动前按[现状与目标核对](agents/change-workflow.md)追踪实际调用者；新业务规则放入对应共用模块，测试预期从原始要求独立确定。规则、应用决定、持久化交付及页面反馈各自核对，成功计数或回执不能代替结果验证。
 
 纯文档整理检查格式、链接与内容准确性。后续代码重构按[分阶段清单](ARCHITECTURE_REFACTOR_PLAN.md)逐条推进；每步保留稳定身份、业务结果、人工保护、冲突与恢复语义，运行相关非浏览器检查，发布前运行完整 `pnpm test`、`pnpm check` 和 `pnpm format:check`。浏览器及真实平台验收由用户完成，服务更新不自动恢复跟踪或同步 GitHub。
+
+## 平台转换版本与不透明扩展（0.10.21，D049）
+
+共用简历分类返回已识别、无关、暂不支持；历史读取和兼容表达式显式注入自包含分类器，服务消费重验同观察内的结构与归属。严格 action40 的不透明字符串仅在已核实转换契约下形成 v4 依据，不能把所有解析失败作为发送。相关未支持动作进入现有 unresolved，消息读取进度不等于业务应用成功。
+
+平台参考模块拥有已核实公开 app/chat URL、build、asset 和原始 SHA。实际历史读取前复用账号及绑定目标守卫，只读取已加载脚本 URL；无目标不增加版本读取，完成检查点回放不增加历史请求或公开脚本版本读取，既有账号预检保持。known 才允许不透明分支，changed/unavailable 不影响既有 JSON、文字和查看确认。完整源码在忽略目录，URL 匹配 basis=reviewed_url / contentVerified=false；同 URL 内容变化需显式字节比较。新版本必须重新核对，不自动下载、执行或调整规则。
+
+定点交付在事件映射前按本轮观察 ID 筛选，缺省转换保持原输出；完整真实快照、原事件身份和批次摘要算法保留。共享格式不变，私有版本和恢复门槛见[数据与恢复](DATA_AND_RECOVERY.md)，来源与取舍见 [D049](adr/0049-boss-versioned-opaque-action-evidence.md)。

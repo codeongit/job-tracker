@@ -68,6 +68,8 @@ export const RESUME_SUMMARIES = Object.freeze(RESUME_RULES.map((rule) => rule.su
 export const RESUME_STATUS_KINDS = Object.freeze(
   RESUME_RULES.filter((rule) => rule.target).map((rule) => rule.kind),
 );
+export const RESUME_EXTENSION_FORMATS = Object.freeze(['absent', 'json_object', 'opaque_string']);
+export const BOSS_ACTION40_PLATFORM_CONTRACT = 'boss-action40-v5550-4d4a6ac8';
 
 export function resumeRule(value) {
   const rule = RESUME_RULES.find((rule) => rule.kind === value || rule.summary === value);
@@ -89,16 +91,85 @@ export function classifyResumeText(text, rules) {
   );
 }
 
-export function classifyResumeEvidence(message, rules, classifyText) {
+export function assessResumeEvidence(message, rules, classifyText, context = {}) {
+  const unrelated = (reason = 'NOT_RESUME_EVIDENCE') => ({ status: 'not_relevant', reason });
+  const unsupported = (reason) => ({ status: 'unsupported', reason });
+  const classified = (kind, evidence) => ({ status: 'classified', kind, evidence });
   const body = message?.body;
-  const messageType = Number(message?.type);
+  const actionAid = body?.action?.aid;
   if (
-    !Number.isSafeInteger(messageType) ||
-    messageType < 1 ||
-    messageType > 1000 ||
-    messageType === 1
+    [40, '40'].includes(actionAid) &&
+    (message?.type !== 1 ||
+      body?.type !== 4 ||
+      body?.templateId !== 1 ||
+      typeof body.action !== 'object' ||
+      Array.isArray(body.action) ||
+      actionAid !== 40)
   )
-    return null;
+    return unsupported('RESUME_ACTION_SHAPE_UNSUPPORTED');
+  const messageType = Number(message?.type);
+  if (!Number.isSafeInteger(messageType) || messageType < 1 || messageType > 1000)
+    return unrelated();
+  if (messageType === 1) {
+    if (
+      message?.type !== 1 ||
+      body?.type !== 4 ||
+      body?.templateId !== 1 ||
+      !body.action ||
+      typeof body.action !== 'object' ||
+      Array.isArray(body.action) ||
+      body.action.aid !== 40
+    )
+      return unrelated();
+    // The platform derives this notification from the action, not body.text.
+    // Only the verified non-portfolio discriminator enters private evidence.
+    let annexType = null;
+    let extensionFormat = 'absent';
+    const extension = body.action.extend;
+    if (extension !== undefined && extension !== null && extension !== '') {
+      if (typeof extension !== 'string') return unsupported('RESUME_ACTION_EXTENSION_INVALID');
+      const trimmed = extension.trim();
+      if (!trimmed || /^(?:undefined|null)$/i.test(trimmed))
+        return unsupported('RESUME_ACTION_EXTENSION_INVALID');
+      let parsed;
+      let parsedJson = false;
+      try {
+        parsed = JSON.parse(extension);
+        parsedJson = true;
+      } catch {}
+      if (parsedJson) {
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
+          return unsupported('RESUME_ACTION_EXTENSION_INVALID');
+        extensionFormat = 'json_object';
+        if (Object.hasOwn(parsed, 'annexType')) {
+          if (parsed.annexType === 1) return unrelated('RESUME_ACTION_PORTFOLIO');
+          if (parsed.annexType !== 0) return unsupported('RESUME_ACTION_ANNEX_TYPE_UNSUPPORTED');
+          annexType = 0;
+        }
+      } else {
+        // A failed parse is not a default annex type. Reject strings that look
+        // like damaged JSON before considering the independently verified contract.
+        if (/[{}\[\]"']/.test(extension)) return unsupported('RESUME_ACTION_EXTENSION_INVALID');
+        // Keep this literal in the self-contained assessment so its source can
+        // be injected into deterministic collector expressions without globals.
+        if (context?.platformContract !== 'boss-action40-v5550-4d4a6ac8')
+          return unsupported('RESUME_ACTION_PLATFORM_CONTRACT_UNVERIFIED');
+        extensionFormat = 'opaque_string';
+      }
+    }
+    const opaque = extensionFormat === 'opaque_string';
+    return classified('request_sent', {
+      version: opaque ? 4 : 3,
+      messageType: 1,
+      field: 'body.action',
+      text: '附件简历请求已发送',
+      bodyType: 4,
+      templateId: 1,
+      actionAid: 40,
+      annexType,
+      ...(opaque ? { extensionFormat, platformContract: context.platformContract } : {}),
+    });
+  }
   // Shapes established from loaded messages and the platform's normalization
   // code. Keep discriminants so the consumer can independently recheck them.
   const marker = (value) =>
@@ -113,10 +184,8 @@ export function classifyResumeEvidence(message, rules, classifyText) {
     templateId: marker(body?.templateId),
     hyperLinkType: marker(body?.hyperLink?.hyperLinkType),
   };
-  const explicit = (kind, field, text) => ({
-    kind,
-    evidence: { version: 2, messageType, field, text, ...shape },
-  });
+  const explicit = (kind, field, text) =>
+    classified(kind, { version: 2, messageType, field, text, ...shape });
   if (
     messageType === 3 &&
     shape.bizType === 13 &&
@@ -139,7 +208,7 @@ export function classifyResumeEvidence(message, rules, classifyText) {
       classifyText(body?.text, rules) === 'viewed_confirmed'
     )
       return explicit('viewed_confirmed', 'body.text', '对方已查看了您的附件简历');
-    return null;
+    return unrelated();
   }
   for (const [field, value] of [
     ['message.text', message?.text],
@@ -159,10 +228,23 @@ export function classifyResumeEvidence(message, rules, classifyText) {
       const rule = rules.find((item) => item.kind === kind);
       const text =
         kind === 'attachment_sent' ? '您的附件简历 [attachment] 已发送给Boss' : rule.text;
-      return { kind, evidence: { version: 1, messageType, field, text } };
+      return classified(kind, { version: 1, messageType, field, text });
     }
   }
-  return null;
+  return unrelated();
+}
+
+// Existing module callers retain the nullable interface. Collector expressions
+// inject assessEvidence explicitly because this wrapper has a module dependency.
+export function classifyResumeEvidence(
+  message,
+  rules,
+  classifyText,
+  context = {},
+  assessEvidence = assessResumeEvidence,
+) {
+  const result = assessEvidence(message, rules, classifyText, context);
+  return result.status === 'classified' ? { kind: result.kind, evidence: result.evidence } : null;
 }
 
 export function classifyResumeMessage(
@@ -198,20 +280,35 @@ export function validateResumeEvidence(value) {
       value.text === '您的附件简历 [attachment] 已发送给Boss');
   const fields = ['version', 'messageType', 'field', 'text'];
   if (value?.version === 2) fields.push('bizType', 'bodyType', 'templateId', 'hyperLinkType');
+  if ([3, 4].includes(value?.version))
+    fields.push('bodyType', 'templateId', 'actionAid', 'annexType');
+  if (value?.version === 4) fields.push('extensionFormat', 'platformContract');
   if (
     !value ||
     typeof value !== 'object' ||
     Array.isArray(value) ||
     Object.keys(value).length !== fields.length ||
     Object.keys(value).some((key) => !fields.includes(key)) ||
-    ![1, 2].includes(value.version) ||
+    ![1, 2, 3, 4].includes(value.version) ||
     !Number.isSafeInteger(value.messageType) ||
     value.messageType < 1 ||
     value.messageType > 1000 ||
-    ![...RESUME_EVIDENCE_FIELDS, ...(value.version === 2 ? ['body.hyperLink.text'] : [])].includes(
-      value.field,
-    ) ||
+    !(
+      [3, 4].includes(value.version)
+        ? ['body.action']
+        : [...RESUME_EVIDENCE_FIELDS, ...(value.version === 2 ? ['body.hyperLink.text'] : [])]
+    ).includes(value.field) ||
     (value.field === 'none' ? value.messageType !== 4 || value.text !== '' : !validText) ||
+    ([3, 4].includes(value.version) &&
+      (value.text !== '附件简历请求已发送' ||
+        ['bodyType', 'templateId', 'actionAid'].some(
+          (field) => !Number.isSafeInteger(value[field]) || value[field] < 0 || value[field] > 1000,
+        ) ||
+        (value.annexType !== null && ![0, 1].includes(value.annexType)))) ||
+    (value.version === 4 &&
+      (value.extensionFormat !== 'opaque_string' ||
+        value.platformContract !== BOSS_ACTION40_PLATFORM_CONTRACT ||
+        value.annexType !== null)) ||
     (value.version === 2 &&
       ['bizType', 'bodyType', 'templateId', 'hyperLinkType'].some(
         (field) =>
@@ -229,8 +326,19 @@ export function resumeEvidenceMeaning(summary, value) {
   const observation = { meaning: RESUME_MEANING.OBSERVATION, target: null };
   if (!rule.target || evidence?.field === 'none')
     return { status: 'observation_only', ...observation };
-  const shapeMatches =
-    evidence?.version === 2
+  const shapeMatches = [3, 4].includes(evidence?.version)
+    ? rule.kind === 'request_sent' &&
+      evidence.messageType === 1 &&
+      evidence.field === 'body.action' &&
+      evidence.bodyType === 4 &&
+      evidence.templateId === 1 &&
+      evidence.actionAid === 40 &&
+      (evidence.annexType === null || evidence.annexType === 0) &&
+      (evidence.version === 3 ||
+        (evidence.extensionFormat === 'opaque_string' &&
+          evidence.platformContract === BOSS_ACTION40_PLATFORM_CONTRACT &&
+          evidence.annexType === null))
+    : evidence?.version === 2
       ? (rule.kind === 'attachment_sent' &&
           evidence.messageType === 3 &&
           evidence.field === 'body.hyperLink.text' &&

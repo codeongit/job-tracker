@@ -106,7 +106,9 @@ DOM 仅接受带稳定 `data-message-id` 和 `data-message-time` 的白名单系
 
 历史接口的精确系统文案“附件简历请求已发送”仍表示简历已发送。`type=4 / bizType=317 / body.type=16 / body.style=3 / body.templateId=1` 也用于岗位卡片，不能仅凭模板、单文章或发送方关系证明简历发送；普通卡片只存档。仅 [D047](../../docs/adr/0047-boss-explicit-system-confirmations.md) 中明确结构与精确文案共同证明的类型 4 查看系统消息可形成接收确认；链接发送确认同样须满足已核实的固定字段与结构。
 
-私有快照/批次 v6、历史检查点 v4 支持 `resumeEvidence` v2：消息类型、白名单系统字段路径、固定状态文案及最小结构判别字段，附件文件名统一替换为 `[attachment]`。普通卡片使用 `field: none` 和空文案。旧快照 v1–v5、检查点 v1–v3 仍可读取，升级旧观察时默认依据为空，不改变原观察 ID、类别或已作出的人工决定；旧容器不得装入 v2 依据，缺依据不能被升级为可信发送或接收材料。
+[D048](../../docs/adr/0048-boss-action-resume-confirmation.md) 补充动作型发送确认：仅数字 `type=1 / body.type=4 / body.templateId=1 / body.action.aid=40`，且扩展缺省或明确为非作品集时产生发送含义。`extend` 缺省、null、空串或合法 JSON 对象缺少 `annexType` 记为 null，明确数字 0 记为 0；数字 1 是作品集，其他值和无效扩展均不确认。该系统文案由平台动作转换生成，普通 type 1 聊天或引用文字、旧 v1/v2 type 1 依据不足。
+
+私有快照/批次 v7、历史检查点 v5 支持 `resumeEvidence` v3：动作依据只包含 `version`、`messageType`、`field`、`text`、`bodyType`、`templateId`、`actionAid`、`annexType` 八个字段，不保留原始扩展串。v2 继续保存白名单系统字段路径及最小结构判别字段，附件文件名统一替换为 `[attachment]`。普通卡片使用 `field: none` 和空文案。旧快照/批次 v1–v6、检查点 v1–v4 仍可读取，不改变原观察 ID、类别或已作出的人工决定；旧容器不得装入新版依据，缺依据不能被升级为可信发送或接收材料。所有业务简历观察在服务消费时重验同观察内的语义和归属。
 
 ## 文件与安全
 
@@ -130,3 +132,7 @@ pnpm test
 ```
 
 测试不操作真实浏览器。真实小规模验收顺序是：显式执行一次 `start` 并登录，切换到其他标签或应用后执行 `resume` 与 `check`；关闭任务标签后确认自动命令只暂停、不重建，再由用户显式运行 `recover-page`，最后按需执行 `run --history-requests 2 --dom-limit 0 --detail-limit 1`。DOM 规则另行小规模验收，在验收完成前保持 `--dom-limit 0` 且不创建启用策略。
+
+## 转换版本与不透明扩展（D049）
+
+0.10.21 使用语义依据 v4、私有快照/批次 v8、历史检查点 v6。解释不透明动作前只读已加载公开脚本 URL，版本变化时保留未支持原因。字段、版本门槛及源码核对边界见 [保存规则](SAVE_RULES.md#转换版本与不透明扩展d049) 和 [D049](../../docs/adr/0049-boss-versioned-opaque-action-evidence.md)。

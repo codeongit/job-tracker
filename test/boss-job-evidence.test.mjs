@@ -181,7 +181,7 @@ test('evidence projections and stable identities retain baseline outputs across 
   assert.deepEqual(
     Object.fromEntries(
       Object.keys(V5_BATCH_GOLDEN).map((key) => {
-        assert.equal(outputs[key].version, 6);
+        assert.equal(outputs[key].version, 8);
         // Preserve the independently recorded v5 output, allowing only the
         // new wire header and its protocol-bound batch digest. Event/fact IDs,
         // evidence and every other field still match the original golden.

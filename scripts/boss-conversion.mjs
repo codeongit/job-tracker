@@ -251,7 +251,23 @@ export function createEvents(
   });
 }
 
-export function createResumeEvents(envelope, { sourceSequence, evidenceDate = '' }) {
+export function createResumeEvents(
+  envelope,
+  { sourceSequence, evidenceDate = '', observationIds = null },
+) {
+  let observations = envelope.resume.observations;
+  if (observationIds !== null) {
+    if (
+      !Array.isArray(observationIds) ||
+      new Set(observationIds).size !== observationIds.length ||
+      observationIds.some((id) => typeof id !== 'string' || !/^[a-f0-9]{64}$/.test(id))
+    )
+      integrationFail('BOSS_RESUME_OBSERVATION_SCOPE_INVALID');
+    const selected = new Set(observationIds);
+    observations = observations.filter((observation) => selected.has(observation.id));
+    if (new Set(observations.map((observation) => observation.id)).size !== selected.size)
+      integrationFail('BOSS_RESUME_OBSERVATION_SCOPE_INVALID');
+  }
   const rows = new Map(resolveJobRows(envelope).map((row) => [row.record.key, row]));
   const associatedJobs = new Map();
   for (const association of envelope.jobs.associations) {
@@ -259,7 +275,7 @@ export function createResumeEvents(envelope, { sourceSequence, evidenceDate = ''
       associatedJobs.set(association.conversationKey, new Set());
     associatedJobs.get(association.conversationKey).add(association.jobId);
   }
-  const events = envelope.resume.observations
+  const events = observations
     .filter(
       (observation) =>
         !evidenceDate || shanghaiDay(new Date(observation.platformTime)) === evidenceDate,

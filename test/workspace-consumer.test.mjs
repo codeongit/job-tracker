@@ -10,7 +10,7 @@ import {
   createWorkspaceInboxConsumer,
   workspaceConflictScope,
 } from '../scripts/workspace-consumer.mjs';
-import { initialWorkspace } from '../dist/workspace.js';
+import { initialWorkspace, createBackup, restoreWorkspace } from '../dist/workspace.js';
 import { bindBossAccount } from '../dist/boss-integration.js';
 import { bossApplicationId, bossFactId } from '../dist/source-identity.js';
 
@@ -22,6 +22,8 @@ function batch({
   sequence = 1,
   company = '合成公司',
   contact = '合成招聘者',
+  jobName = '合成岗位',
+  intent = 'create_or_link',
 } = {}) {
   const facts = {
     platform: 'boss',
@@ -32,7 +34,7 @@ function batch({
     uniqueId: 'friend-1-source-1',
     externalJobId: jobId,
     canonicalUrl: `https://www.zhipin.com/job_detail/${jobId}.html`,
-    jobName: '合成岗位',
+    jobName,
     company,
     contact,
     summary: '合成摘要',
@@ -42,7 +44,7 @@ function batch({
     receiptSource: '',
     nameSource: 'loaded_jobName',
     linkConfirmation: 'unverified',
-    intent: 'create_or_link',
+    intent,
   };
   const event = {
     ...Object.fromEntries(
@@ -87,7 +89,7 @@ function batch({
     events: [event],
   };
 }
-async function fixture(t, { bind = true, input = batch() } = {}) {
+async function fixture(t, { bind = true, input = batch(), workspace = initialWorkspace() } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'job-tracker-headless-import-'));
   const store = new WorkspaceStore(join(root, 'workspace'), { now: () => STAMP });
   const inbox = new BossInbox(join(root, 'inbox'));
@@ -95,7 +97,6 @@ async function fixture(t, { bind = true, input = batch() } = {}) {
     await store.close();
     await rm(root, { recursive: true, force: true });
   });
-  const workspace = initialWorkspace();
   if (bind)
     workspace.data = bindBossAccount(
       workspace.data,
@@ -111,6 +112,98 @@ async function fixture(t, { bind = true, input = batch() } = {}) {
   });
   await inbox.enqueue(input);
   return { root, store, inbox, input };
+}
+
+function reviewedOrdinaryWorkspace(input, { bound }) {
+  const workspace = initialWorkspace();
+  const row = input.events[0];
+  const factId = bossFactId({ ...row, platform: 'boss', accountNamespace: ACCOUNT });
+  const opportunityId = 'synthetic-employer-job';
+  workspace.data.opportunities.push({
+    id: opportunityId,
+    company: '合成用人公司',
+    role: '合成岗位',
+    contact: '合成招聘者',
+    platform: 'BOSS',
+    externalId: row.externalJobId,
+    url: row.canonicalUrl,
+    stage: '面试中',
+    resumeState: '未知',
+    notes: '保留合成人工备注',
+    createdAt: STAMP,
+    updatedAt: STAMP,
+  });
+  if (bound)
+    workspace.data.sourceBindings.push({
+      id: `boss-job-${ACCOUNT.slice('boss-geek:'.length)}-${row.externalJobId}`,
+      kind: 'opportunity',
+      platform: 'boss',
+      accountNamespace: ACCOUNT,
+      externalJobId: row.externalJobId,
+      canonicalUrl: row.canonicalUrl,
+      opportunityId,
+      autoFields: '',
+      createdAt: STAMP,
+      updatedAt: STAMP,
+    });
+  // Explicit old incident state: the company difference was rejected. Do not
+  // ask the implementation under test to manufacture its own regression fixture.
+  workspace.data.sourceEvents.push({
+    id: row.eventId,
+    batchId: input.batchId,
+    platform: 'boss',
+    accountNamespace: ACCOUNT,
+    conversationKey: row.conversationKey,
+    friendId: row.friendId,
+    friendSource: row.friendSource,
+    uniqueId: row.uniqueId,
+    externalJobId: row.externalJobId,
+    canonicalUrl: row.canonicalUrl,
+    opportunityId: '',
+    eventType: 'conversation_observed',
+    factId,
+    messageId: row.messageId,
+    messageDirection: row.messageDirection,
+    receiptStatus: row.receiptStatus,
+    receiptSource: row.receiptSource,
+    summary: row.summary,
+    timeLabel: row.timeLabel,
+    contact: row.contact,
+    company: row.company,
+    jobName: row.jobName,
+    nameSource: row.nameSource,
+    linkConfirmation: row.linkConfirmation,
+    observedAt: row.observedAt,
+    evidenceDate: '',
+    sourceSnapshot: `${input.source.snapshotName}#sha256:${input.source.snapshotSha256}`,
+    sourceSequence: String(row.sourceSequence),
+    status: 'review',
+    importPolicy: input.policy.id,
+    appliedAtSource: '',
+    createdAt: STAMP,
+  });
+  workspace.data.sourceFacts.push({
+    id: factId,
+    platform: 'boss',
+    accountNamespace: ACCOUNT,
+    conversationKey: row.conversationKey,
+    messageId: row.messageId,
+    factType: 'message_observed',
+    deletedAt: '',
+  });
+  workspace.data.sourceApplications.push({
+    id: bossApplicationId(factId),
+    factId,
+    opportunityId: '',
+    ruleVersion: 'boss-application-v13',
+    action: 'conversation_observed',
+    status: 'review',
+    reason: 'identity_conflict',
+    appliedAt: '',
+    updatedAt: STAMP,
+    deletedAt: '',
+  });
+  return workspace;
 }
 
 test('来源事实冲突通过应用关系归属到岗位，不遗漏来源依赖隔离', () => {
@@ -145,6 +238,130 @@ test('无需网页的队列消费在正式提交后回执，重复执行不重�
   assert.equal((await store.read()).workspace.data.opportunities.length, 1);
   assert.equal((await consumer.run()).processed, 0);
   assert.equal((await store.read()).revision, 2);
+});
+
+test('普通资料旧review及processed回执在本机重评，恢复后同材料消费保持稳定', async (t) => {
+  for (const bound of [true, false]) {
+    for (const complete of [true, false]) {
+      await t.test(
+        `${bound ? '已有绑定' : '未绑定'} / ${complete ? '完整标题' : '缺标题'}`,
+        async (t) => {
+          const input = batch({
+            company: '合成招聘方',
+            jobName: complete ? '合成岗位' : '',
+            intent: complete ? 'create_or_link' : 'review',
+            messageId: `ordinary-reviewed-${bound}-${complete}`,
+          });
+          const workspace = reviewedOrdinaryWorkspace(input, { bound });
+          const { store, inbox } = await fixture(t, { input, workspace });
+          const before = await store.read();
+          const oldBackup = createBackup(before.workspace);
+          const evidence = structuredClone(before.workspace.data.sourceEvents);
+          const facts = structuredClone(before.workspace.data.sourceFacts);
+          const opportunities = structuredClone(before.workspace.data.opportunities);
+          await inbox.acknowledge(input.batchId, {
+            format: 'job-tracker-boss-receipt',
+            version: 2,
+            batchId: input.batchId,
+            workspaceSourceId: before.workspaceId,
+            status: 'processed',
+            processedAt: STAMP,
+            counts: { added: 0, linked: 0, observed: 0, reviewed: 1, skipped: 0 },
+            errorCode: '',
+          });
+          const receipt = await inbox.readReceipt(input.batchId, before.workspaceId);
+          const consumer = createWorkspaceInboxConsumer({
+            workspaceStore: store,
+            inbox,
+            now: () => STAMP,
+          });
+          const result = await consumer.run();
+          assert.deepEqual(result.isolated, []);
+          assert.equal(result.processed, 1);
+          assert.equal(result.waiting, 0);
+          const after = await store.read();
+          const application = after.workspace.data.sourceApplications[0];
+          assert.equal(application.status, complete ? 'applied' : 'no_effect');
+          assert.equal(application.opportunityId, 'synthetic-employer-job');
+          if (!complete)
+            assert.equal(
+              application.reason,
+              bound ? 'bound_job_details_available' : 'existing_job_details_available',
+            );
+          assert.deepEqual(after.workspace.data.opportunities, opportunities);
+          assert.deepEqual(after.workspace.data.sourceEvents, evidence);
+          assert.deepEqual(after.workspace.data.sourceFacts, facts);
+          assert.deepEqual(await inbox.readReceipt(input.batchId, before.workspaceId), receipt);
+          await consumer.run();
+          assert.equal((await store.read()).revision, after.revision);
+          assert.deepEqual((await store.read()).workspace, after.workspace);
+
+          const restored = restoreWorkspace(after.workspace, oldBackup, 'snapshot');
+          await store.execute({
+            commandId: 'restore-synthetic-reviewed-material',
+            expectedRevision: after.revision,
+            type: 'commit_workspace',
+            payload: { workspace: restored, reason: '合成恢复旧资料核对项' },
+          });
+          const restoredState = await store.read();
+          assert.equal(restoredState.workspace.data.sourceApplications[0].status, 'review');
+          const restoredRun = await consumer.run();
+          assert.deepEqual(restoredRun.isolated, []);
+          const replayed = await store.read();
+          if (bound) {
+            assert.equal(restoredRun.processed, 1);
+            assert.equal(replayed.revision, restoredState.revision + 1);
+            assert.deepEqual(replayed.workspace.data, after.workspace.data);
+          } else {
+            assert.equal(restoredRun.waiting, 1);
+            assert.equal(replayed.workspace.data.sourceApplications[0].status, 'review');
+            assert.equal(replayed.workspace.data.sourceApplications[0].reason, 'identity_conflict');
+            assert.equal(replayed.workspace.data.sourceApplications[0].opportunityId, '');
+            assert.deepEqual(
+              replayed.workspace.data.sourceBindings,
+              restoredState.workspace.data.sourceBindings,
+            );
+            assert.ok(
+              replayed.workspace.data.sourceBindings.find((row) => row.kind === 'opportunity')
+                .deletedAt,
+            );
+            assert.deepEqual(replayed.workspace.data.opportunities, opportunities);
+            assert.deepEqual(replayed.workspace.data.sourceEvents, evidence);
+            assert.deepEqual(replayed.workspace.data.sourceFacts, facts);
+          }
+          await consumer.run();
+          assert.equal((await store.read()).revision, replayed.revision);
+          assert.deepEqual((await store.read()).workspace, replayed.workspace);
+          if (!bound) {
+            const fresh = batch({
+              sequence: 2,
+              company: '合成招聘方',
+              jobName: complete ? '合成岗位' : '',
+              intent: complete ? 'create_or_link' : 'review',
+              messageId: `fresh-after-deleted-binding-${complete}`,
+            });
+            await inbox.enqueue(fresh);
+            const freshRun = await consumer.run();
+            assert.deepEqual(freshRun.isolated, []);
+            const blocked = await store.read();
+            assert.equal(blocked.workspace.data.sourceApplications.at(-1).status, 'review');
+            assert.equal(
+              blocked.workspace.data.sourceApplications.at(-1).reason,
+              'identity_conflict',
+            );
+            assert.deepEqual(blocked.workspace.data.opportunities, opportunities);
+            assert.deepEqual(
+              blocked.workspace.data.sourceBindings,
+              replayed.workspace.data.sourceBindings,
+            );
+            await consumer.run();
+            assert.equal((await store.read()).revision, blocked.revision);
+            assert.deepEqual((await store.read()).workspace, blocked.workspace);
+          }
+        },
+      );
+    }
+  }
 });
 
 test('缺少稳定消息身份的批次只保存待补证据，不创建岗位或语义事实', async (t) => {

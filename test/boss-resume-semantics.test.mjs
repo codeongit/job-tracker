@@ -344,7 +344,7 @@ test('批次证明未知版本字段、摘要矛盾均拒绝，正文不进入�
   const legacy = delivery({ version: 4 });
   legacy.events[0].resumeEvidence = SENT;
   assert.throws(() => validateBossBatch(legacy));
-  assert.throws(() => validateBossBatch({ ...delivery(), version: 7 }));
+  assert.throws(() => validateBossBatch({ ...delivery(), version: 9 }));
 });
 
 test('同事实候选顺序不改变结果，旧缺证明不能否定完整新证明，完整矛盾保守等待', () => {
@@ -562,7 +562,7 @@ test('转换旧 type4 request_sent 为普通卡片证明；旧 type5 不合成�
   assert.deepEqual(oldCard.resumeEvidence, CARD);
   assert.equal(oldSystem.resumeEvidence, null);
   const verified = createResumeBatch(snapshot(envelope({ proof: SENT })), 2);
-  assert.equal(verified.version, 6);
+  assert.equal(verified.version, 8);
   assert.deepEqual(verified.events[0].resumeEvidence, SENT);
   assert.equal(verified.events[0].eventId, oldSystem.eventId);
   const incremental = createIncrementalBatch(

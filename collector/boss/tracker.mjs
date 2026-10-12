@@ -12,6 +12,7 @@ import {
   disconnect as disconnectBrowser,
 } from './cdp-browser.mjs';
 import { accountExpression, expression, toSnapshot } from './extract.mjs';
+import { readLoadedPlatformReference } from './platform-reference.mjs';
 import {
   latest,
   lock,
@@ -505,7 +506,7 @@ function completedDetailCursor(input, collected, priorCursor) {
 
 function currentDetailSummary(envelope, runtime, now = new Date().toISOString()) {
   const input =
-    envelope && [2, 3, 4, 5, 6].includes(envelope.version)
+    envelope && [2, 3, 4, 5, 6, 7, 8].includes(envelope.version)
       ? fairDetailInputs(envelope, { limit: 1, runtime, now })
       : null;
   return detailRuntimeSummary(runtime, {
@@ -570,7 +571,7 @@ async function withHistoryRequestUsage(options, operation) {
       evaluate: (...args) => {
         // Issued requests with an unknown outcome still consume one action.
         // Keep the count independent of subsequent local persistence failures.
-        used += 1;
+        if (args[2]?.kind !== 'platform_reference') used += 1;
         return evaluate(...args);
       },
     });
@@ -597,9 +598,13 @@ async function collectResumeOperation({
   jobId = null,
   reportOperation = (operation) => operation(),
   evaluate = evaluateBound,
+  readPlatformReference = readLoadedPlatformReference,
 }) {
   const priorCheckpoint = await loadResumeCheckpoint(directory);
-  if (priorCheckpoint?.observations.length) {
+  if (
+    priorCheckpoint &&
+    (priorCheckpoint.observations.length || priorCheckpoint.unresolved.length)
+  ) {
     const recovered = toResumeHistoryResult(
       {
         ok: true,
@@ -653,12 +658,18 @@ async function collectResumeOperation({
       cursor: runtime.cursors.resume,
       verification: preflight.report,
     };
+  const reference =
+    maxRequests >= 2
+      ? await readPlatformReference({ connection, evaluate })
+      : { platformContract: null };
   const scan = await runResumeHistoryRequests({
     targets: fair.targets,
     pages,
     maxRequests,
+    platformContract: reference.platformContract,
     requestDelayMs: 3000,
     initialObservations: priorCheckpoint?.observations ?? [],
+    initialUnresolved: priorCheckpoint?.unresolved ?? [],
     startConversationKey,
     startPage,
     knownMessageIds: [
@@ -673,11 +684,11 @@ async function collectResumeOperation({
           messageId: item.watermark,
         })),
     ],
-    execute: async (expression) => {
+    execute: async (expression, metadata) => {
       // The page may already have issued this platform request when CDP drops.
       // Never replay it inside the reconnect loop: the in-page XHR aborts at
       // 15 seconds, while the next scheduled round resumes the durable page.
-      const payload = await evaluate(connection, expression);
+      const payload = await evaluate(connection, expression, metadata);
       if (!payload || typeof payload !== 'object') throw new Error('HISTORY_RESPONSE_INVALID');
       return payload;
     },
@@ -718,6 +729,7 @@ async function collectChangedResumeOperation({
   betweenTargetsDelayMs = 3000,
   reportOperation = (operation) => operation(),
   evaluate = evaluateBound,
+  readPlatformReference = readLoadedPlatformReference,
 }) {
   const history = createHistoryCommit({
     directory,
@@ -759,6 +771,7 @@ async function collectChangedResumeOperation({
       verification: preflight.report,
     };
   let used = 0,
+    reference = null,
     coverage = null,
     partial = false,
     error = null;
@@ -798,6 +811,7 @@ async function collectChangedResumeOperation({
       continue;
     }
     const startPage = checkpoint?.nextPage ?? task.page;
+    reference ??= await readPlatformReference({ connection, evaluate });
     const scan = await runResumeHistoryRequests({
       targets: [
         {
@@ -808,10 +822,12 @@ async function collectChangedResumeOperation({
       ],
       pages: 2,
       maxRequests: maxRequests - used,
+      platformContract: reference.platformContract,
       requestDelayMs,
       startConversationKey: item.key,
       startPage,
       initialObservations: checkpoint?.observations ?? [],
+      initialUnresolved: checkpoint?.unresolved ?? [],
       initialHead: checkpoint?.head ?? task.head,
       knownMessageIds: item.watermark
         ? [{ conversationKey: item.key, messageId: item.watermark }]
@@ -872,7 +888,7 @@ async function settleResumeCheckpoint(directory, scanned) {
     return;
   }
   await saveResumeCheckpoint(directory, {
-    version: 2,
+    version: 6,
     capturedAt: new Date().toISOString(),
     nextConversationKey: scanned.continuation.conversationKey,
     nextPage: scanned.continuation.page,
@@ -942,7 +958,7 @@ export async function main(argv = process.argv.slice(2)) {
         loadRuntimeState(directory),
       ]);
       const dom =
-        saved && [2, 3, 4, 5, 6].includes(saved.envelope.version)
+        saved && [2, 3, 4, 5, 6, 7, 8].includes(saved.envelope.version)
           ? await domSupplementStatus(directory, saved.envelope)
           : null;
       console.log(
@@ -1138,7 +1154,8 @@ export async function main(argv = process.argv.slice(2)) {
     const commandStartedAt = runStartedAt ?? new Date().toISOString();
 
     if (mode === 'enrich') {
-      if (![2, 3, 4, 5, 6].includes(saved.envelope.version)) throw new Error('V2_CHECK_REQUIRED');
+      if (![2, 3, 4, 5, 6, 7, 8].includes(saved.envelope.version))
+        throw new Error('V2_CHECK_REQUIRED');
       const identityCheck = await retryReport(() =>
         resumeBrowser(activeConnection, identityOptions),
       );
@@ -1272,7 +1289,8 @@ export async function main(argv = process.argv.slice(2)) {
     }
 
     if (mode === 'resume-scan') {
-      if (![2, 3, 4, 5, 6].includes(saved.envelope.version)) throw new Error('V2_CHECK_REQUIRED');
+      if (![2, 3, 4, 5, 6, 7, 8].includes(saved.envelope.version))
+        throw new Error('V2_CHECK_REQUIRED');
       const scanned = await collectResume({
         directory,
         connection: activeConnection,
@@ -1425,7 +1443,8 @@ export async function main(argv = process.argv.slice(2)) {
         ? createHash('sha256').update(JSON.stringify(legacyCheckpoint)).digest('hex')
         : null;
       if (
-        legacyCheckpoint?.observations.length &&
+        legacyCheckpoint &&
+        (legacyCheckpoint.observations.length || legacyCheckpoint.unresolved.length) &&
         legacyDigest !== runtime.history.legacyCheckpointDigest
       ) {
         const recovered = toResumeHistoryResult(
@@ -1460,7 +1479,7 @@ export async function main(argv = process.argv.slice(2)) {
         error: null,
         cursor: runtime.cursors.resume,
       };
-      if ([2, 3, 4, 5, 6].includes(envelope.version) && historyRequests > 0)
+      if ([2, 3, 4, 5, 6, 7, 8].includes(envelope.version) && historyRequests > 0)
         history =
           historyMode === 'backfill'
             ? await collectResume({
@@ -1508,7 +1527,7 @@ export async function main(argv = process.argv.slice(2)) {
         checkpointPending: false,
         nextAllowedAt: null,
       };
-      if (!history.partial && [2, 3, 4, 5, 6].includes(envelope.version) && domLimit > 0) {
+      if (!history.partial && [2, 3, 4, 5, 6, 7, 8].includes(envelope.version) && domLimit > 0) {
         dom = await collectDomSupplement({
           directory,
           envelope,
@@ -1558,7 +1577,7 @@ export async function main(argv = process.argv.slice(2)) {
       if (
         !history.partial &&
         !dom.partial &&
-        [2, 3, 4, 5, 6].includes(envelope.version) &&
+        [2, 3, 4, 5, 6, 7, 8].includes(envelope.version) &&
         detailLimit > 0
       ) {
         const detailAt = new Date().toISOString();

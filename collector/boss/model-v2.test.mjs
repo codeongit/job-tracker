@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { collectDetailTitleEvidence } from './detail-enrich.mjs';
 import { detailInputs } from './tracker.mjs';
 import {
@@ -14,6 +15,7 @@ import {
   upgradeEnvelope,
   validateEnvelopeV2,
   validateCurrentEnvelope,
+  validateEnvelope,
   validateLoadedSnapshotV2,
 } from './model-v2.mjs';
 
@@ -132,22 +134,99 @@ test('legacy v2 envelopes upgrade explicitly and without changing their safe sha
   const legacy = { ...structuredClone(current), version: 2 };
   assert.equal(validateEnvelopeV2(legacy).version, 2);
   const upgraded = upgradeEnvelope(legacy);
-  assert.equal(upgraded.version, 6);
+  assert.equal(upgraded.version, 8);
   assert.deepEqual({ ...upgraded, version: 2 }, legacy);
   const next = compareLoadedSnapshotsV2(legacy, snapshot([row('a')], 1)).envelope;
-  assert.equal(next.version, 6);
+  assert.equal(next.version, 8);
   assert.equal(legacy.version, 2);
 });
 
-test('v3-v5 快照读取与显式升级仅改变外层版本，不获得新的语义证据', () => {
+test('v3-v7 快照读取与显式升级仅改变外层版本，不获得新的语义证据', () => {
   const current = compareLoadedSnapshotsV2(null, snapshot([row('a')], 0)).envelope;
-  for (const version of [3, 4, 5]) {
+  for (const version of [3, 4, 5, 6, 7]) {
     const legacy = { ...structuredClone(current), version };
     const upgraded = upgradeEnvelope(legacy);
-    assert.equal(upgraded.version, 6);
+    assert.equal(upgraded.version, 8);
     assert.deepEqual({ ...upgraded, version }, legacy);
     assert.equal(legacy.version, version);
   }
+});
+
+test('opaque action proof requires snapshot v8; older versions remain readable without promoted trust', () => {
+  const record = row('a');
+  const envelope = compareLoadedSnapshotsV2(null, snapshot([record], 0)).envelope;
+  const observation = {
+    conversationKey: record.key,
+    platformIdentity: record.platformIdentity,
+    messageId: 'synthetic-action-40',
+    direction: 'system',
+    messageType: 1,
+    kind: 'request_sent',
+    platformTime: at(0),
+    externalJobId: null,
+    observedAt: at(0),
+    source: 'geek_history_status_message',
+    status: 'review',
+    attribution: null,
+    resumeEvidence: {
+      version: 4,
+      messageType: 1,
+      field: 'body.action',
+      text: '附件简历请求已发送',
+      bodyType: 4,
+      templateId: 1,
+      actionAid: 40,
+      annexType: null,
+      extensionFormat: 'opaque_string',
+      platformContract: 'boss-action40-v5550-4d4a6ac8',
+    },
+  };
+  observation.id = createHash('sha256')
+    .update(
+      JSON.stringify([
+        'boss-v2-evidence',
+        'resume_observation',
+        record.key,
+        observation.messageId,
+        'system',
+        1,
+        'request_sent',
+        at(0),
+        null,
+        'geek_history_status_message',
+      ]),
+    )
+    .digest('hex');
+  envelope.resume.observations.push(observation);
+  assert.equal(validateCurrentEnvelope(envelope).version, 8);
+  for (const version of [5, 6, 7])
+    assert.throws(() => validateEnvelope({ ...envelope, version }), /requires envelope v8/);
+  const v3 = structuredClone(envelope);
+  v3.version = 7;
+  v3.resume.observations[0].resumeEvidence.version = 3;
+  delete v3.resume.observations[0].resumeEvidence.extensionFormat;
+  delete v3.resume.observations[0].resumeEvidence.platformContract;
+  assert.equal(validateEnvelope(v3).version, 7);
+  assert.throws(() => validateEnvelope({ ...v3, version: 6 }), /requires envelope v7/);
+  const upgraded = upgradeEnvelope(v3);
+  assert.deepEqual(upgraded.resume.observations, v3.resume.observations);
+  assert.equal(upgraded.resume.observations[0].id, observation.id);
+  const v2 = structuredClone(v3);
+  v2.version = 6;
+  v2.resume.observations[0].resumeEvidence = {
+    version: 2,
+    messageType: 1,
+    field: 'body.text',
+    text: '附件简历请求已发送',
+    bizType: null,
+    bodyType: null,
+    templateId: null,
+    hyperLinkType: null,
+  };
+  assert.equal(validateEnvelope(v2).version, 6);
+  assert.throws(() => validateEnvelope({ ...v2, version: 5 }), /requires envelope v6/);
+  assert.deepEqual(upgradeEnvelope(v2).resume.observations, v2.resume.observations);
+  assert.throws(() => validateEnvelope({ ...envelope, version: 9 }), /unsupported version/);
 });
 
 test('message IDs gate receipt transitions', () => {

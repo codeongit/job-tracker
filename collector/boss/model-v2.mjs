@@ -276,7 +276,7 @@ function associationId(conversationKey, jobId) {
 
 function emptyEnvelope(snapshot) {
   return {
-    version: 6,
+    version: 8,
     scope: V2_SCOPE,
     accountNamespace: snapshot.accountNamespace,
     createdAt: snapshot.capturedAt,
@@ -548,6 +548,10 @@ function validateEnvelopeVersion(input, allowedVersions) {
       const proof = validateResumeEvidence(record.resumeEvidence);
       if (proof?.version === 2 && envelope.version < 6)
         fail('resume evidence version requires envelope v6');
+      if (proof?.version === 3 && envelope.version < 7)
+        fail('action resume evidence requires envelope v7');
+      if (proof?.version === 4 && envelope.version < 8)
+        fail('opaque action resume evidence requires envelope v8');
       if (proof && proof.messageType !== record.messageType)
         fail('resume evidence message type is inconsistent');
     } else if (Object.hasOwn(record, 'resumeEvidence'))
@@ -703,20 +707,20 @@ export function validateEnvelopeV2(input) {
   return validateEnvelopeVersion(input, [2]);
 }
 
-/** Validate the current v6 envelope format. */
+/** Validate the current v8 envelope format. */
 export function validateCurrentEnvelope(input) {
-  return validateEnvelopeVersion(input, [6]);
+  return validateEnvelopeVersion(input, [8]);
 }
 
 /** Read supported versions without upgrading a read-only operation. */
 export function validateEnvelope(input) {
-  return validateEnvelopeVersion(input, [2, 3, 4, 5, 6]);
+  return validateEnvelopeVersion(input, [2, 3, 4, 5, 6, 7, 8]);
 }
 
 /** Explicit, shape-preserving adapter used before every mutation or new commit. */
 export function upgradeEnvelope(input) {
   const envelope = validateEnvelope(input);
-  envelope.version = 6;
+  envelope.version = 8;
   for (const observation of envelope.resume.observations) {
     observation.attribution ??= null;
     observation.resumeEvidence ??= null;

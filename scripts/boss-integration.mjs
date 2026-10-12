@@ -118,7 +118,7 @@ function runId() {
   return `boss-run-${randomBytes(16).toString('hex')}`;
 }
 
-async function withProducerLock(inbox, id, task) {
+export async function withProducerLock(inbox, id, task) {
   await inbox.initialize();
   const path = join(inbox.root, PRODUCER_LOCK);
   let handle;
@@ -518,7 +518,7 @@ export function validateTrackerEnvelope(input) {
     'resume',
   ]);
   if (
-    ![2, 3, 4, 5, 6].includes(value.version) ||
+    ![2, 3, 4, 5, 6, 7, 8].includes(value.version) ||
     value.scope !== 'loaded-chat-list' ||
     !requiredString(value.accountNamespace, { max: 75, pattern: ACCOUNT_NAMESPACE }) ||
     !isIso(value.createdAt) ||
@@ -580,6 +580,8 @@ export function validateTrackerEnvelope(input) {
       if (
         proof &&
         ((value.version < 6 && proof.version === 2) ||
+          (value.version < 7 && proof.version === 3) ||
+          (value.version < 8 && proof.version === 4) ||
           proof.messageType !== observation.messageType ||
           (proof.field === 'none'
             ? !['request_sent', 'sent_candidate', 'resume_card_other'].includes(observation.kind)

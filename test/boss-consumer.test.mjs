@@ -1555,7 +1555,7 @@ test('同批跨岗位重复先扫描全部候选，事件顺序不影响拦截�
     );
     assert.equal(one.status, 'review');
     assert.equal(one.reason, 'attribution_message_multiple_jobs');
-    assert.equal(one.ruleVersion, 'boss-application-v13');
+    assert.equal(one.ruleVersion, 'boss-application-v16');
     assert.equal(data.opportunities.find((o) => o.externalId === JOB_ID).resumeState, '未知');
     assert.equal(
       data.opportunities.find((o) => o.externalId === 'second-job').resumeState,
@@ -1697,7 +1697,7 @@ test('缺少消息岗位身份时依据会话应用新消息和历史等待项�
     applied.sourceApplications.at(-1).reason,
     'resume_status_advanced_conversation_association',
   );
-  assert.equal(applied.sourceApplications.at(-1).ruleVersion, 'boss-application-v13');
+  assert.equal(applied.sourceApplications.at(-1).ruleVersion, 'boss-application-v16');
   assert.deepEqual(applySynthetic(applied, input), applied);
   const restored = structuredClone(waiting);
   restored.sourceFacts.pop();
@@ -1767,7 +1767,17 @@ test('缺标题普通观察只接受完整且唯一的现有精确绑定，不�
   assert.equal(result.sourceApplications.at(-1).status, 'no_effect');
   assert.deepEqual(result.opportunities, initial.opportunities);
   assert.deepEqual(result.sourceBindings, initial.sourceBindings);
-  for (const overrides of [{ company: '另一公司' }, { jobName: '另一岗位' }]) {
+  const recruiter = event({
+    jobName: '',
+    intent: 'review',
+    company: '另一招聘方',
+    messageId: 'recruiter-missing-title',
+  });
+  const reused = applyBossBatch(initial, batch([recruiter]), options).data;
+  assert.equal(reused.sourceApplications.at(-1).status, 'no_effect');
+  assert.equal(reused.sourceApplications.at(-1).reason, 'bound_job_details_available');
+  assert.deepEqual(reused.opportunities, initial.opportunities);
+  for (const overrides of [{ jobName: '另一岗位' }]) {
     const rejected = applyBossBatch(
       initial,
       batch([event({ jobName: '', intent: 'review', messageId: 'missing-title', ...overrides })]),
@@ -1803,6 +1813,195 @@ test('缺标题普通观察只接受完整且唯一的现有精确绑定，不�
     applyBossBatch(unbound, batch([incoming]), options).data.sourceApplications.at(-1).status,
     'no_effect',
   );
+});
+
+test('普通完整和缺标题资料按同一精确身份复用；无详情招聘方不覆盖既有用人公司', () => {
+  const options = { workspaceSourceId: SOURCE_ID, stamp: STAMP };
+  const details = batch([event({ company: '合成招聘方', messageId: 'detail-seed' })]);
+  details.version = 4;
+  details.events[0].jobDetails = {
+    jobId: JOB_ID,
+    canonicalUrl: JOB_URL,
+    company: '合成用人公司',
+    jobName: '合成岗位',
+    source: 'detail_page_title',
+  };
+  details.batchId = `boss-batch-${stableHash(bossBatchDigestInput(details))}`;
+  const initial = applyBossBatch(boundData(), details, options).data;
+  assert.equal(initial.opportunities[0].company, '合成用人公司');
+  for (const bound of [true, false]) {
+    for (const complete of [true, false]) {
+      const seeded = structuredClone(initial);
+      if (!bound)
+        seeded.sourceBindings = seeded.sourceBindings.filter((row) => row.kind === 'account');
+      const observation = event({
+        initial: false,
+        sequence: 2,
+        company: '另一合成招聘方',
+        jobName: complete ? '合成岗位' : '',
+        intent: complete ? 'create_or_link' : 'review',
+        messageId: `ordinary-${bound}-${complete}`,
+      });
+      const input = batch([observation], { initial: false, sequence: 2 });
+      const result = applyBossBatch(seeded, input, options).data;
+      const application = result.sourceApplications.at(-1);
+      assert.equal(application.status, complete ? 'applied' : 'no_effect');
+      assert.equal(application.opportunityId, seeded.opportunities[0].id);
+      if (!complete)
+        assert.equal(
+          application.reason,
+          bound ? 'bound_job_details_available' : 'existing_job_details_available',
+        );
+      assert.deepEqual(result.opportunities, seeded.opportunities);
+      assert.deepEqual(
+        result.sourceEvents.slice(0, seeded.sourceEvents.length),
+        seeded.sourceEvents,
+      );
+      assert.deepEqual(result.sourceFacts.slice(0, seeded.sourceFacts.length), seeded.sourceFacts);
+      assert.equal(result.sourceEvents.at(-1).company, '另一合成招聘方');
+      assert.equal(result.sourceEvents.at(-1).jobName, complete ? '合成岗位' : '');
+      assert.equal(result.sourceEvents.at(-1).id, observation.eventId);
+      const binding = result.sourceBindings.find((row) => row.kind === 'opportunity');
+      assert.equal(binding.lastAutoCompany, bound ? '合成用人公司' : '');
+      if (!bound) assert.equal(binding.autoFields, '');
+      assert.deepEqual(applyBossBatch(result, input, options).data, result);
+    }
+  }
+});
+
+test('无详情普通资料的明确标题矛盾不能覆盖自动拥有的既有岗位名称', () => {
+  const options = { workspaceSourceId: SOURCE_ID, stamp: STAMP };
+  const initial = applyBossBatch(boundData(), batch([event()]), options).data;
+  const binding = initial.sourceBindings.find((row) => row.kind === 'opportunity');
+  assert.ok(binding.autoFields.split(',').includes('role'));
+  assert.equal(binding.lastAutoRole, initial.opportunities[0].role);
+  for (const company of ['合成公司', '另一合成招聘方']) {
+    const input = batch(
+      [
+        event({
+          company,
+          jobName: '另一明确岗位',
+          messageId: `auto-owned-role-conflict-${company}`,
+          initial: false,
+          sequence: 2,
+        }),
+      ],
+      { initial: false, sequence: 2 },
+    );
+    const result = applyBossBatch(initial, input, options).data;
+    assert.equal(result.sourceApplications.at(-1).status, 'review');
+    assert.deepEqual(result.opportunities, initial.opportunities);
+    assert.deepEqual(result.sourceBindings, initial.sourceBindings);
+  }
+  const equivalent = batch(
+    [event({ jobName: ' 合成岗位 ', messageId: 'equivalent-title', initial: false, sequence: 2 })],
+    { initial: false, sequence: 2 },
+  );
+  const reused = applyBossBatch(initial, equivalent, options).data;
+  assert.equal(reused.sourceApplications.at(-1).status, 'applied');
+  assert.deepEqual(reused.opportunities, initial.opportunities);
+  assert.deepEqual(reused.sourceBindings, initial.sourceBindings);
+});
+
+test('明确详情资料可更新自动拥有的公司和岗位名称，原聊天标题保持', () => {
+  const options = { workspaceSourceId: SOURCE_ID, stamp: STAMP };
+  const initial = applyBossBatch(boundData(), batch([event()]), options).data;
+  const input = batch(
+    [
+      event({
+        company: '合成招聘方',
+        jobName: '聊天旧标题',
+        messageId: 'detail-auto-owned-role',
+        initial: false,
+        sequence: 2,
+      }),
+    ],
+    { initial: false, sequence: 2 },
+  );
+  input.version = 4;
+  input.events[0].jobDetails = {
+    jobId: JOB_ID,
+    canonicalUrl: JOB_URL,
+    company: '合成用人公司',
+    jobName: '详情明确岗位',
+    source: 'detail_page_title',
+  };
+  input.batchId = `boss-batch-${stableHash(bossBatchDigestInput(input))}`;
+  const result = applyBossBatch(initial, input, options).data;
+  assert.equal(result.sourceApplications.at(-1).status, 'applied');
+  assert.equal(result.opportunities[0].role, '详情明确岗位');
+  assert.equal(result.opportunities[0].company, '合成用人公司');
+  const binding = result.sourceBindings.find((row) => row.kind === 'opportunity');
+  assert.equal(binding.lastAutoRole, '详情明确岗位');
+  assert.equal(binding.lastAutoCompany, '合成用人公司');
+  assert.equal(result.sourceEvents.at(-1).company, '合成招聘方');
+  assert.equal(result.sourceEvents.at(-1).jobName, '聊天旧标题');
+  assert.deepEqual(applyBossBatch(result, input, options).data, result);
+});
+
+test('普通完整和缺标题资料的已有绑定不能绕过重复目标、账号或岗位身份矛盾', () => {
+  const options = { workspaceSourceId: SOURCE_ID, stamp: STAMP };
+  const initial = applyBossBatch(boundData(), batch([event()]), options).data;
+  initial.sourceBindings.find((row) => row.kind === 'opportunity').autoFields = '';
+  for (const complete of [true, false]) {
+    const input = batch([
+      event({
+        company: '合成招聘方',
+        jobName: complete ? '合成岗位' : '',
+        intent: complete ? 'create_or_link' : 'review',
+        messageId: `bound-conflict-${complete}`,
+      }),
+    ]);
+    for (const change of [
+      (data) => {
+        data.opportunities.push({ ...data.opportunities[0], id: 'duplicate-live-job' });
+      },
+      (data) => {
+        data.opportunities.push({
+          ...data.opportunities[0],
+          id: 'duplicate-deleted-job',
+          deletedAt: STAMP,
+        });
+      },
+      (data) => {
+        data.sourceBindings.push({
+          ...data.sourceBindings.find((row) => row.kind === 'account'),
+          id: `boss-account-${OTHER_ACCOUNT.slice('boss-geek:'.length)}`,
+          accountNamespace: OTHER_ACCOUNT,
+        });
+        data.sourceBindings.push({
+          ...data.sourceBindings.find((row) => row.kind === 'opportunity'),
+          id: `boss-job-${OTHER_ACCOUNT.slice('boss-geek:'.length)}-${JOB_ID}`,
+          accountNamespace: OTHER_ACCOUNT,
+        });
+      },
+      (data) => {
+        data.opportunities[0].externalId = 'other-job';
+      },
+      (data) => {
+        data.opportunities[0].url = 'https://www.zhipin.com/job_detail/other-job.html';
+      },
+      (data) => {
+        data.opportunities[0].deletedAt = STAMP;
+      },
+    ]) {
+      const data = structuredClone(initial);
+      change(data);
+      const result = applyBossBatch(data, input, options).data;
+      assert.equal(result.sourceApplications.at(-1).status, 'review');
+      assert.deepEqual(result.opportunities, data.opportunities);
+      assert.deepEqual(result.sourceBindings, data.sourceBindings);
+    }
+  }
+  for (const observation of [
+    event({ jobName: '另一合成岗位', messageId: 'real-title-conflict' }),
+    event({ intent: 'review', messageId: 'legacy-nonempty-review' }),
+  ]) {
+    const result = applyBossBatch(initial, batch([observation]), options).data;
+    assert.equal(result.sourceApplications.at(-1).status, 'review');
+    assert.deepEqual(result.opportunities, initial.opportunities);
+    assert.deepEqual(result.sourceBindings, initial.sourceBindings);
+  }
 });
 
 test('人工忽略保留原始观察，重复消费、补证与恢复不应用，新消息继续处理', () => {
@@ -2128,10 +2327,15 @@ test('缺标题精确本机资料可建立非自动字段绑定；矛盾、跨�
   assert.equal(result.sourceBindings.at(-1).autoFields, '');
   assert.deepEqual(result.opportunities, seeded.opportunities);
   assert.deepEqual(applyBossBatch(result, incoming, options).data, result);
+  const recruiter = batch([
+    event({ jobName: '', intent: 'review', company: '另一招聘方', messageId: 'local-recruiter' }),
+  ]);
+  const reused = applyBossBatch(seeded, recruiter, options).data;
+  assert.equal(reused.sourceApplications.at(-1).status, 'no_effect');
+  assert.equal(reused.sourceApplications.at(-1).reason, 'existing_job_details_available');
+  assert.equal(reused.sourceBindings.at(-1).autoFields, '');
+  assert.deepEqual(reused.opportunities, seeded.opportunities);
   for (const change of [
-    (data) => {
-      data.opportunities[0].company = '矛盾公司';
-    },
     (data) => {
       data.opportunities[0].url = 'https://www.zhipin.com/job_detail/other.html';
     },
@@ -2200,18 +2404,24 @@ test('候选在观察卡片内核对；名称建议只用于导航，不能自�
   assert.deepEqual(bossWaitingReviewCandidates(other, application.id), []);
 });
 
-test('明确岗位资料矛盾展示来源公司和本机候选，不提供忽略等待项操作', async () => {
+test('明确详情资料冲突展示来源公司和本机候选，不提供忽略等待项操作', async () => {
   const { bossIntegrationView } = await import('../dist/settings-view.js');
   const options = { workspaceSourceId: SOURCE_ID, stamp: STAMP };
   const initial = applyBossBatch(boundData(), batch([event()]), options).data;
   initial.sourceBindings = initial.sourceBindings.filter((row) => row.kind === 'account');
-  const data = applyBossBatch(
-    initial,
-    batch([
-      event({ jobName: '', intent: 'review', company: '来源不同公司', messageId: 'contradiction' }),
-    ]),
-    options,
-  ).data;
+  const input = batch([
+    event({ jobName: '', intent: 'review', company: '来源不同公司', messageId: 'contradiction' }),
+  ]);
+  input.version = 4;
+  input.events[0].jobDetails = {
+    jobId: JOB_ID,
+    canonicalUrl: JOB_URL,
+    company: '',
+    jobName: '',
+    source: 'detail_page_conflict',
+  };
+  input.batchId = `boss-batch-${stableHash(bossBatchDigestInput(input))}`;
+  const data = applyBossBatch(initial, input, options).data;
   const html = bossIntegrationView({ available: true, applicationCounts: { review: 1 } }, { data });
   assert.match(html, /岗位资料不一致/);
   assert.match(html, /来源不同公司/);

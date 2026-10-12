@@ -502,7 +502,7 @@ function normalizeCheckpoint(value) {
 
   if (
     !value ||
-    ![1, 2, 3, 4].includes(value.version) ||
+    ![1, 2, 3, 4, 5, 6].includes(value.version) ||
     !iso(value.capturedAt) ||
     (value.nextConversationKey !== null &&
       !/^[a-f0-9]{64}$/.test(value.nextConversationKey ?? '')) ||
@@ -542,6 +542,8 @@ function normalizeCheckpoint(value) {
         validateAttributionEvidence(observation.attribution);
       const proof = validateResumeEvidence(observation.resumeEvidence);
       if (proof?.version === 2 && value.version < 4) throw new Error('RESUME_CHECKPOINT_INVALID');
+      if (proof?.version === 3 && value.version < 5) throw new Error('RESUME_CHECKPOINT_INVALID');
+      if (proof?.version === 4 && value.version < 6) throw new Error('RESUME_CHECKPOINT_INVALID');
       if (proof && proof.messageType !== observation.messageType)
         throw new Error('RESUME_CHECKPOINT_INVALID');
     } catch {

@@ -1,4 +1,5 @@
 import { parseBossJobUrl } from './boss-job-url.js';
+import { assessBossJobMaterials } from './boss-job-materials.js';
 import { validateBossBatch, bossEventDigestInput, bossBatchDigestInput } from './boss-batch.js';
 export { validateBossBatch } from './boss-batch.js';
 import {
@@ -199,7 +200,14 @@ function lastAutoField(field) {
   return `lastAuto${field[0].toUpperCase()}${field.slice(1)}`;
 }
 
-function refreshAutoOwnedFields(opportunity, binding, event, stamp, allowUpdates) {
+function refreshAutoOwnedFields(
+  opportunity,
+  binding,
+  event,
+  stamp,
+  allowUpdates,
+  updateFields = AUTO_FIELDS,
+) {
   const owned = splitAutoFields(binding);
   let changed = false;
   for (const field of AUTO_FIELDS) {
@@ -213,7 +221,7 @@ function refreshAutoOwnedFields(opportunity, binding, event, stamp, allowUpdates
       changed = true;
       continue;
     }
-    if (allowUpdates && incoming && current !== incoming) {
+    if (allowUpdates && updateFields.includes(field) && incoming && current !== incoming) {
       opportunity[field] = incoming;
       binding[lastField] = incoming;
       opportunity.updatedAt = stamp;
@@ -226,28 +234,6 @@ function refreshAutoOwnedFields(opportunity, binding, event, stamp, allowUpdates
     changed = true;
   }
   if (changed) binding.updatedAt = stamp;
-}
-
-function isCompatible(opportunity, event, binding = null) {
-  const roleMatches = !opportunity.role || normalize(opportunity.role) === normalize(event.jobName),
-    urlJobId = bossJobIdFromUrl(opportunity.url),
-    roleIsAutoOwned =
-      binding &&
-      splitAutoFields(binding).has('role') &&
-      (opportunity.role || '') === (binding.lastAutoRole || '');
-  return (
-    isBossPlatform(opportunity.platform) &&
-    (!opportunity.company ||
-      normalize(opportunity.company) === normalize(event.company) ||
-      (event.jobDetails &&
-        (binding
-          ? splitAutoFields(binding).has('company') &&
-            opportunity.company === binding.lastAutoCompany
-          : true))) &&
-    (roleMatches || roleIsAutoOwned) &&
-    (!opportunity.externalId || opportunity.externalId === event.externalJobId) &&
-    (!urlJobId || urlJobId === event.externalJobId)
-  );
 }
 
 function createBinding(batch, event, targetId, stamp, isAutomatic) {
@@ -1131,150 +1117,72 @@ export function ignoreBossObservations(inputData, { applicationIds, workspaceSou
   return validateData(data);
 }
 
-// Missing titles may reuse exact local job identity, never company guesses.
-function resolveIncompleteExistingEvent(data, batch, event, stamp) {
-  const bindings = live(data.sourceBindings).filter(
-    (row) =>
-      row.kind === 'opportunity' &&
-      row.platform === 'boss' &&
-      row.accountNamespace === batch.accountNamespace &&
-      row.externalJobId === event.externalJobId,
-  );
+// Every ordinary observation, including queue replay, uses the same current
+// workspace material decision. Mutation and field ownership stay in this adapter.
+function resolveEvent(data, batch, originalEvent, stamp) {
+  const material = assessBossJobMaterials({
+    event: originalEvent,
+    accountNamespace: batch.accountNamespace,
+    opportunities: data.opportunities,
+    bindings: data.sourceBindings,
+  });
+  const opportunity = material.targetId
+    ? data.opportunities.find((row) => row.id === material.targetId)
+    : null;
+  const binding = material.bindingId
+    ? data.sourceBindings.find((row) => row.id === material.bindingId)
+    : null;
   if (
-    !event.externalJobId ||
-    !event.canonicalUrl ||
-    bossJobIdFromUrl(event.canonicalUrl) !== event.externalJobId
+    binding &&
+    opportunity &&
+    !opportunity.deletedAt &&
+    !material.reuseOnly &&
+    (originalEvent.intent !== 'review' || originalEvent.jobDetails)
   )
-    return null;
-  if (!bindings.length) {
-    const candidates = data.opportunities.filter(
-      (row) =>
-        row.externalId === event.externalJobId || bossJobIdFromUrl(row.url) === event.externalJobId,
-    );
-    if (!candidates.length) return null;
-    const opportunity = candidates[0];
-    if (
-      candidates.length !== 1 ||
-      opportunity.deletedAt ||
-      !opportunity.role?.trim() ||
-      !opportunity.company?.trim() ||
-      bossJobIdFromUrl(opportunity.url) !== event.externalJobId ||
-      !isCompatible(opportunity, { ...event, jobName: opportunity.role }) ||
-      live(data.sourceBindings).some(
-        (row) =>
-          row.kind === 'opportunity' &&
-          row.platform === 'boss' &&
-          row.opportunityId === opportunity.id &&
-          (row.accountNamespace !== batch.accountNamespace ||
-            row.externalJobId !== event.externalJobId ||
-            row.canonicalUrl !== event.canonicalUrl),
-      )
-    )
-      return {
-        status: 'review',
-        targetId: '',
-        applicationStatus: 'review',
-        reason: 'identity_conflict',
-      };
-    data.sourceBindings.push(createBinding(batch, event, opportunity.id, stamp, false));
+    refreshAutoOwnedFields(opportunity, binding, material.effectiveEvent, stamp, false);
+  if (material.status !== 'ready')
+    return {
+      status: 'review',
+      targetId: material.targetId,
+      applicationStatus: material.status,
+      reason: material.reason,
+    };
+  const event = material.effectiveEvent;
+  if (material.reuseOnly) {
+    if (!binding)
+      data.sourceBindings.push(createBinding(batch, originalEvent, opportunity.id, stamp, false));
     return {
       status: 'recorded',
       evidenceStatus: 'review',
       targetId: opportunity.id,
       applicationStatus: 'no_effect',
-      reason: 'existing_job_details_available',
-      linked: true,
+      reason: material.reason,
+      ...(!binding ? { linked: true } : {}),
     };
   }
-  if (bindings.length !== 1)
-    return {
-      status: 'review',
-      targetId: '',
-      applicationStatus: 'review',
-      reason: 'identity_conflict',
-    };
-  const binding = bindings[0];
-  const opportunity = live(data.opportunities).find((row) => row.id === binding.opportunityId);
-  if (
-    !opportunity ||
-    !opportunity.role?.trim() ||
-    !opportunity.company?.trim() ||
-    binding.canonicalUrl !== event.canonicalUrl ||
-    !isCompatible(opportunity, { ...event, jobName: opportunity.role }, binding)
-  )
-    return {
-      status: 'review',
-      targetId: '',
-      applicationStatus: 'review',
-      reason: 'identity_conflict',
-    };
-  return {
-    status: 'recorded',
-    evidenceStatus: 'review',
-    targetId: opportunity.id,
-    applicationStatus: 'no_effect',
-    reason: 'bound_job_details_available',
-  };
-}
-
-function resolveEvent(data, batch, event, stamp) {
-  const jobBindings = live(data.sourceBindings).filter(
-    (binding) =>
-      binding.kind === 'opportunity' &&
-      binding.platform === 'boss' &&
-      binding.accountNamespace === batch.accountNamespace &&
-      binding.externalJobId === event.externalJobId,
-  );
-  if (jobBindings.length > 1) return { status: 'review', targetId: '' };
-  if (jobBindings.length === 1) {
-    const binding = jobBindings[0],
-      opportunity = data.opportunities.find((row) => row.id === binding.opportunityId);
-    if (opportunity && !opportunity.deletedAt)
-      refreshAutoOwnedFields(opportunity, binding, event, stamp, false);
-    if (
-      !opportunity ||
-      opportunity.deletedAt ||
-      binding.canonicalUrl !== event.canonicalUrl ||
-      !isCompatible(opportunity, event, binding)
-    )
-      return { status: 'review', targetId: opportunity?.id || '' };
-    const latestSequence = Math.max(
-      0,
-      ...live(data.sourceEvents)
-        .filter((stored) => stored.opportunityId === opportunity.id && stored.status === 'recorded')
-        .map((stored) => Number(stored.sourceSequence) || 0),
-    );
-    refreshAutoOwnedFields(
-      opportunity,
-      binding,
-      event,
-      stamp,
-      event.sourceSequence >= latestSequence,
-    );
-    return { status: 'recorded', targetId: opportunity.id };
-  }
-
-  const candidates = data.opportunities.filter(
-    (opportunity) =>
-      opportunity.externalId === event.externalJobId ||
-      bossJobIdFromUrl(opportunity.url) === event.externalJobId,
-  );
-  if (candidates.length > 1) return { status: 'review', targetId: '' };
-  if (candidates.length === 1) {
-    const opportunity = candidates[0],
-      otherAccountBinding = live(data.sourceBindings).some(
-        (binding) =>
-          binding.kind === 'opportunity' &&
-          binding.platform === 'boss' &&
-          binding.opportunityId === opportunity.id &&
-          binding.accountNamespace !== batch.accountNamespace,
+  if (opportunity) {
+    if (binding) {
+      const latestSequence = Math.max(
+        0,
+        ...live(data.sourceEvents)
+          .filter(
+            (stored) => stored.opportunityId === opportunity.id && stored.status === 'recorded',
+          )
+          .map((stored) => Number(stored.sourceSequence) || 0),
       );
-    if (opportunity.deletedAt || otherAccountBinding || !isCompatible(opportunity, event))
-      return { status: 'review', targetId: opportunity.id };
-    data.sourceBindings.push(createBinding(batch, event, opportunity.id, stamp, false));
+      refreshAutoOwnedFields(
+        opportunity,
+        binding,
+        event,
+        stamp,
+        event.sourceSequence >= latestSequence,
+        material.updateFields,
+      );
+      return { status: 'recorded', targetId: opportunity.id };
+    }
+    data.sourceBindings.push(createBinding(batch, originalEvent, opportunity.id, stamp, false));
     return { status: 'recorded', targetId: opportunity.id, linked: true };
   }
-
   const complete =
     event.intent === 'create_or_link' &&
     batch.policy.autoCreateComplete &&
@@ -1289,12 +1197,12 @@ function resolveEvent(data, batch, event, stamp) {
       applicationStatus: 'waiting',
       reason: 'missing_job_details',
     };
-  const opportunity = createOpportunity(batch, event, stamp);
-  if (data.opportunities.some((row) => row.id === opportunity.id))
-    return { status: 'review', targetId: opportunity.id };
-  data.opportunities.push(opportunity);
-  data.sourceBindings.push(createBinding(batch, event, opportunity.id, stamp, true));
-  return { status: 'recorded', targetId: opportunity.id, added: true };
+  const created = createOpportunity(batch, event, stamp);
+  if (data.opportunities.some((row) => row.id === created.id))
+    return { status: 'review', targetId: created.id };
+  data.opportunities.push(created);
+  data.sourceBindings.push(createBinding(batch, event, created.id, stamp, true));
+  return { status: 'recorded', targetId: created.id, added: true };
 }
 
 export function applyBossBatch(
@@ -1412,39 +1320,7 @@ export function applyBossBatch(
           }
         : event.eventType === 'resume_observed'
           ? resolveResumeEvent(data, batch, event, attributionContext)
-          : event.jobDetails?.source === 'detail_page_conflict'
-            ? {
-                status: 'review',
-                targetId: '',
-                applicationStatus: 'review',
-                reason: 'identity_conflict',
-              }
-            : event.intent === 'review' && !event.jobDetails
-              ? (!event.jobName.trim()
-                  ? resolveIncompleteExistingEvent(data, batch, event, stamp)
-                  : null) || {
-                  status: 'review',
-                  targetId: '',
-                  applicationStatus: event.externalJobId && event.jobName ? 'review' : 'waiting',
-                  reason:
-                    event.externalJobId && event.jobName
-                      ? 'identity_conflict'
-                      : 'missing_job_details',
-                }
-              : resolveEvent(
-                  data,
-                  batch,
-                  event.jobDetails
-                    ? {
-                        ...event,
-                        company: event.jobDetails.company,
-                        jobName: event.jobDetails.jobName,
-                        nameSource: 'detail_page_title',
-                        intent: 'create_or_link',
-                      }
-                    : event,
-                  stamp,
-                );
+          : resolveEvent(data, batch, event, stamp);
     if (
       event.eventType === 'resume_observed' &&
       result.applicationStatus === 'no_effect' &&
