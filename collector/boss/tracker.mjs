@@ -17,15 +17,10 @@ import {
   compareLoadedSnapshotsV2,
   migrateV1ToV2,
   resolveJobRowsV2,
-  listEnrichmentTargetsV2,
-  applyDetailEvidenceV2,
   validateEnvelope,
 } from './model-v2.mjs';
-import {
-  collectDetailTitleEvidence,
-  DETAIL_NAVIGATION_DELAY_MS,
-  MAX_DETAIL_ENRICH_JOBS,
-} from './detail-enrich.mjs';
+import { MAX_DETAIL_ENRICH_JOBS } from './detail-enrich.mjs';
+import { collectDetails, currentDetailSummary, detailFailureScope } from './detail-phase.mjs';
 import { exportCurrent, saveEnvelope } from './snapshot-save.mjs';
 export { saveEnvelope } from './snapshot-save.mjs';
 import { jobCounts } from './job.mjs';
@@ -35,15 +30,10 @@ import { collectDomSupplement, domSupplementStatus } from './dom-supplement.mjs'
 import {
   loadRuntimeState,
   saveRuntimeState,
-  selectFair,
   completeRun,
   clearCdpRetry,
   runWithPersistentCdpRetry,
-  detailTaskDisposition,
-  recordDetailFailure,
-  clearDetailFailures,
   resumeDetailState,
-  detailRuntimeSummary,
 } from './runtime-state.mjs';
 import { historySummary } from './change-history.mjs';
 import { collectHistory, settleSaved } from './history-phase.mjs';
@@ -322,169 +312,10 @@ async function readLegacyJobs(directory) {
   return value;
 }
 
-export function detailInputs(envelope, timeLabel = null) {
-  const { targets } = listEnrichmentTargetsV2(envelope);
-  const allowedConversations =
-    timeLabel === null
-      ? null
-      : new Set(
-          envelope.snapshot.records
-            .filter((record) => record.timeLabel === timeLabel)
-            .map((record) => record.key),
-        );
-  const candidates = targets
-    .filter(
-      (target) =>
-        target.associationStatus === 'current' &&
-        (allowedConversations === null || allowedConversations.has(target.conversationKey)),
-    )
-    .map((target) => ({
-      conversationKey: target.conversationKey,
-      jobId: target.jobId,
-      company: target.company,
-      detailUrl: target.detailUrl,
-      jobName: target.knownEvidence[0]?.name ?? null,
-    }));
-  const byJob = new Map();
-  for (const evidence of envelope.jobs.evidence) {
-    if (
-      evidence.source !== 'detail_page_title' ||
-      typeof evidence.title !== 'string' ||
-      !evidence.title
-    )
-      continue;
-    const normalized = {
-      jobId: evidence.jobId,
-      detailUrl: evidence.detailUrl,
-      name: evidence.name,
-      observedCompany: evidence.company,
-      title: evidence.title,
-      observedAt: evidence.observedAt,
-      source: evidence.source,
-    };
-    const serialized = JSON.stringify(normalized);
-    const prior = byJob.get(evidence.jobId);
-    if (!prior) byJob.set(evidence.jobId, { serialized, value: normalized, conflict: false });
-    else if (prior.serialized !== serialized) prior.conflict = true;
-  }
-  const knownEvidence = [...byJob.values()]
-    .filter((entry) => !entry.conflict)
-    .map((entry) => entry.value);
-  return { candidates, knownEvidence };
-}
-
-export function fairDetailInputs(
-  envelope,
-  {
-    cursor = null,
-    limit = 3,
-    timeLabel = null,
-    runtime = null,
-    now = new Date().toISOString(),
-  } = {},
+export async function main(
+  argv = process.argv.slice(2),
+  { resumeIdentity = resumeBrowser, collectDetailPhase = collectDetails } = {},
 ) {
-  const checked = validateEnvelope(envelope);
-  const input = detailInputs(checked, timeLabel);
-  const reviewKeys = new Set(
-    checked.jobs.candidates.map((item) =>
-      JSON.stringify([item.conversationKey, item.jobId, item.detailUrl]),
-    ),
-  );
-  const eligible = input.candidates.filter(
-    (item) =>
-      !item.jobName &&
-      !reviewKeys.has(JSON.stringify([item.conversationKey, item.jobId, item.detailUrl])),
-  );
-  const jobs = [];
-  for (const candidate of eligible) {
-    if (!jobs.some((item) => item.jobId === candidate.jobId)) jobs.push({ jobId: candidate.jobId });
-  }
-  const dispositions = new Map(
-    jobs.map((item) => [
-      item.jobId,
-      runtime ? detailTaskDisposition(runtime, item.jobId, now) : 'ready',
-    ]),
-  );
-  const selectable = jobs.filter((item) => dispositions.get(item.jobId) === 'ready');
-  const fair = selectFair(selectable, { cursor, limit, key: (item) => item.jobId });
-  const selectedIds = fair.selected.map((item) => item.jobId);
-  return {
-    cursor: fair.cursor,
-    selectedIds,
-    candidates: selectedIds.flatMap((id) => eligible.filter((item) => item.jobId === id)),
-    knownEvidence: input.knownEvidence,
-    eligibleJobIds: jobs.map((item) => item.jobId),
-    pendingJobs: jobs.length,
-    deferredJobs: jobs.filter((item) => dispositions.get(item.jobId) === 'backoff').length,
-    isolatedJobs: jobs.filter((item) => dispositions.get(item.jobId) === 'isolated').length,
-    blocked: runtime?.detail?.blocked === true,
-  };
-}
-
-function completedDetailCursor(input, collected, priorCursor) {
-  const attempted = Math.min(collected.counts.attemptedJobs, input.selectedIds.length);
-  return attempted ? input.selectedIds[attempted - 1] : priorCursor;
-}
-
-function currentDetailSummary(envelope, runtime, now = new Date().toISOString()) {
-  const input =
-    envelope && [2, 3, 4, 5, 6, 7, 8].includes(envelope.version)
-      ? fairDetailInputs(envelope, { limit: 1, runtime, now })
-      : null;
-  return detailRuntimeSummary(runtime, {
-    pending: input?.pendingJobs ?? 0,
-    eligibleJobIds: input?.eligibleJobIds ?? [],
-    now,
-  });
-}
-
-const accountDetailFailure = (code) =>
-  /(?:VERIFICATION|LOGIN|LOGGED|ACCOUNT|IDENTITY|BROWSER_INSTANCE|CONNECTION_REBIND|TASK_TARGET|SECURITY)/.test(
-    code ?? '',
-  );
-
-function updateDetailRuntime(runtime, collected, at, envelope) {
-  let next = runtime;
-  const completed = new Set(
-    [...collected.observations, ...collected.candidates].map((item) => item.jobId),
-  );
-  if (completed.size) next = clearDetailFailures(next, [...completed], { updatedAt: at });
-  for (const failure of collected.failures) {
-    next = recordDetailFailure(next, {
-      jobId: failure.jobId,
-      error: failure.code,
-      stage: failure.stage ?? 'read',
-      at,
-    });
-  }
-  if (collected.halted?.jobId && !accountDetailFailure(collected.halted.code)) {
-    const closeAfterEvidence =
-      collected.halted.stage === 'close' && completed.has(collected.halted.jobId);
-    if (!closeAfterEvidence || collected.halted.code === 'DETAIL_TAB_OWNERSHIP_MISMATCH') {
-      next = recordDetailFailure(next, {
-        jobId: collected.halted.jobId,
-        error: collected.halted.code,
-        stage: collected.halted.stage ?? 'read',
-        at,
-        block: collected.halted.code === 'DETAIL_TAB_OWNERSHIP_MISMATCH',
-      });
-      if (closeAfterEvidence)
-        next = clearDetailFailures(next, [collected.halted.jobId], { updatedAt: at });
-    }
-  }
-  return {
-    runtime: next,
-    summary: currentDetailSummary(envelope, next, at),
-  };
-}
-
-function detailFailureScope(collected, finalIdentity) {
-  if (!finalIdentity.ok || accountDetailFailure(collected.halted?.code)) return 'account';
-  if (collected.halted || collected.failures.length) return 'detail';
-  return 'none';
-}
-
-export async function main(argv = process.argv.slice(2), { resumeIdentity = resumeBrowser } = {}) {
   const options = parseArguments(argv);
   if (options.help) {
     console.log(
@@ -763,14 +594,14 @@ export async function main(argv = process.argv.slice(2), { resumeIdentity = resu
         process.exitCode = 1;
         return;
       }
-      const detailAt = new Date().toISOString();
-      const input = fairDetailInputs(saved.envelope, {
-        cursor: runtime.cursors.detail,
+      const phase = await collectDetailPhase({
+        envelope: saved.envelope,
+        runtime,
         limit,
         timeLabel,
-        runtime,
-        now: detailAt,
+        adapter: createCdpDetailAdapter(activeConnection),
       });
+      const { input, collected, applied } = phase;
       if (input.blocked) {
         console.log(
           JSON.stringify(
@@ -778,11 +609,7 @@ export async function main(argv = process.argv.slice(2), { resumeIdentity = resu
               ok: false,
               saved: false,
               error: 'DETAIL_ENRICHMENT_BLOCKED',
-              detailEnrichment: detailRuntimeSummary(runtime, {
-                pending: input.pendingJobs,
-                eligibleJobIds: input.eligibleJobIds,
-                now: detailAt,
-              }),
+              detailEnrichment: phase.detailEnrichment,
               usage: {
                 historyRequests: 0,
                 domSwitches: 0,
@@ -797,32 +624,17 @@ export async function main(argv = process.argv.slice(2), { resumeIdentity = resu
         process.exitCode = 1;
         return;
       }
-      const collected = await collectDetailTitleEvidence({
-        ...input,
-        limit,
-        navigationDelayMs: DETAIL_NAVIGATION_DELAY_MS,
-        adapter: createCdpDetailAdapter(activeConnection),
-      });
-      const appliedAt = new Date().toISOString();
-      const applied = applyDetailEvidenceV2(saved.envelope, collected, appliedAt);
       let files = { file: saved.path, jobsFile: join(directory, 'jobs.md') };
       if (applied.report.counts.accepted || applied.report.counts.candidateSaved) {
         files = await saveEnvelope(directory, applied.envelope);
       } else {
         await exportCurrent(directory, applied.envelope);
       }
-      const detailUpdate = updateDetailRuntime(
-        runtime,
-        collected,
-        new Date().toISOString(),
-        applied.envelope,
-      );
+      if (phase.stateError) throw phase.stateError;
       runtime = {
-        ...detailUpdate.runtime,
-        cursors: {
-          ...detailUpdate.runtime.cursors,
-          detail: completedDetailCursor(input, collected, runtime.cursors.detail),
-        },
+        ...sharedRuntime,
+        detail: phase.detailRuntime,
+        cursors: { ...sharedRuntime.cursors, detail: phase.detailCursor },
         updatedAt: new Date().toISOString(),
       };
       await saveRuntimeState(directory, runtime);
@@ -855,7 +667,7 @@ export async function main(argv = process.argv.slice(2), { resumeIdentity = resu
             jobs: jobSummary(applied.envelope),
             failureScope: detailFailureScope(collected, finalIdentityCheck),
             ...(finalIdentityCheck.ok ? {} : { error: finalIdentityCheck.report.error }),
-            detailEnrichment: detailUpdate.summary,
+            detailEnrichment: phase.detailEnrichment,
             ...files,
             connectionCleared,
             verification: safeBrowserReport(finalIdentityCheck.report),
@@ -1103,39 +915,22 @@ export async function main(argv = process.argv.slice(2), { resumeIdentity = resu
         [2, 3, 4, 5, 6, 7, 8].includes(envelope.version) &&
         detailLimit > 0
       ) {
-        const detailAt = new Date().toISOString();
-        const input = fairDetailInputs(envelope, {
-          cursor: runtime.cursors.detail,
-          limit: detailLimit,
-          runtime,
-          now: detailAt,
-        });
-        if (!input.blocked && input.selectedIds.length) {
-          detailCollected = await collectDetailTitleEvidence({
-            ...input,
-            limit: detailLimit,
-            navigationDelayMs: DETAIL_NAVIGATION_DELAY_MS,
-            adapter: createCdpDetailAdapter(activeConnection),
-          });
-          detailCursor = completedDetailCursor(input, detailCollected, runtime.cursors.detail);
-          failureUsage.detailNavigations = detailCollected.counts.attemptedJobs;
-          detailApplied = applyDetailEvidenceV2(
-            envelope,
-            detailCollected,
-            new Date().toISOString(),
-          );
-          envelope = detailApplied.envelope;
-        }
-        const detailUpdate = updateDetailRuntime(
-          runtime,
-          detailCollected,
-          new Date().toISOString(),
+        const phase = await collectDetailPhase({
           envelope,
-        );
-        runtime = detailUpdate.runtime;
+          runtime,
+          limit: detailLimit,
+          adapter: createCdpDetailAdapter(activeConnection),
+        });
+        detailCollected = phase.collected;
+        detailApplied = phase.applied;
+        detailCursor = phase.detailCursor;
+        failureUsage.detailNavigations = detailCollected.counts.attemptedJobs;
+        if (phase.stateError) throw phase.stateError;
+        envelope = detailApplied.envelope;
+        runtime = { ...sharedRuntime, detail: phase.detailRuntime };
         sharedRuntime = runtime;
         runRuntime = runtime;
-        detailCollected.detailEnrichment = detailUpdate.summary;
+        detailCollected.detailEnrichment = phase.detailEnrichment;
       }
       const finalIdentity = await retryReport(() =>
         resumeIdentity(activeConnection, identityOptions),
@@ -1272,6 +1067,7 @@ export async function main(argv = process.argv.slice(2), { resumeIdentity = resu
       for (const [dimension, limit] of [
         ['historyRequests', historyRequests],
         ['domSwitches', domLimit],
+        ['detailNavigations', MAX_DETAIL_ENRICH_JOBS + 1],
       ]) {
         if (!Object.hasOwn(error?.usage ?? {}, dimension)) continue;
         const reported = error.usage[dimension];

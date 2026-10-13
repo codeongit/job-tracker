@@ -1,3 +1,5 @@
+import { detailInputs, fairDetailInputs } from './detail-phase.mjs';
+import { saveEnvelope } from './snapshot-save.mjs';
 import { collectHistory, fairResumeTargets } from './history-phase.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -6,11 +8,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   main,
-  detailInputs,
-  fairDetailInputs,
   parseArguments,
   safeBrowserReport,
-  saveEnvelope,
   summarizeEnvelope,
   trackerFailureReport,
 } from './tracker.mjs';
@@ -1344,13 +1343,7 @@ test('v6 本地状态命令仍计算详情待处理和 DOM 状态，不访问浏
   assert.notEqual(status.dom, null);
 });
 
-test('standalone detail final identity failure reports account scope and keeps saved material', async (t) => {
-  const root = await mkdtemp(join(privateTemporaryRoot, 'boss-detail-final-identity-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
-  const directory = join(root, 'main');
-  await mkdir(directory, { mode: 0o700 });
-  const { envelope } = changedHistoryFixture();
-  const files = await saveEnvelope(directory, envelope);
+async function saveSyntheticDetailConnection(directory, envelope) {
   await saveConnection(directory, {
     version: 2,
     kind: 'cdp_bound',
@@ -1364,6 +1357,16 @@ test('standalone detail final identity failure reports account scope and keeps s
     accountNamespace: envelope.accountNamespace,
     connectedAt: '2026-10-13T01:00:00.000Z',
   });
+}
+
+test('standalone detail final identity failure reports account scope and keeps saved material', async (t) => {
+  const root = await mkdtemp(join(privateTemporaryRoot, 'boss-detail-final-identity-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const directory = join(root, 'main');
+  await mkdir(directory, { mode: 0o700 });
+  const { envelope } = changedHistoryFixture();
+  const files = await saveEnvelope(directory, envelope);
+  await saveSyntheticDetailConnection(directory, envelope);
   const previousRoot = process.env.JOB_TRACKER_BOSS_DATA_ROOT;
   const previousExit = process.exitCode;
   const previousLog = console.log;
@@ -1395,4 +1398,72 @@ test('standalone detail final identity failure reports account scope and keeps s
   assert.equal(reports[0].file, files.file);
   assert.equal(reports[0].usage.detailNavigations, 0);
   assert.deepEqual((await latest(directory)).envelope, envelope);
+});
+
+test('standalone detail saves successful adopted material before reporting a failed state candidate', async (t) => {
+  const root = await mkdtemp(join(privateTemporaryRoot, 'boss-detail-state-save-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const directory = join(root, 'main');
+  await mkdir(directory, { mode: 0o700 });
+  const source = changedHistoryFixture().envelope.snapshot;
+  const record = source.records[0];
+  record.jobAssociation = {
+    jobId: 'synthetic_role',
+    detailUrl: 'https://www.zhipin.com/job_detail/synthetic_role.html',
+  };
+  const { envelope } = compareLoadedSnapshotsV2(null, source);
+  await saveEnvelope(directory, envelope);
+  await saveSyntheticDetailConnection(directory, envelope);
+  const previousRoot = process.env.JOB_TRACKER_BOSS_DATA_ROOT;
+  const previousExit = process.exitCode;
+  const previousLog = console.log;
+  const reports = [];
+  let verified = 0;
+  try {
+    process.env.JOB_TRACKER_BOSS_DATA_ROOT = root;
+    console.log = (text) => reports.push(JSON.parse(text));
+    await main(['enrich', '--limit', '1'], {
+      resumeIdentity: async () => {
+        verified += 1;
+        return { ok: true, report: { identityVerified: true } };
+      },
+      collectDetailPhase: async ({ envelope: input }) => ({
+        input: { blocked: false },
+        collected: { counts: { attemptedJobs: 1 } },
+        applied: applyDetailEvidenceV2(
+          input,
+          {
+            observations: [
+              {
+                conversationKey: record.key,
+                ...record.jobAssociation,
+                name: 'Synthetic recovered role',
+                company: 'Synthetic employer',
+                title: '「Synthetic recovered role招聘」_Synthetic employer招聘-BOSS直聘',
+                source: 'detail_page_title',
+                observedAt: '2026-10-13T01:00:00.000Z',
+              },
+            ],
+            candidates: [],
+          },
+          '2026-10-13T01:00:00.000Z',
+        ),
+        stateError: Object.assign(new Error('RUNTIME_DETAIL_INVALID'), {
+          usage: { detailNavigations: 1 },
+        }),
+      }),
+    });
+    assert.equal(process.exitCode, 1);
+  } finally {
+    console.log = previousLog;
+    process.exitCode = previousExit;
+    if (previousRoot === undefined) delete process.env.JOB_TRACKER_BOSS_DATA_ROOT;
+    else process.env.JOB_TRACKER_BOSS_DATA_ROOT = previousRoot;
+  }
+  assert.equal(verified, 1);
+  assert.equal(reports[0].error, 'RUNTIME_DETAIL_INVALID');
+  assert.equal(
+    (await latest(directory)).envelope.jobs.evidence[0].name,
+    'Synthetic recovered role',
+  );
 });

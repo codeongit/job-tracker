@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { fairDetailInputs } from './tracker.mjs';
+import { fairDetailInputs } from './detail-phase.mjs';
 import { compareLoadedSnapshotsV2, conversationKeyV2 } from './model-v2.mjs';
 import {
   loadRuntimeState,

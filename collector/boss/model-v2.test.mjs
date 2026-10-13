@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { collectDetailTitleEvidence } from './detail-enrich.mjs';
-import { detailInputs } from './tracker.mjs';
+import { detailInputs } from './detail-phase.mjs';
 import {
   applyDetailEvidenceV2,
   canonicalJobUrlV2,
