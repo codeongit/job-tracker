@@ -161,6 +161,24 @@ const V5_BATCH_GOLDEN = {
   incremental: '77573eda68ff194583c33a080a25b573dffd8791b3d344925ef506ec7f1c8243',
 };
 
+// Recorded from the clean 0409a0b5 tree before the collection/module refactor.
+// Unlike the older compatibility projections, these cover the current v8 wire
+// headers and complete deterministic batches without changing their contents.
+const V8_BATCH_GOLDEN = {
+  initial: '76df76014d7d9b138274bc2e5bb35852dd126563c3e7d50102c63d1fb4fb5a56',
+  dated: '89d81a0344c4075c713f2a19670a8c198c53332d991ebe3e3dd6252de4770148',
+  resume: '5a54cebd407f61031f235a33112073df49735859a7d37316e9013d56a59a7186',
+  incremental: 'cbae435dca9729e844faa4f8d27a380d8663ed5dbff480900ce5bf08911cfa35',
+};
+
+test('all current delivery modes retain complete batches from the modularization baseline', () => {
+  const outputs = characterizedOutputs();
+  assert.deepEqual(
+    Object.fromEntries(Object.keys(V8_BATCH_GOLDEN).map((key) => [key, stableHash(outputs[key])])),
+    V8_BATCH_GOLDEN,
+  );
+});
+
 function legacyBatchProjection(batch) {
   const legacy = structuredClone(batch);
   legacy.version = 4;
