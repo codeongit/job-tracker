@@ -901,7 +901,7 @@ async function settleResumeCheckpoint(directory, scanned) {
   });
 }
 
-export async function main(argv = process.argv.slice(2)) {
+export async function main(argv = process.argv.slice(2), { resumeIdentity = resumeBrowser } = {}) {
   const options = parseArguments(argv);
   if (options.help) {
     console.log(
@@ -1090,7 +1090,7 @@ export async function main(argv = process.argv.slice(2)) {
     if (mode === 'resume') {
       if (!storedConnection) throw new Error('CONNECTION_REQUIRED');
       const result = await retryReport(() =>
-        resumeBrowser(storedConnection.connection, identityOptions),
+        resumeIdentity(storedConnection.connection, identityOptions),
       );
       console.log(
         JSON.stringify(
@@ -1157,7 +1157,7 @@ export async function main(argv = process.argv.slice(2)) {
       if (![2, 3, 4, 5, 6, 7, 8].includes(saved.envelope.version))
         throw new Error('V2_CHECK_REQUIRED');
       const identityCheck = await retryReport(() =>
-        resumeBrowser(activeConnection, identityOptions),
+        resumeIdentity(activeConnection, identityOptions),
       );
       runtime = sharedRuntime;
       if (!identityCheck.ok) {
@@ -1245,7 +1245,7 @@ export async function main(argv = process.argv.slice(2)) {
       await saveRuntimeState(directory, runtime);
       sharedRuntime = runtime;
       const finalIdentityCheck = await retryReport(() =>
-        resumeBrowser(activeConnection, identityOptions),
+        resumeIdentity(activeConnection, identityOptions),
       );
       runtime = sharedRuntime;
       const connectionCleared =
@@ -1270,11 +1270,8 @@ export async function main(argv = process.argv.slice(2)) {
             cleanup: collected.cleanup,
             remaining: collected.remaining.length,
             jobs: jobSummary(applied.envelope),
-            failureScope: accountDetailFailure(collected.halted?.code)
-              ? 'account'
-              : collected.halted || collected.failures.length
-                ? 'detail'
-                : 'none',
+            failureScope: detailFailureScope(collected, finalIdentityCheck),
+            ...(finalIdentityCheck.ok ? {} : { error: finalIdentityCheck.report.error }),
             detailEnrichment: detailUpdate.summary,
             ...files,
             connectionCleared,
@@ -1534,7 +1531,7 @@ export async function main(argv = process.argv.slice(2)) {
           maxSwitches: domLimit,
           verify: async () => {
             const result = await retryReport(() =>
-              resumeBrowser(activeConnection, identityOptions),
+              resumeIdentity(activeConnection, identityOptions),
             );
             return { ok: result.ok, error: result.ok ? null : result.report.error };
           },
@@ -1615,7 +1612,7 @@ export async function main(argv = process.argv.slice(2)) {
         detailCollected.detailEnrichment = detailUpdate.summary;
       }
       const finalIdentity = await retryReport(() =>
-        resumeBrowser(activeConnection, identityOptions),
+        resumeIdentity(activeConnection, identityOptions),
       );
       runtime = sharedRuntime;
       const files = await saveEnvelope(directory, envelope);

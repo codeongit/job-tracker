@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, rm, realpath, readdir, readFile } from 'node:fs/promise
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  main,
   collectResume,
   collectChangedResume,
   detailInputs,
@@ -15,7 +16,7 @@ import {
   summarizeEnvelope,
   trackerFailureReport,
 } from './tracker.mjs';
-import { latest } from './storage.mjs';
+import { latest, saveConnection } from './storage.mjs';
 import { assessLoadedPlatformReference } from './platform-reference.mjs';
 import { accountNamespace } from './extract.mjs';
 import { applyDetailEvidenceV2, compareLoadedSnapshotsV2, conversationKeyV2 } from './model-v2.mjs';
@@ -1341,4 +1342,57 @@ test('v6 本地状态命令仍计算详情待处理和 DOM 状态，不访问浏
   assert.equal(status.connectionSaved, false);
   assert.equal(status.detailEnrichment.pending, 0);
   assert.notEqual(status.dom, null);
+});
+
+test('standalone detail final identity failure reports account scope and keeps saved material', async (t) => {
+  const root = await mkdtemp(join(privateTemporaryRoot, 'boss-detail-final-identity-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const directory = join(root, 'main');
+  await mkdir(directory, { mode: 0o700 });
+  const { envelope } = changedHistoryFixture();
+  const files = await saveEnvelope(directory, envelope);
+  await saveConnection(directory, {
+    version: 2,
+    kind: 'cdp_bound',
+    session: 'boss-tracker-cdp-' + 'a'.repeat(16),
+    browserPort: '19001',
+    browserProfile: 'boss-tracker-profile-' + 'a'.repeat(16),
+    browserInstanceId: 'b'.repeat(64),
+    taskTargetId: 'SYNTHETIC',
+    taskTargetCreatedByTask: true,
+    page: 'https://www.zhipin.com/web/geek/chat',
+    accountNamespace: envelope.accountNamespace,
+    connectedAt: '2026-10-13T01:00:00.000Z',
+  });
+  const previousRoot = process.env.JOB_TRACKER_BOSS_DATA_ROOT;
+  const previousExit = process.exitCode;
+  const previousLog = console.log;
+  const reports = [];
+  let verified = 0;
+  try {
+    process.env.JOB_TRACKER_BOSS_DATA_ROOT = root;
+    console.log = (text) => reports.push(JSON.parse(text));
+    await main(['enrich', '--limit', '1'], {
+      resumeIdentity: async () => {
+        verified += 1;
+        return verified === 1
+          ? { ok: true, report: { identityVerified: true } }
+          : { ok: false, report: { error: 'ACCOUNT_NAMESPACE_CHANGED', identityVerified: false } };
+      },
+    });
+    assert.equal(process.exitCode, 1);
+  } finally {
+    console.log = previousLog;
+    process.exitCode = previousExit;
+    if (previousRoot === undefined) delete process.env.JOB_TRACKER_BOSS_DATA_ROOT;
+    else process.env.JOB_TRACKER_BOSS_DATA_ROOT = previousRoot;
+  }
+  assert.equal(verified, 2);
+  assert.equal(reports.length, 1);
+  assert.equal(reports[0].ok, false);
+  assert.equal(reports[0].failureScope, 'account');
+  assert.equal(reports[0].error, 'ACCOUNT_NAMESPACE_CHANGED');
+  assert.equal(reports[0].file, files.file);
+  assert.equal(reports[0].usage.detailNavigations, 0);
+  assert.deepEqual((await latest(directory)).envelope, envelope);
 });
