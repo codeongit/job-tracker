@@ -53,7 +53,7 @@ sequenceDiagram
 | 已取得的列表、岗位证据及消息观察     | `model-v2 / resume-history` 维护采集模型，`storage` 保存不可变快照                      | `.local/boss-collector/<账号>/`                                                     |
 | 历史任务、水位、分页、详情退避及轮转 | `change-history` 计算任务；`runtime-state` 保存；tracker 串联阶段                       | `.runtime-v3.json`，读取旧 runtime v1/v2 并保留旧文件                               |
 | 可恢复的历史页材料                   | `runtime-state` 安全读写；由 `history-phase` 编排；变化任务提交由 `history-commit` 协调 | `.change-checkpoint-v1.json`、`.resume-checkpoint-v1.json`；路径 v1 不表示内容仍 v1 |
-| 标准批次、交付进度、生产者暂停       | integration/conversion/inbox 分别负责转换、入队及配套进度                               | `.local/boss-integration/` 的 inbox、runs、control 与交付检查点                     |
+| 标准批次、交付进度、生产者暂停       | delivery/snapshots/conversion/inbox 分别负责交付编排、材料校验、转换及入队              | `.local/boss-integration/` 的 inbox、runs、control 与交付检查点                     |
 | 事实及应用决定                       | `workspace-consumer` 准备当前工作区候选，纯规则判断；`workspace-store` 唯一提交         | `.local/workspace/` 不可变提交与原子 HEAD                                           |
 | 批次回执                             | inbox 在正式提交之后记录，由 consumer 核对                                              | `.local/boss-integration/receipts/`                                                 |
 | 页面正式数据                         | 页面读取服务，IndexedDB 只作本机读取缓存                                                | 服务失联停止正式写入，保留缓存与草稿                                                |
@@ -142,6 +142,10 @@ sequenceDiagram
 `tracker.saveEnvelope` 先保存 JSON，再导出私有 Markdown。导出失败保留已保存 JSON，返回固定 `JOB_EXPORT_FAILED` 或既有安全错误码，不输出原异常。成功快照、清单导出和轮次完成分别确认。请求发出后，后续证据/进度/导出失败仍保留实际用量；检查点纯本机恢复不增加请求用量。
 
 ### 入队与正式消费
+
+[`boss-delivery.mjs`](../../scripts/boss-delivery.mjs) 的 `deliverSaved` 共用校验、转换、诊断、入队和交付检查点，显式区分 initial、dated、resume 与 incremental。各入口继续选择日期和材料，保留首批锁定范围、旧身份投影、序号及无变化处理；旧命令只是选择模式的入口，不重新实现交付。严格快照读取与原始字节摘要由 [`boss-snapshots.mjs`](../../scripts/boss-snapshots.mjs) 负责。
+
+`recoverSaved` 先恢复已取得的 DOM 结果，再按原文件名顺序交付保存后的快照；每份成功后更新 control，失败保留已提交批次和未确认进度。它只作本机恢复，不推断此前未持久保存的显式日期授权。磁盘回执仍不能代替当前正式工作区中的事实存在性核对。
 
 integration 先持有生产者锁，再查交付进度和未导出快照；材料校验、归属诊断、确定性批次、原子入队成功后才保存交付检查点及来源序号。转换摘要绑定当前版本的证据，稳定事件和事实身份保持。普通轮次与 `recover-saved` 的外围结果整理目前仍分开。
 

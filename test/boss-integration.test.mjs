@@ -22,6 +22,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { BossInbox, validateBossBatch, validateBossReceipt } from '../scripts/boss-inbox.mjs';
+import { deliverSaved, recoverSaved } from '../scripts/boss-delivery.mjs';
 import {
   checkCommand,
   createDatedYesterdayBatch,
@@ -1174,6 +1175,305 @@ test('旧快照岗位波浪号与归属岗位字段共用岗位 ID 规则，账�
   evidence.conversationKey = 'a'.repeat(64);
   assert.equal(validateAttributionEvidence(evidence).messageJobId, 'job_1~');
   assert.throws(() => validateAttributionEvidence({ ...evidence, senderId: 'actor~' }));
+});
+
+test('共用交付在各模式入队或检查点中断后保留原进度并精确重试', async (t) => {
+  for (const mode of ['initial', 'dated', 'resume', 'incremental']) {
+    await t.test(mode, async (t) => {
+      const { config, data, inbox, expectedInitial } = await tempProject(t);
+      const previous = await readTrackerSnapshot(join(data, FIRST_NAME));
+      let current = previous;
+      if (mode !== 'initial') {
+        await enqueueCommand(config, inbox, expectedInitial);
+        const envelope = fixture(
+          mode === 'incremental' ? { capturedAt: '2026-09-21T08:01:00.000Z' } : {},
+        );
+        if (mode === 'dated') envelope.jobs.evidence[30].name = '补齐后的岗位';
+        if (mode === 'resume')
+          envelope.resume = {
+            observations: [resumeObservation(envelope)],
+            lastScanAt: '2026-09-20T08:01:00.000Z',
+            lastCoverage: null,
+            lastUnresolved: [],
+          };
+        await writeFile(join(data, SECOND_NAME), `${JSON.stringify(envelope)}\n`, { mode: 0o600 });
+        current = await readTrackerSnapshot(join(data, SECOND_NAME));
+      }
+      const before = await inbox.readControl();
+      const originalBatches = await inbox.list();
+      let failure = 'batch';
+      const stages = [];
+      const failing = new BossInbox(inbox.root, {
+        beforeCommit: async (kind) => {
+          if (kind === failure) throw new Error(`synthetic-${kind}-interruption`);
+        },
+      });
+      const request = {
+        mode,
+        inbox: failing,
+        current,
+        previous,
+        control: before,
+        evidenceDate: mode === 'dated' ? '2026-09-20' : '',
+        initialIdentity: expectedInitial,
+        onStage: (stage) => stages.push(stage),
+      };
+      await assert.rejects(deliverSaved(request), /synthetic-batch-interruption/);
+      assert.equal(stages.at(-1), 'enqueue_events');
+      assert.deepEqual(await inbox.readControl(), before);
+      assert.deepEqual(await inbox.list(), originalBatches);
+
+      failure = 'control';
+      stages.length = 0;
+      await assert.rejects(deliverSaved(request), /synthetic-control-interruption/);
+      assert.equal(stages.at(-1), 'commit_checkpoint');
+      assert.deepEqual(await inbox.readControl(), before);
+      const pending = (await inbox.list()).find((batch) => batch.policyMode === mode);
+      const durableBatch = await inbox.read(pending.batchId);
+
+      failure = '';
+      stages.length = 0;
+      const retried = await deliverSaved(request);
+      assert.deepEqual(retried.batch, durableBatch);
+      assert.equal(retried.queued.created, false);
+      assert.equal(retried.control.checkpoint.sourceSequence, mode === 'initial' ? 1 : 2);
+      assert.equal(
+        retried.control.checkpoint.snapshotName,
+        mode === 'initial' ? FIRST_NAME : SECOND_NAME,
+      );
+      assert.equal(stages.indexOf('enqueue_events') + 1, stages.indexOf('commit_checkpoint'));
+    });
+  }
+});
+
+test('日期交付复用当前序号，简历明确日期交付保留原强制递增与缺省跳过语义', async (t) => {
+  const envelope = fixture();
+  envelope.resume = {
+    observations: [resumeObservation(envelope)],
+    lastScanAt: '2026-09-20T08:01:00.000Z',
+    lastCoverage: null,
+    lastUnresolved: [],
+  };
+  const { config, data, inbox, expectedInitial } = await tempProject(t, envelope);
+  await enqueueCommand(config, inbox, expectedInitial);
+  const current = await readTrackerSnapshot(join(data, FIRST_NAME));
+  const before = await inbox.readControl();
+  const stages = [];
+  const dated = await deliverSaved({
+    mode: 'dated',
+    inbox,
+    current,
+    previous: current,
+    control: before,
+    evidenceDate: '2026-09-20',
+    onStage: (stage) => stages.push(stage),
+  });
+  assert.equal(dated.batch.sourceSequence, 1);
+  assert.deepEqual(await inbox.readControl(), before);
+  assert.deepEqual(stages, ['enqueue_events']);
+  const datedRetry = await deliverSaved({
+    mode: 'dated',
+    inbox,
+    current,
+    previous: current,
+    control: before,
+    evidenceDate: '2026-09-20',
+  });
+  assert.equal(datedRetry.queued.created, false);
+  assert.deepEqual(datedRetry.batch, dated.batch);
+
+  stages.length = 0;
+  const skipped = await deliverSaved({
+    mode: 'resume',
+    inbox,
+    current,
+    previous: current,
+    control: before,
+    onStage: (stage) => stages.push(stage),
+  });
+  assert.equal(skipped.batch, null);
+  assert.deepEqual(skipped.counts, { events: 0, strong: 0, review: 0 });
+  assert.deepEqual(stages, []);
+  assert.deepEqual(await inbox.readControl(), before);
+
+  const first = await deliverSaved({
+    mode: 'resume',
+    inbox,
+    current,
+    previous: current,
+    control: before,
+    evidenceDate: '2026-09-20',
+  });
+  assert.equal(first.control.checkpoint.sourceSequence, 2);
+  await assert.rejects(
+    deliverSaved({
+      mode: 'resume',
+      inbox,
+      current,
+      previous: current,
+      control: first.control,
+      evidenceDate: '2026-09-20',
+    }),
+    { code: 'BOSS_BATCH_CONFLICT' },
+  );
+  assert.deepEqual(await inbox.readControl(), first.control);
+  const nextEnvelope = structuredClone(envelope);
+  nextEnvelope.report = { recoveredMetadata: true };
+  await writeFile(join(data, SECOND_NAME), `${JSON.stringify(nextEnvelope)}\n`, { mode: 0o600 });
+  const second = await deliverSaved({
+    mode: 'resume',
+    inbox,
+    current: await readTrackerSnapshot(join(data, SECOND_NAME)),
+    previous: current,
+    control: first.control,
+    evidenceDate: '2026-09-20',
+  });
+  assert.equal(second.control.checkpoint.sourceSequence, 3);
+  assert.notEqual(first.batch.batchId, second.batch.batchId);
+  assert.equal(first.batch.events[0].eventId, second.batch.events[0].eventId);
+  assert.equal(second.batch.events[0].evidenceDate, '2026-09-20');
+});
+
+test('恢复在无事件快照推进位置且不增序号，后续检查点失败从该位置精确补交', async (t) => {
+  const { config, data, inbox, expectedInitial } = await tempProject(t);
+  await enqueueCommand(config, inbox, expectedInitial);
+  const initialized = await inbox.readControl();
+  // A previously delivered non-initial checkpoint removes the first-batch
+  // special projection so unchanged facts can exercise a zero-event advance.
+  await inbox.writeControl({
+    ...initialized,
+    checkpoint: { ...initialized.checkpoint, sourceSequence: 2 },
+  });
+  const unchanged = fixture();
+  unchanged.report = { recoveredMetadata: true };
+  await writeFile(join(data, SECOND_NAME), `${JSON.stringify(unchanged)}\n`, { mode: 0o600 });
+  const thirdName = '2026-09-18T15-10-00-000Z_cccccccc-cccc-4ccc-8ccc-cccccccccccc.json';
+  const changed = structuredClone(unchanged);
+  changed.snapshot.records[0].preview = '新的合成消息';
+  await writeFile(join(data, thirdName), `${JSON.stringify(changed)}\n`, { mode: 0o600 });
+  const stages = [];
+  const failing = new BossInbox(inbox.root, {
+    beforeCommit: async (kind, value) => {
+      if (kind === 'control' && value.checkpoint.snapshotName === thirdName)
+        throw new Error('synthetic-third-checkpoint-interruption');
+    },
+  });
+  await assert.rejects(
+    recoverSaved({
+      config,
+      inbox: failing,
+      control: await inbox.readControl(),
+      initialIdentity: expectedInitial,
+      onStage: (stage) => stages.push(stage),
+    }),
+    /synthetic-third-checkpoint-interruption/,
+  );
+  const partial = await inbox.readControl();
+  assert.equal(partial.checkpoint.snapshotName, SECOND_NAME);
+  assert.equal(partial.checkpoint.sourceSequence, 2);
+  assert.equal(stages.filter((stage) => stage === 'enqueue_events').length, 1);
+  assert.equal(stages.filter((stage) => stage === 'commit_checkpoint').length, 2);
+  const durableBatch = (await inbox.list()).find((batch) => batch.policyMode === 'incremental');
+  const retry = await recoverSaved({
+    config,
+    inbox,
+    control: partial,
+    initialIdentity: expectedInitial,
+  });
+  assert.deepEqual(
+    { recovered: retry.recovered, batches: retry.batches, events: retry.events },
+    {
+      recovered: 1,
+      batches: 1,
+      events: 1,
+    },
+  );
+  assert.equal(retry.control.checkpoint.snapshotName, thirdName);
+  assert.equal(retry.control.checkpoint.sourceSequence, 3);
+  assert.equal(
+    (await inbox.list()).filter((batch) => batch.policyMode === 'incremental').length,
+    1,
+  );
+  assert.equal((await inbox.read(durableBatch.batchId)).sourceSequence, 3);
+});
+
+test('共用简历交付诊断失败保留原检查点与队列', async (t) => {
+  const { config, data, inbox, expectedInitial } = await tempProject(t);
+  await enqueueCommand(config, inbox, expectedInitial);
+  const previous = await readTrackerSnapshot(join(data, FIRST_NAME));
+  const envelope = fixture();
+  envelope.resume = {
+    observations: [resumeObservation(envelope)],
+    lastScanAt: '2026-09-20T08:01:00.000Z',
+    lastCoverage: null,
+    lastUnresolved: [],
+  };
+  await writeFile(join(data, SECOND_NAME), `${JSON.stringify(envelope)}\n`, { mode: 0o600 });
+  await writeFile(join(inbox.root, 'attribution-diagnostics'), 'blocked', { mode: 0o600 });
+  const control = await inbox.readControl();
+  const before = await inbox.list();
+  await assert.rejects(
+    deliverSaved({
+      mode: 'resume',
+      inbox,
+      previous,
+      current: await readTrackerSnapshot(join(data, SECOND_NAME)),
+      control,
+    }),
+    /DIAGNOSTIC_PATH_INVALID/,
+  );
+  assert.deepEqual(await inbox.readControl(), control);
+  assert.deepEqual(await inbox.list(), before);
+});
+
+test('共用交付保留账号、时间顺序和补录列表一致性关卡', async (t) => {
+  const { config, data, inbox, expectedInitial } = await tempProject(t);
+  await enqueueCommand(config, inbox, expectedInitial);
+  const previous = await readTrackerSnapshot(join(data, FIRST_NAME));
+  const control = await inbox.readControl();
+  const forbiddenWrites = {
+    enqueue: async () => assert.fail('invalid delivery cannot enqueue'),
+    writeControl: async () => assert.fail('invalid delivery cannot advance the checkpoint'),
+  };
+  for (const mode of ['initial', 'dated', 'resume', 'incremental'])
+    await assert.rejects(
+      deliverSaved({
+        mode,
+        inbox: forbiddenWrites,
+        current: previous,
+        previous,
+        control: { ...control, accountNamespace: `boss-geek:${'b'.repeat(64)}` },
+        initialIdentity: expectedInitial,
+      }),
+      { code: 'BOSS_ACCOUNT_MISMATCH' },
+    );
+  const older = fixture({ capturedAt: '2026-09-17T08:00:00.000Z' });
+  await writeFile(join(data, SECOND_NAME), `${JSON.stringify(older)}\n`, { mode: 0o600 });
+  const current = await readTrackerSnapshot(join(data, SECOND_NAME));
+  for (const mode of ['dated', 'resume', 'incremental'])
+    await assert.rejects(
+      deliverSaved({ mode, inbox: forbiddenWrites, previous, current, control }),
+      { code: 'BOSS_SNAPSHOT_ORDER_INVALID' },
+    );
+  const newer = fixture({ capturedAt: '2026-09-21T08:01:00.000Z' });
+  await writeFile(join(data, SECOND_NAME), `${JSON.stringify(newer)}\n`, { mode: 0o600 });
+  for (const mode of ['dated', 'resume'])
+    await assert.rejects(
+      deliverSaved({
+        mode,
+        inbox: forbiddenWrites,
+        previous,
+        current: await readTrackerSnapshot(join(data, SECOND_NAME)),
+        control,
+      }),
+      {
+        code:
+          mode === 'dated'
+            ? 'BOSS_DATED_IMPORT_REQUIRES_CURRENT_CHECKPOINT'
+            : 'BOSS_RESUME_IMPORT_REQUIRES_CURRENT_CHECKPOINT',
+      },
+    );
+  assert.deepEqual(await inbox.readControl(), control);
 });
 
 function domRecoveryEnvelope({ rows = 100, pendingIndex = 0 } = {}) {
