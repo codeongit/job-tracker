@@ -1,5 +1,7 @@
 > 本规格是先前讨论稿。2026-10-06 用户确认的新实施计划及 [D038](../adr/0038-boss-job-details-and-observation-groups.md) 替代其中公司一致要求、人工处理方式和关闭标识延期安排。
 
+现行资料与链接规则见[设计说明](../boss/DESIGN.md#岗位资料与平台状态)，人工决定见[应用结果](../boss/DESIGN.md#人工决定与应用结果)，操作步骤见[操作说明](../boss/OPERATIONS.md)。下文保留原讨论稿，不能作为当前完整规则或实施完成记录。
+
 # BOSS 等待观察规则修正与核对体验
 
 ## Problem Statement

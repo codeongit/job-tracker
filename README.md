@@ -42,30 +42,21 @@ BOSS 岗位选择简历“已发送”或“对方已接收”时，表单会将
 
 ## BOSS 只读接入
 
-BOSS 的完整当前流程与业务规则集中在 [BOSS 流程与规则](docs/BOSS_AUTOMATION_DESIGN.md)，包括采集与交付、归属判断、简历状态、岗位资料及处理结果；采集器文件职责见 [目录导览](collector/boss/README.md)。
+BOSS 说明按阅读目的分为三份：
 
-先在私有 `.local/config.json` 设置 BOSS 账号标签及固定初始快照名，完成本机工作区迁移和 BOSS 账号绑定。采集器源码已包含在 `collector/boss/`，不再配置外部路径；私有快照和浏览器状态保存在 `.local/boss-collector/`。正常链路由固定脚本执行：专用 Chrome 的直接 CDP 连接 → 不可变采集快照 → 私有队列 → 本机正式提交 → 回执。网页关闭后，只要本机服务、已开始的跟踪会话和 BOSS 登录仍有效，采集与正式录入均可继续。不会回复、投递、发送简历或自动同步 GitHub。
+- [设计说明](docs/boss/DESIGN.md)：当前流程、采集与业务规则、动作预算和失败行为。
+- [实现说明](docs/boss/IMPLEMENTATION.md)：模块、身份和字段、私有材料、交付与恢复契约。
+- [使用与排障](docs/boss/OPERATIONS.md)：配置前提、命令、状态统计、补录与恢复步骤。
+
+先完成本机工作区迁移、私有配置和账号绑定，再明确开始跟踪：
 
 ```sh
 pnpm service start
 pnpm boss start
 pnpm boss status
-pnpm boss run
-pnpm boss pause
-pnpm boss resume
-pnpm boss resume-details
-pnpm boss stop
-pnpm boss recover-saved
-pnpm service stop
 ```
 
-`start` 明确开始本次持续跟踪；`run` 单次执行，`check` 是经过同一控制器的兼容别名；旧采集脚本没有控制器签发的短时单次票据时会在接触浏览器前拒绝执行，不能绕过预算。`pause/resume` 暂停与核验后恢复；详情标签所有权现场处理完成后用 `resume-details` 只恢复详情阶段，不改变账号生命周期或清空退避/隔离；`stop` 停止本次跟踪。任务标签缺失时先暂停，排查后显式运行 `pnpm boss recover-page`；不循环新建或刷新页面。采集已经保存但转换/入库中断时运行 `pnpm boss recover-saved`：它只处理本地快照和队列，保持跟踪停止，不连接 BOSS 或占平台额度。`status` 查看分阶段状态，`doctor` 额外只读核验工作区、采集器和生产者配置。服务启动本身只可处理已有授权队列；不会登录自启，重启后须重新开始跟踪。
-
-持续跟踪串行检查已加载列表，短时间重复触发合并，不自动滚动加载全部历史。历史请求与导航分别受持久额度限制，暂停或重启保留预算；本地处理不占平台额度。调度间隔、具体上限、计数和额度恢复统一见 [BOSS 接入设计的动作预算](docs/BOSS_AUTOMATION_DESIGN.md#频率与实际动作预算)，通过 `pnpm boss status` 查看当前可用额度和运行状态。
-
-`preview / enqueue / enqueue-yesterday --date YYYY-MM-DD / enqueue-resume` 保留为已保存快照的本地处理入口。首批 2026-09-18 的 30 纳入、10 昨天排除、60 空标签排除规则，以及后来用户确认的日期批次保持原样；后续采集不复用首批日期。增量记录显示具体 `HH:mm` 时，使用该快照 `capturedAt` 在 `Asia/Shanghai` 的日期作为证据日期和新岗位首次联系日；恢复或导入当天不会改变它。新岗位资料完整且无冲突时建档为“已触达”；“昨天”、空标签或其他不可靠标签仍留空，已有岗位日期不覆盖。
-
-资料缺失进入等待补齐，人工保护记为跳过，唯一关联完成后可自动重评；身份歧义、跨账号或删除冲突继续保留核对。缺少稳定消息 ID 的观察只保存为待补证据，不创建岗位、语义事实或业务应用；后续补齐后再求解。明确的附件简历请求/发送状态可推进“已发送”，明确查看状态可推进“对方已接收”，并按已确认的 BOSS 规则联动本地消息已读与初始招聘阶段。普通简历卡片、送达和未知保持原义，不推断面试、Offer 或拒绝。执行边界见 [自动化操作规约](docs/AUTOMATION_POLICY.md)。
+服务和跟踪是独立生命周期；服务重启不恢复跟踪。平台只读，GitHub 由用户手动同步。停止、暂停、任务页恢复及纯本机补交按[命令与操作](docs/boss/OPERATIONS.md#命令与操作)执行；授权和隐私边界见[自动化操作规约](docs/AUTOMATION_POLICY.md)。
 
 ## 草稿与自动备份
 
@@ -145,7 +136,7 @@ npm run check
 
 ## 长期维护
 
-当前维护版为 **0.8.0**。开发使用 pnpm 锁文件；本机服务没有新增数据库依赖。
+当前应用版本以 [package.json](package.json) 和页面版本为准。开发使用固定 pnpm 与锁文件；本机服务没有数据库依赖。
 
 ```sh
 pnpm install --frozen-lockfile
@@ -159,7 +150,7 @@ pnpm format:check
 “数据与同步”提供完整备份、本机快照、版本与连接检查。静态模式保留最近 20 个操作前浏览器快照；本机服务保留不可变完整提交与原始迁移副本。浏览器草稿的独立备份仍需要页面在线，请另行下载完整备份。
 
 - [领域术语](CONTEXT.md)
-- [关键决策索引与历史 ADR](docs/DECISIONS.md)
+- [关键决策索引与历史 ADR](docs/adr/README.md)
 - [当前架构与代码职责](docs/ARCHITECTURE.md)
 - [架构重构清单](docs/ARCHITECTURE_REFACTOR_PLAN.md)
 - [产品体验设计草案（待实施）](docs/PRODUCT_EXPERIENCE_DESIGN.md)

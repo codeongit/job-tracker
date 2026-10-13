@@ -1,18 +1,20 @@
 # 当前系统架构
 
-本文描述当前实现：运行结构、模块职责、数据所有者与关键流程。本次职责核对日期为 2026-10-12，代码基线为 `68187539e26899042a4add76b10b5bec9a8a18fb`，应用为 0.10.22；当前格式版本以[数据与恢复](DATA_AND_RECOVERY.md#版本与两种存储模式)为准。历史决定及替代关系保留在 [ADR 索引](DECISIONS.md)，后续工作见[架构重构清单](ARCHITECTURE_REFACTOR_PLAN.md)。
+本文描述当前实现：运行结构、模块职责、数据所有者与关键流程。本次职责核对日期为 2026-10-12，代码基线为 `68187539e26899042a4add76b10b5bec9a8a18fb`，应用为 0.10.22；当前格式版本以[数据与恢复](DATA_AND_RECOVERY.md#版本与两种存储模式)为准。历史决定及替代关系保留在 [ADR 索引](adr/README.md)，后续工作见[架构重构清单](ARCHITECTURE_REFACTOR_PLAN.md)。
 
 ## 阅读入口
 
-| 要了解的内容                       | 对应文档                                               |
-| ---------------------------------- | ------------------------------------------------------ |
-| 术语及事实与判断的区别             | [CONTEXT.md](../CONTEXT.md)                            |
-| 当前结构、职责和数据流             | 本文                                                   |
-| 采集授权与只读边界                 | [自动化规约](AUTOMATION_POLICY.md)                     |
-| BOSS 当前流程、业务规则与预算      | [BOSS 接入设计](BOSS_AUTOMATION_DESIGN.md)             |
-| 格式迁移、正式提交、同步与恢复细则 | [数据与恢复](DATA_AND_RECOVERY.md)                     |
-| 启动、发布、排障与人工验收         | [维护手册](MAINTENANCE.md)                             |
-| 历史原因与版本变更                 | [决策索引](DECISIONS.md)、[CHANGELOG](../CHANGELOG.md) |
+| 要了解的内容                       | 对应文档                                                |
+| ---------------------------------- | ------------------------------------------------------- |
+| 术语及事实与判断的区别             | [CONTEXT.md](../CONTEXT.md)                             |
+| 当前结构、职责和数据流             | 本文                                                    |
+| 采集授权与只读边界                 | [自动化规约](AUTOMATION_POLICY.md)                      |
+| BOSS 当前流程、业务规则与预算      | [BOSS 设计说明](boss/DESIGN.md)                         |
+| BOSS 模块、字段与交付机制          | [BOSS 实现说明](boss/IMPLEMENTATION.md)                 |
+| BOSS 命令、状态与排障              | [BOSS 操作说明](boss/OPERATIONS.md)                     |
+| 格式迁移、正式提交、同步与恢复细则 | [数据与恢复](DATA_AND_RECOVERY.md)                      |
+| 启动、发布、排障与人工验收         | [维护手册](MAINTENANCE.md)                              |
+| 历史原因与版本变更                 | [决策索引](adr/README.md)、[CHANGELOG](../CHANGELOG.md) |
 
 ## 运行方式
 
@@ -139,7 +141,7 @@ flowchart LR
     S --> V[页面读取副本]
 ```
 
-已有材料可以只在本机补交和消费；服务重启不恢复 BOSS 跟踪，GitHub 继续由用户手动同步。完整的正常/恢复分支、实际模块调用、采集范围、日期与业务准入统一见 [BOSS 当前流程与规则](BOSS_AUTOMATION_DESIGN.md#数据链路)。
+已有材料可以只在本机补交和消费；服务重启不恢复 BOSS 跟踪，GitHub 继续由用户手动同步。正常/恢复分支、采集范围、日期与业务准入见 [BOSS 完整流程](boss/DESIGN.md#完整流程)，模块与交接见[实现说明](boss/IMPLEMENTATION.md#模块与调用顺序)，使用及恢复见[操作说明](boss/OPERATIONS.md)。
 
 ### 3. GitHub 手动同步
 
@@ -158,26 +160,6 @@ flowchart LR
 4. 正式恢复失败回滚本批准备的草稿副本；正式恢复成功后完成草稿导入。草稿与正式数据处于不同介质，不能描述为跨介质原子事务。
 
 当前已有 pending 时先解决它再恢复；含 pending 的完整备份只允许回到快照，并保留备份的同步目标与冲突双方。恢复同一事实时保留已有人工资料处理与语义否决，缺失或删除材料不补造、不复活。旧回执或旧命令不能代替事实存在性检查。详细恢复与迁移条件见 [DATA_AND_RECOVERY.md](DATA_AND_RECOVERY.md#两种恢复)。
-
-## BOSS 应用规则
-
-当前 BOSS 业务规则集中在 [BOSS 流程与规则](BOSS_AUTOMATION_DESIGN.md#身份字段与业务规则)。下面保留旧阅读入口，便于已有链接定位；规则正文在主文档维护。
-
-### 归属判断
-
-见 [BOSS 归属判断](BOSS_AUTOMATION_DESIGN.md#归属判断)。
-
-### 简历规则的维护
-
-见 [BOSS 简历识别与联动](BOSS_AUTOMATION_DESIGN.md#简历规则的维护)。
-
-### 岗位资料与平台状态
-
-见 [BOSS 岗位资料与平台状态](BOSS_AUTOMATION_DESIGN.md#岗位资料与平台状态)。
-
-### 应用结果与页面核对
-
-见 [BOSS 应用结果与人工处理](BOSS_AUTOMATION_DESIGN.md#应用结果与页面核对)。
 
 ## 页面状态与生命周期
 
@@ -200,7 +182,3 @@ flowchart LR
 改动前按[现状与目标核对](agents/change-workflow.md)追踪实际调用者；新业务规则放入对应共用模块，测试预期从原始要求独立确定。规则、应用决定、持久化交付及页面反馈各自核对，成功计数或回执不能代替结果验证。
 
 纯文档整理检查格式、链接与内容准确性。后续代码重构按[分阶段清单](ARCHITECTURE_REFACTOR_PLAN.md)逐条推进；每步保留稳定身份、业务结果、人工保护、冲突与恢复语义，运行相关非浏览器检查，发布前运行完整 `pnpm test`、`pnpm check` 和 `pnpm format:check`。浏览器及真实平台验收由用户完成，服务更新不自动恢复跟踪或同步 GitHub。
-
-## 平台转换版本与不透明扩展（0.10.21，D049）
-
-见 [BOSS 当前平台转换版本规则](BOSS_AUTOMATION_DESIGN.md#平台转换版本与不透明扩展01021d049)。

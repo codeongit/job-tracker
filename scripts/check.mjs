@@ -1,6 +1,7 @@
 import { readFile, readdir, lstat } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { APP_VERSION } from '../dist/version.js';
+import { checkDocumentation } from './docs-check.mjs';
 const root = new URL('../', import.meta.url);
 async function files(dir) {
   const result = [];
@@ -38,4 +39,8 @@ for (const file of publicFiles) {
 }
 const pkg = JSON.parse(await readFile(new URL('package.json', root), 'utf8'));
 if (pkg.version !== APP_VERSION) throw new Error('package.json 与页面版本号不一致。');
-process.stdout.write('语法、相对导入、入口资源、版本号与公开目录检查通过。\n');
+const documentationFindings = await checkDocumentation(root);
+for (const finding of documentationFindings)
+  process.stderr.write(`${finding.file}:${finding.line} [${finding.code}] ${finding.message}\n`);
+if (documentationFindings.length) process.exit(1);
+process.stdout.write('语法、相对导入、入口资源、版本号、公开目录、文档链接与 ADR 索引检查通过。\n');

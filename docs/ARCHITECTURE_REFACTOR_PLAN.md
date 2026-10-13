@@ -176,4 +176,4 @@
 
 本次纯文档不升版本、不新增 ADR。未来代码发布维护版本与 CHANGELOG，关键决定变化时新增 ADR。保持明确授权、串行操作和现有预算；服务升级由用户执行，重启不恢复跟踪，不自动增加平台任务或 GitHub 同步。
 
-现行 BOSS 流程与业务规则见 [BOSS 主文档](BOSS_AUTOMATION_DESIGN.md)；系统职责、数据恢复和操作步骤分别见[当前架构](ARCHITECTURE.md)、[数据与恢复](DATA_AND_RECOVERY.md)、[维护手册](MAINTENANCE.md)。决定来源与取舍见 [D028](adr/0028-change-driven-history.md)、[D033](adr/0033-boss-import-convergence.md)、[D047](adr/0047-boss-explicit-system-confirmations.md)、[D048](adr/0048-boss-action-resume-confirmation.md)、[D049](adr/0049-boss-versioned-opaque-action-evidence.md)、[D017](adr/0017-manual-browser-testing.md)。
+现行 BOSS 流程与业务规则见[设计说明](boss/DESIGN.md#完整流程)，模块与交付机制见[实现说明](boss/IMPLEMENTATION.md#模块与调用顺序)，运行步骤见[操作说明](boss/OPERATIONS.md#命令与操作)。共享系统职责、数据恢复和开发发布步骤分别见[当前架构](ARCHITECTURE.md)、[数据与恢复](DATA_AND_RECOVERY.md)、[维护手册](MAINTENANCE.md)。决定来源与取舍见 [D028](adr/0028-change-driven-history.md)、[D033](adr/0033-boss-import-convergence.md)、[D047](adr/0047-boss-explicit-system-confirmations.md)、[D048](adr/0048-boss-action-resume-confirmation.md)、[D049](adr/0049-boss-versioned-opaque-action-evidence.md)、[D017](adr/0017-manual-browser-testing.md)。
