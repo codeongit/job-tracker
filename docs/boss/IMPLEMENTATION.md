@@ -46,17 +46,17 @@ sequenceDiagram
 
 ## 状态与数据所有者
 
-| 状态                                 | 唯一职责及所有者                                                                    | 持久位置或交付物                                                                    |
-| ------------------------------------ | ----------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
-| 跟踪生命周期、轮次预留和滚动预算     | `boss-runtime`，controller 负责固定入口、正式工作区准入和票据                       | `.local/boss-integration/tracking.json`                                             |
-| 浏览器与任务页绑定                   | `cdp-browser` 检查实例、target、URL；`extract` 核验账号；`storage` 保存连接元数据   | 采集账号目录的连接文件与专用 profile                                                |
-| 已取得的列表、岗位证据及消息观察     | `model-v2 / resume-history` 维护采集模型，`storage` 保存不可变快照                  | `.local/boss-collector/<账号>/`                                                     |
-| 历史任务、水位、分页、详情退避及轮转 | `change-history` 计算任务；`runtime-state` 保存；tracker 串联阶段                   | `.runtime-v3.json`，读取旧 runtime v1/v2 并保留旧文件                               |
-| 可恢复的历史页材料                   | `runtime-state` 安全读写；变化驱动由 `history-commit` 协调，公平回填由 tracker 编排 | `.change-checkpoint-v1.json`、`.resume-checkpoint-v1.json`；路径 v1 不表示内容仍 v1 |
-| 标准批次、交付进度、生产者暂停       | integration/conversion/inbox 分别负责转换、入队及配套进度                           | `.local/boss-integration/` 的 inbox、runs、control 与交付检查点                     |
-| 事实及应用决定                       | `workspace-consumer` 准备当前工作区候选，纯规则判断；`workspace-store` 唯一提交     | `.local/workspace/` 不可变提交与原子 HEAD                                           |
-| 批次回执                             | inbox 在正式提交之后记录，由 consumer 核对                                          | `.local/boss-integration/receipts/`                                                 |
-| 页面正式数据                         | 页面读取服务，IndexedDB 只作本机读取缓存                                            | 服务失联停止正式写入，保留缓存与草稿                                                |
+| 状态                                 | 唯一职责及所有者                                                                        | 持久位置或交付物                                                                    |
+| ------------------------------------ | --------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| 跟踪生命周期、轮次预留和滚动预算     | `boss-runtime`，controller 负责固定入口、正式工作区准入和票据                           | `.local/boss-integration/tracking.json`                                             |
+| 浏览器与任务页绑定                   | `cdp-browser` 检查实例、target、URL；`extract` 核验账号；`storage` 保存连接元数据       | 采集账号目录的连接文件与专用 profile                                                |
+| 已取得的列表、岗位证据及消息观察     | `model-v2 / resume-history` 维护采集模型，`storage` 保存不可变快照                      | `.local/boss-collector/<账号>/`                                                     |
+| 历史任务、水位、分页、详情退避及轮转 | `change-history` 计算任务；`runtime-state` 保存；tracker 串联阶段                       | `.runtime-v3.json`，读取旧 runtime v1/v2 并保留旧文件                               |
+| 可恢复的历史页材料                   | `runtime-state` 安全读写；由 `history-phase` 编排；变化任务提交由 `history-commit` 协调 | `.change-checkpoint-v1.json`、`.resume-checkpoint-v1.json`；路径 v1 不表示内容仍 v1 |
+| 标准批次、交付进度、生产者暂停       | integration/conversion/inbox 分别负责转换、入队及配套进度                               | `.local/boss-integration/` 的 inbox、runs、control 与交付检查点                     |
+| 事实及应用决定                       | `workspace-consumer` 准备当前工作区候选，纯规则判断；`workspace-store` 唯一提交         | `.local/workspace/` 不可变提交与原子 HEAD                                           |
+| 批次回执                             | inbox 在正式提交之后记录，由 consumer 核对                                              | `.local/boss-integration/receipts/`                                                 |
+| 页面正式数据                         | 页面读取服务，IndexedDB 只作本机读取缓存                                                | 服务失联停止正式写入，保留缓存与草稿                                                |
 
 完成标记不能互相代替：保存快照是取得材料，入队是交付材料，正式提交是保存业务结果，回执是处理记录。生产者暂停、跟踪授权和业务等待也分别管理。私有目录及文件使用 `0700 / 0600`，profile、原始快照和真实资料不进入源码或 `dist/`。
 
@@ -133,7 +133,7 @@ sequenceDiagram
 
 变化驱动历史由 [`history-commit.mjs`](../../collector/boss/history-commit.mjs) 执行：每页先保存私有检查点，随后保存含观察和未支持原因的证据快照，再保存任务进度，最后删除检查点。任一步失败保留可重放材料。仅有 unresolved 原因的检查点也须先保存原因；续页继承并去重旧原因，普通消息水位不表示发送确认。
 
-公平回填的 `.resume-checkpoint-v1.json` 由 tracker 编排：先恢复已有证据，未完成页在具备额度时继续，最终保存成功快照后结算该检查点。详情由独立命令和整轮入口分别编排选择、读取、并入资料、退避和游标保存，当前未集中进同一 history-commit。
+两种历史策略由 [`history-phase.mjs`](../../collector/boss/history-phase.mjs) 的 `collectHistory` 共用身份核验、已加载平台版本读取、请求计量和恢复。变化驱动仍逐任务提交；公平回填的 `.resume-checkpoint-v1.json` 先恢复已有证据，未完成页在具备额度时继续，入口成功保存 JSON 与 Markdown 后调用 `settleSaved` 结算检查点。正常轮次的旧材料恢复、列表任务准备和水位更新也由该模块负责；零历史额度仍完成列表准备，独立扫描保持原公平游标语义。详情由独立命令和整轮入口分别编排选择、读取、并入资料、退避和游标保存，当前未集中进同一 history-commit。
 
 页面补采在目标动作前先保存已校验的输入 JSON 快照，确保本轮新会话的恢复上下文已经落盘；此前保存失败不执行目标动作。取得结果后先保存 v2 `result_ready` 检查点，再保存含规范观察的 JSON 与岗位 Markdown，随后幂等保存 completed/cursor，最后删除检查点。检查点只包含原账号与目标、规范观察、白名单依据、不足原因和覆盖统计，不包含原始响应或正文。任一步失败保留可本机恢复材料；保存失败仍报告本轮实际切换用量。旧 v1 selected 等待新的正常授权，switch_issued 缺结果保持未知，不自动重放。生产默认关闭。
 
@@ -207,14 +207,16 @@ runtime 串行平台轮次，生命周期命令有调用顺序屏障。start/res
 
 #### 3. 列表与消息
 
-| 文件                                                                  | 负责什么                                                                                                                            | 主要关系                                                                                                                                |
-| --------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| [extract.mjs](../../collector/boss/extract.mjs)                       | 定义账号与列表读取脚本；读取已加载 Vue 列表数据，补充已渲染行的时间/回执；转换为标准列表快照，计算账号隔离标识（namespace）与会话键 | 由 `cdp-browser` 执行，结果交给 `tracker / model-v2`；回执解析复用 `receipt`                                                            |
-| [receipt.mjs](../../collector/boss/receipt.mjs)                       | 从可见标签和样式解析消息的 `read / delivered / unknown`，并汇总数量                                                                 | 被 `extract` 的页面脚本及 `tracker` 汇总调用；只表示消息回执，不判断简历是否发送                                                        |
-| [change-history.mjs](../../collector/boss/change-history.mjs)         | 根据最新消息 ID、摘要和岗位 ID 的变化安排历史任务；计算待执行任务、成功消息位置、分页进度及失败等待                                 | 是纯状态计算，不发请求、不写文件。`tracker / history-commit` 调用它，`runtime-state` 保存结果                                           |
-| [resume-history.mjs](../../collector/boss/resume-history.mjs)         | 生成联系人/历史分页的只读请求脚本；串行读取消息，限制请求与页数；转换、去重并合并简历观察及无法识别的原因                           | `tracker` 两种历史入口共用 `runResumeHistoryRequests`；`history-commit / dom-supplement` 复用观察转换。消息含义来自目录外的共用简历规则 |
-| [platform-reference.mjs](../../collector/boss/platform-reference.mjs) | 保存已核实的公开平台版本参考；读取当前已加载脚本 URL，判断新的不透明动作扩展是否适用；提供显式字节指纹比较函数                      | `tracker` 在实际历史读取前调用，再把契约传给 `resume-history`。URL 匹配不证明本轮源码字节相同；它不自动下载源码                         |
-| [dom-supplement.mjs](../../collector/boss/dom-supplement.mjs)         | 在特定历史读取不足时，从聊天页面补读白名单系统状态；管理独立的人工验收策略、轮转进度和切换检查点                                    | 由 `tracker` 可选调用，转换复用 `resume-history`。须有账号绑定验收策略和明确零未读依据；生产默认关闭，选择器仍待人工验收                |
+| 文件                                                                  | 负责什么                                                                                                                            | 主要关系                                                                                                                                  |
+| --------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| [extract.mjs](../../collector/boss/extract.mjs)                       | 定义账号与列表读取脚本；读取已加载 Vue 列表数据，补充已渲染行的时间/回执；转换为标准列表快照，计算账号隔离标识（namespace）与会话键 | 由 `cdp-browser` 执行，结果交给 `tracker / model-v2`；回执解析复用 `receipt`                                                              |
+| [receipt.mjs](../../collector/boss/receipt.mjs)                       | 从可见标签和样式解析消息的 `read / delivered / unknown`，并汇总数量                                                                 | 被 `extract` 的页面脚本及 `tracker` 汇总调用；只表示消息回执，不判断简历是否发送                                                          |
+| [change-history.mjs](../../collector/boss/change-history.mjs)         | 根据最新消息 ID、摘要和岗位 ID 的变化安排历史任务；计算待执行任务、成功消息位置、分页进度及失败等待                                 | 是纯状态计算，不发请求、不写文件。`tracker / history-commit` 调用它，`runtime-state` 保存结果                                             |
+| [resume-history.mjs](../../collector/boss/resume-history.mjs)         | 生成联系人/历史分页的只读请求脚本；串行读取消息，限制请求与页数；转换、去重并合并简历观察及无法识别的原因                           | `history-phase` 两种策略共用 `runResumeHistoryRequests`；`history-commit / dom-supplement` 复用观察转换。消息含义来自目录外的共用简历规则 |
+| [platform-reference.mjs](../../collector/boss/platform-reference.mjs) | 保存已核实的公开平台版本参考；读取当前已加载脚本 URL，判断新的不透明动作扩展是否适用；提供显式字节指纹比较函数                      | `history-phase` 在实际历史读取前调用，再把契约传给 `resume-history`。URL 匹配不证明本轮源码字节相同；它不自动下载源码                     |
+| [dom-supplement.mjs](../../collector/boss/dom-supplement.mjs)         | 在特定历史读取不足时，从聊天页面补读白名单系统状态；管理独立的人工验收策略、轮转进度和切换检查点                                    | 由 `tracker` 可选调用，转换复用 `resume-history`。须有账号绑定验收策略和明确零未读依据；生产默认关闭，选择器仍待人工验收                  |
+
+[`history-phase.mjs`](../../collector/boss/history-phase.mjs) 是历史阶段入口：`collectHistory` 返回材料、状态候选、统计和用量；`settleSaved` 只结算已完整保存的公平补录材料。运行入口合并最新 CDP 重连状态后保存运行进度，阶段不拥有跟踪授权或小时预算。
 
 **这里的区别：** `change-history` 决定读谁，`resume-history` 执行历史读取，`receipt` 解释列表回执。[简历发送含义](DESIGN.md#简历识别与联动)和[岗位归属](DESIGN.md#归属判断)仍需各自核对，`strong` 只是采集侧的分类标签，不能代替服务应用判定。
 

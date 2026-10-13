@@ -12,7 +12,6 @@ import {
   disconnect as disconnectBrowser,
 } from './cdp-browser.mjs';
 import { accountExpression, expression, toSnapshot } from './extract.mjs';
-import { readLoadedPlatformReference } from './platform-reference.mjs';
 import { latest, lock, loadConnection, saveConnection, removeConnection } from './storage.mjs';
 import {
   compareLoadedSnapshotsV2,
@@ -31,20 +30,13 @@ import { exportCurrent, saveEnvelope } from './snapshot-save.mjs';
 export { saveEnvelope } from './snapshot-save.mjs';
 import { jobCounts } from './job.mjs';
 import { receiptCounts } from './receipt.mjs';
-import {
-  runResumeHistoryRequests,
-  toResumeHistoryResult,
-  applyResumeHistoryV2,
-} from './resume-history.mjs';
+
 import { collectDomSupplement, domSupplementStatus } from './dom-supplement.mjs';
 import {
   loadRuntimeState,
   saveRuntimeState,
   selectFair,
   completeRun,
-  saveResumeCheckpoint,
-  loadResumeCheckpoint,
-  removeResumeCheckpoint,
   clearCdpRetry,
   runWithPersistentCdpRetry,
   detailTaskDisposition,
@@ -53,9 +45,9 @@ import {
   resumeDetailState,
   detailRuntimeSummary,
 } from './runtime-state.mjs';
-import { observeHistoryList, recordHistoryWatermark, historySummary } from './change-history.mjs';
-import { createHistoryCommit } from './history-commit.mjs';
-import { createHash, randomUUID } from 'node:crypto';
+import { historySummary } from './change-history.mjs';
+import { collectHistory, settleSaved } from './history-phase.mjs';
+import { randomUUID } from 'node:crypto';
 import { accountDataDirectory } from './paths.mjs';
 
 const identityOptions = {
@@ -381,46 +373,6 @@ export function detailInputs(envelope, timeLabel = null) {
   return { candidates, knownEvidence };
 }
 
-export function fairResumeTargets(
-  envelope,
-  { cursor = null, limit = 10, timeLabel = null, jobId = null, resumeFrom = null } = {},
-) {
-  const checked = validateEnvelope(envelope);
-  let eligible =
-    timeLabel === null
-      ? checked.snapshot.records
-      : checked.snapshot.records.filter((record) => record.timeLabel === timeLabel);
-  if (jobId !== null)
-    eligible = eligible.filter((record) => record.jobAssociation?.jobId === jobId);
-  let fair;
-  const continuing =
-    resumeFrom === null ? null : eligible.find((record) => record.key === resumeFrom);
-  if (continuing) {
-    const remaining = selectFair(
-      eligible.filter((record) => record.key !== resumeFrom),
-      {
-        cursor,
-        limit: Math.max(1, limit - 1),
-        key: (record) => record.key,
-      },
-    );
-    fair = {
-      selected: [continuing, ...remaining.selected].slice(0, limit),
-      cursor: remaining.cursor ?? resumeFrom,
-    };
-  } else {
-    fair = selectFair(eligible, { cursor, limit, key: (record) => record.key });
-  }
-  return {
-    cursor: fair.cursor,
-    targets: fair.selected.map((record) => ({
-      conversationKey: record.key,
-      friendId: record.platformIdentity.friendId,
-      friendSource: record.platformIdentity.friendSource,
-    })),
-  };
-}
-
 export function fairDetailInputs(
   envelope,
   {
@@ -530,345 +482,6 @@ function detailFailureScope(collected, finalIdentity) {
   if (!finalIdentity.ok || accountDetailFailure(collected.halted?.code)) return 'account';
   if (collected.halted || collected.failures.length) return 'detail';
   return 'none';
-}
-
-async function withHistoryRequestUsage(options, operation) {
-  let used = 0;
-  const evaluate = options.evaluate ?? evaluateBound;
-  try {
-    return await operation({
-      ...options,
-      evaluate: (...args) => {
-        // Issued requests with an unknown outcome still consume one action.
-        // Keep the count independent of subsequent local persistence failures.
-        if (args[2]?.kind !== 'platform_reference') used += 1;
-        return evaluate(...args);
-      },
-    });
-  } catch (caught) {
-    const error = caught instanceof Error ? caught : new Error(safeError(caught));
-    error.usage = { historyRequests: used };
-    throw error;
-  }
-}
-
-export function collectResume(options) {
-  return withHistoryRequestUsage(options, collectResumeOperation);
-}
-
-async function collectResumeOperation({
-  directory,
-  connection,
-  envelope,
-  runtime,
-  limit = 10,
-  pages = 2,
-  maxRequests = 20,
-  timeLabel = null,
-  jobId = null,
-  reportOperation = (operation) => operation(),
-  evaluate = evaluateBound,
-  readPlatformReference = readLoadedPlatformReference,
-}) {
-  const priorCheckpoint = await loadResumeCheckpoint(directory);
-  if (
-    priorCheckpoint &&
-    (priorCheckpoint.observations.length || priorCheckpoint.unresolved.length)
-  ) {
-    const recovered = toResumeHistoryResult(
-      {
-        ok: true,
-        url: 'https://www.zhipin.com/web/geek/chat',
-        capturedAt: priorCheckpoint.capturedAt,
-        observations: priorCheckpoint.observations,
-        unresolved: priorCheckpoint.unresolved,
-        coverage: priorCheckpoint.coverage,
-      },
-      envelope,
-    );
-    envelope = applyResumeHistoryV2(envelope, recovered).envelope;
-  }
-  const startConversationKey = priorCheckpoint?.nextConversationKey ?? null;
-  const startPage = startConversationKey === null ? 1 : Math.max(1, priorCheckpoint.nextPage);
-  const fair = fairResumeTargets(envelope, {
-    cursor: runtime.cursors.resume,
-    limit,
-    timeLabel,
-    jobId,
-    resumeFrom: startConversationKey,
-  });
-  if (!fair.targets.length)
-    return {
-      envelope,
-      counts: {
-        observed: 0,
-        added: 0,
-        strong: 0,
-        review: 0,
-        unresolved: 0,
-        unresolvedByReason: {},
-        deduplicated: 0,
-      },
-      coverage: null,
-      usage: { historyRequests: 0 },
-      partial: false,
-      error: null,
-      cursor: runtime.cursors.resume,
-      checkpointPending: Boolean(priorCheckpoint),
-    };
-  const preflight = await reportOperation(() => resumeBrowser(connection, identityOptions));
-  if (!preflight.ok)
-    return {
-      envelope,
-      counts: null,
-      coverage: null,
-      usage: { historyRequests: 0 },
-      partial: true,
-      error: preflight.report.error,
-      cursor: runtime.cursors.resume,
-      verification: preflight.report,
-    };
-  const reference =
-    maxRequests >= 2
-      ? await readPlatformReference({ connection, evaluate })
-      : { platformContract: null };
-  const scan = await runResumeHistoryRequests({
-    targets: fair.targets,
-    pages,
-    maxRequests,
-    platformContract: reference.platformContract,
-    requestDelayMs: 3000,
-    initialObservations: priorCheckpoint?.observations ?? [],
-    initialUnresolved: priorCheckpoint?.unresolved ?? [],
-    startConversationKey,
-    startPage,
-    knownMessageIds: [
-      ...envelope.resume.observations.map((item) => ({
-        conversationKey: item.conversationKey,
-        messageId: item.messageId,
-      })),
-      ...(runtime.history?.conversations ?? [])
-        .filter((item) => item.watermark)
-        .map((item) => ({
-          conversationKey: item.key,
-          messageId: item.watermark,
-        })),
-    ],
-    execute: async (expression, metadata) => {
-      // The page may already have issued this platform request when CDP drops.
-      // Never replay it inside the reconnect loop: the in-page XHR aborts at
-      // 15 seconds, while the next scheduled round resumes the durable page.
-      const payload = await evaluate(connection, expression, metadata);
-      if (!payload || typeof payload !== 'object') throw new Error('HISTORY_RESPONSE_INVALID');
-      return payload;
-    },
-    onCheckpoint: (value) => saveResumeCheckpoint(directory, value),
-  });
-  const result = toResumeHistoryResult(scan.payload, envelope);
-  const applied = applyResumeHistoryV2(envelope, result);
-  const finalCheck = await reportOperation(() => resumeBrowser(connection, identityOptions));
-  const error = scan.error ?? (finalCheck.ok ? null : finalCheck.report.error);
-  return {
-    envelope: applied.envelope,
-    counts: applied.report.counts,
-    coverage: result.coverage,
-    usage: scan.usage,
-    partial: scan.partial || !finalCheck.ok,
-    error,
-    cursor: scan.cursor ?? runtime.cursors.resume,
-    checkpointPending: true,
-    continuation: scan.continuation,
-    completed: scan.completed,
-    verification: finalCheck.report,
-  };
-}
-
-export function collectChangedResume(options) {
-  return withHistoryRequestUsage(options, collectChangedResumeOperation);
-}
-
-async function collectChangedResumeOperation({
-  directory,
-  connection,
-  envelope,
-  runtime,
-  maxRequests,
-  saveProgress = (state) => saveRuntimeState(directory, { ...runtime, history: state }),
-  saveEvidence = (value) => saveEnvelope(directory, value),
-  requestDelayMs = 3000,
-  betweenTargetsDelayMs = 3000,
-  reportOperation = (operation) => operation(),
-  evaluate = evaluateBound,
-  readPlatformReference = readLoadedPlatformReference,
-}) {
-  const history = createHistoryCommit({
-    directory,
-    envelope,
-    state: runtime.history,
-    saveEvidence,
-    saveProgress,
-  });
-  const pending = await history.prepare();
-  const prior = history.checkpoint;
-  if (!pending.length && !prior)
-    return {
-      envelope: history.envelope,
-      state: history.state,
-      counts: {
-        observed: 0,
-        added: 0,
-        strong: 0,
-        review: 0,
-        unresolved: 0,
-        unresolvedByReason: {},
-        deduplicated: 0,
-      },
-      coverage: null,
-      usage: { historyRequests: 0 },
-      partial: false,
-      error: null,
-    };
-  const preflight = await reportOperation(() => resumeBrowser(connection, identityOptions));
-  if (!preflight.ok)
-    return {
-      envelope: history.envelope,
-      state: history.state,
-      counts: null,
-      coverage: null,
-      usage: { historyRequests: 0 },
-      partial: true,
-      error: preflight.report.error,
-      verification: preflight.report,
-    };
-  let used = 0,
-    reference = null,
-    coverage = null,
-    partial = false,
-    error = null;
-  const counts = {
-    observed: 0,
-    added: 0,
-    strong: 0,
-    review: 0,
-    unresolved: 0,
-    unresolvedByReason: {},
-    deduplicated: 0,
-  };
-  const ordered =
-    prior?.nextConversationKey || prior?.completedConversationKey
-      ? [...pending].sort(
-          (a, b) =>
-            (a.key === (prior.nextConversationKey ?? prior.completedConversationKey) ? -1 : 0) -
-            (b.key === (prior.nextConversationKey ?? prior.completedConversationKey) ? -1 : 0),
-        )
-      : pending;
-  for (const item of ordered) {
-    if (maxRequests - used < 2 && history.checkpoint?.completedConversationKey !== item.key) break;
-    const task = item.task;
-    if (!task) continue;
-    if (used && betweenTargetsDelayMs)
-      await new Promise((resolve) => setTimeout(resolve, betweenTargetsDelayMs));
-    const checkpoint = history.forTask(item.key);
-    if (checkpoint && checkpoint.targetFingerprint !== task.fingerprint)
-      throw new Error('CHANGE_CHECKPOINT_TARGET_CHANGED');
-    if (checkpoint?.completedConversationKey === item.key) {
-      await history.completeFromCheckpoint(item);
-      continue;
-    }
-    const record = history.envelope.snapshot.records.find((entry) => entry.key === item.key);
-    if (!record) {
-      await history.discardMissingRecord();
-      continue;
-    }
-    const startPage = checkpoint?.nextPage ?? task.page;
-    reference ??= await readPlatformReference({ connection, evaluate });
-    const scan = await runResumeHistoryRequests({
-      targets: [
-        {
-          conversationKey: item.key,
-          friendId: record.platformIdentity.friendId,
-          friendSource: record.platformIdentity.friendSource,
-        },
-      ],
-      pages: 2,
-      maxRequests: maxRequests - used,
-      platformContract: reference.platformContract,
-      requestDelayMs,
-      startConversationKey: item.key,
-      startPage,
-      initialObservations: checkpoint?.observations ?? [],
-      initialUnresolved: checkpoint?.unresolved ?? [],
-      initialHead: checkpoint?.head ?? task.head,
-      knownMessageIds: item.watermark
-        ? [{ conversationKey: item.key, messageId: item.watermark }]
-        : [],
-      execute: (expression, metadata) => evaluate(connection, expression, metadata),
-      onCheckpoint: (value) => history.checkpointPage(value, task.fingerprint),
-    });
-    used += scan.usage.historyRequests;
-    const committed = await history.commitScan(item, scan);
-    for (const key of ['observed', 'added', 'strong', 'review', 'unresolved', 'deduplicated'])
-      counts[key] += committed.counts[key] ?? 0;
-    for (const [reason, amount] of Object.entries(committed.counts.unresolvedByReason ?? {}))
-      counts.unresolvedByReason[reason] = (counts.unresolvedByReason[reason] ?? 0) + amount;
-    if (!coverage)
-      coverage = {
-        requestedConversations: 0,
-        resolvedConversations: 0,
-        pagesPerConversation: 2,
-        requestedPages: 0,
-        completedPages: 0,
-        exhaustedConversations: 0,
-        truncatedConversations: 0,
-        failedConversations: 0,
-      };
-    for (const key of [
-      'requestedConversations',
-      'resolvedConversations',
-      'requestedPages',
-      'completedPages',
-      'exhaustedConversations',
-      'truncatedConversations',
-      'failedConversations',
-    ])
-      coverage[key] += committed.coverage[key] ?? 0;
-    if (scan.error) {
-      partial = true;
-      error = scan.error;
-      break;
-    }
-  }
-  const finalCheck = await reportOperation(() => resumeBrowser(connection, identityOptions));
-  return {
-    envelope: history.envelope,
-    state: history.state,
-    counts,
-    coverage,
-    usage: { historyRequests: used },
-    partial: partial || !finalCheck.ok,
-    error: error ?? (finalCheck.ok ? null : finalCheck.report.error),
-    verification: finalCheck.report,
-  };
-}
-
-async function settleResumeCheckpoint(directory, scanned) {
-  if (!scanned.checkpointPending) return;
-  if (!scanned.continuation) {
-    await removeResumeCheckpoint(directory);
-    return;
-  }
-  await saveResumeCheckpoint(directory, {
-    version: 6,
-    capturedAt: new Date().toISOString(),
-    nextConversationKey: scanned.continuation.conversationKey,
-    nextPage: scanned.continuation.page,
-    observations: [],
-    unresolved: [],
-    coverage: scanned.coverage ?? {},
-    usage: { historyRequests: 0 },
-    partial: false,
-    error: null,
-  });
 }
 
 export async function main(argv = process.argv.slice(2), { resumeIdentity = resumeBrowser } = {}) {
@@ -1258,7 +871,8 @@ export async function main(argv = process.argv.slice(2), { resumeIdentity = resu
     if (mode === 'resume-scan') {
       if (![2, 3, 4, 5, 6, 7, 8].includes(saved.envelope.version))
         throw new Error('V2_CHECK_REQUIRED');
-      const scanned = await collectResume({
+      const scanned = await collectHistory({
+        mode: 'backfill',
         directory,
         connection: activeConnection,
         envelope: saved.envelope,
@@ -1294,7 +908,7 @@ export async function main(argv = process.argv.slice(2), { resumeIdentity = resu
         return;
       }
       const files = await saveEnvelope(directory, scanned.envelope);
-      await settleResumeCheckpoint(directory, scanned);
+      await settleSaved(directory, scanned, files);
       runtime = {
         ...runtime,
         cursors: { ...runtime.cursors, resume: scanned.cursor },
@@ -1404,82 +1018,23 @@ export async function main(argv = process.argv.slice(2), { resumeIdentity = resu
     }
     if (mode === 'run') {
       const startedAt = commandStartedAt;
-      // Preserve legacy page evidence before creating a new change-driven task.
-      const legacyCheckpoint = await loadResumeCheckpoint(directory);
-      const legacyDigest = legacyCheckpoint
-        ? createHash('sha256').update(JSON.stringify(legacyCheckpoint)).digest('hex')
-        : null;
-      if (
-        legacyCheckpoint &&
-        (legacyCheckpoint.observations.length || legacyCheckpoint.unresolved.length) &&
-        legacyDigest !== runtime.history.legacyCheckpointDigest
-      ) {
-        const recovered = toResumeHistoryResult(
-          {
-            ok: true,
-            url: 'https://www.zhipin.com/web/geek/chat',
-            capturedAt: legacyCheckpoint.capturedAt,
-            observations: legacyCheckpoint.observations,
-            unresolved: legacyCheckpoint.unresolved,
-            coverage: legacyCheckpoint.coverage,
-          },
-          envelope,
-        );
-        envelope = applyResumeHistoryV2(envelope, recovered).envelope;
-        await saveEnvelope(directory, envelope);
-      }
-      runtime = {
-        ...runtime,
-        history: {
-          ...observeHistoryList(runtime.history, snapshot.records, startedAt),
-          legacyCheckpointDigest: legacyDigest ?? runtime.history.legacyCheckpointDigest,
-        },
-      };
-      sharedRuntime = runtime;
-      await saveRuntimeState(directory, runtime);
-      let history = {
+      const history = await collectHistory({
+        mode: historyMode,
+        directory,
+        connection: activeConnection,
         envelope,
-        counts: { observed: 0, added: 0, strong: 0, review: 0, unresolved: 0, deduplicated: 0 },
-        coverage: null,
-        usage: { historyRequests: 0 },
-        partial: false,
-        error: null,
-        cursor: runtime.cursors.resume,
-      };
-      if ([2, 3, 4, 5, 6, 7, 8].includes(envelope.version) && historyRequests > 0)
-        history =
-          historyMode === 'backfill'
-            ? await collectResume({
-                directory,
-                connection: activeConnection,
-                envelope,
-                runtime,
-                limit: 10,
-                pages: 2,
-                maxRequests: historyRequests,
-                reportOperation: retryReport,
-              })
-            : await collectChangedResume({
-                directory,
-                connection: activeConnection,
-                envelope,
-                runtime,
-                maxRequests: historyRequests,
-                saveProgress: async (state) => {
-                  sharedRuntime = { ...sharedRuntime, history: state };
-                  await saveRuntimeState(directory, sharedRuntime);
-                },
-                reportOperation: retryReport,
-              });
+        runtime,
+        limit: 10,
+        pages: 2,
+        maxRequests: historyRequests,
+        listObservedAt: startedAt,
+        saveProgress: async (state) => {
+          sharedRuntime = { ...sharedRuntime, history: state };
+          await saveRuntimeState(directory, sharedRuntime);
+        },
+        reportOperation: retryReport,
+      });
       runtime = { ...sharedRuntime, history: history.state ?? runtime.history };
-      if (historyMode === 'backfill' && history.completed?.length) {
-        for (const item of history.completed)
-          runtime.history = recordHistoryWatermark(
-            runtime.history,
-            item.conversationKey,
-            item.head,
-          );
-      }
       sharedRuntime = runtime;
       failureUsage.historyRequests = history.usage.historyRequests;
       envelope = history.envelope;
@@ -1587,7 +1142,7 @@ export async function main(argv = process.argv.slice(2), { resumeIdentity = resu
       );
       runtime = sharedRuntime;
       const files = await saveEnvelope(directory, envelope);
-      if (historyMode === 'backfill') await settleResumeCheckpoint(directory, history);
+      await settleSaved(directory, history, files);
       const detailFailed = Boolean(detailCollected.halted || detailCollected.failures.length);
       const partial = history.partial || dom.partial || detailFailed || !finalIdentity.ok;
       const failureScope =

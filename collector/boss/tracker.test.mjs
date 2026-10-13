@@ -1,3 +1,4 @@
+import { collectHistory, fairResumeTargets } from './history-phase.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, rm, realpath, readdir, readFile } from 'node:fs/promises';
@@ -5,11 +6,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   main,
-  collectResume,
-  collectChangedResume,
   detailInputs,
   fairDetailInputs,
-  fairResumeTargets,
   parseArguments,
   safeBrowserReport,
   saveEnvelope,
@@ -31,6 +29,8 @@ import { observeHistoryList, pendingHistory } from './change-history.mjs';
 
 // macOS exposes /var as a symlink; private-writer fixtures use its real location.
 const privateTemporaryRoot = await realpath(tmpdir());
+const collectResume = (options) => collectHistory({ ...options, mode: 'backfill' });
+const collectChangedResume = (options) => collectHistory({ ...options, mode: 'change' });
 
 test('CLI keeps compatibility while exposing persistent connection and bounded enrichment modes', () => {
   const base = {
