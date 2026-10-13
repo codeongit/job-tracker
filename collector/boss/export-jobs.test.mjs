@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { renderJobs, writePrivateMarkdown } from './export-jobs.mjs';
-import { compareLoadedSnapshotsV2 } from './model-v2.mjs';
+import { renderJobs, writePrivateMarkdown } from './materials/export-jobs.mjs';
+import { compareLoadedSnapshotsV2 } from './materials/model-v2.mjs';
 
 const at = (minute) => `2026-09-18T10:${String(minute).padStart(2, '0')}:00.000Z`;
 const url = (id) => `https://www.zhipin.com/job_detail/${id}.html`;

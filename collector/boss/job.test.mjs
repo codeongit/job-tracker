@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { unknownJob, normalizeJobCandidate, chooseJob, jobCounts } from './job.mjs';
+import { unknownJob, normalizeJobCandidate, chooseJob, jobCounts } from './materials/job.mjs';
 const candidate = {
   name: '示例岗位',
   href: '/job_detail/abc_123.html?tracking=test',

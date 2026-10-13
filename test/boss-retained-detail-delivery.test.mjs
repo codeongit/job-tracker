@@ -4,24 +4,27 @@ import {
   compareLoadedSnapshotsV2,
   conversationKeyV2,
   applyDetailEvidenceV2,
-} from '../collector/boss/model-v2.mjs';
-import { toResumeHistoryResult, applyResumeHistoryV2 } from '../collector/boss/resume-history.mjs';
+} from '../collector/boss/materials/model-v2.mjs';
+import {
+  toResumeHistoryResult,
+  applyResumeHistoryV2,
+} from '../collector/boss/history/resume-history.mjs';
 import {
   createBatch,
   createEvents,
   createResumeEvents,
   createIncrementalBatch,
   resolveJobRows,
-} from '../scripts/boss-conversion.mjs';
-import { validateTrackerEnvelope } from '../scripts/boss-integration.mjs';
-import { validateBossBatch } from '../scripts/boss-inbox.mjs';
-import { validateBossBatch as validateSharedBatch } from '../dist/boss-batch.js';
+} from '../scripts/boss/delivery/conversion.mjs';
+import { validateTrackerEnvelope } from '../scripts/boss/delivery/integration.mjs';
+import { validateBossBatch } from '../scripts/boss/delivery/inbox.mjs';
+import { validateBossBatch as validateSharedBatch } from '../dist/boss/rules/batch.js';
 import { emptyData } from '../dist/model.js';
 import {
   applyBossBatch,
   bindBossAccount,
   ignoreBossObservations,
-} from '../dist/boss-integration.js';
+} from '../dist/boss/application/integration.js';
 
 const ACCOUNT = `boss-geek:${'a'.repeat(64)}`;
 const OTHER_ACCOUNT = `boss-geek:${'b'.repeat(64)}`;

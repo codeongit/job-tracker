@@ -3,11 +3,11 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, rm, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { collectHistory, fairResumeTargets, settleSaved } from './history-phase.mjs';
-import { compareLoadedSnapshotsV2, conversationKeyV2 } from './model-v2.mjs';
-import { applyResumeHistoryV2, toResumeHistoryResult } from './resume-history.mjs';
-import { observeHistoryList, pendingHistory } from './change-history.mjs';
-import { accountNamespace } from './extract.mjs';
+import { collectHistory, fairResumeTargets, settleSaved } from './history/history-phase.mjs';
+import { compareLoadedSnapshotsV2, conversationKeyV2 } from './materials/model-v2.mjs';
+import { applyResumeHistoryV2, toResumeHistoryResult } from './history/resume-history.mjs';
+import { observeHistoryList, pendingHistory } from './history/change-history.mjs';
+import { accountNamespace } from './platform/extract.mjs';
 import {
   normalizeRuntimeState,
   loadRuntimeState,
@@ -16,9 +16,9 @@ import {
   loadChangeCheckpoint,
   saveResumeCheckpoint,
   loadResumeCheckpoint,
-} from './runtime-state.mjs';
-import { assessLoadedPlatformReference } from './platform-reference.mjs';
-import { saveEnvelope } from './snapshot-save.mjs';
+} from './persistence/runtime-state.mjs';
+import { assessLoadedPlatformReference } from './platform/platform-reference.mjs';
+import { saveEnvelope } from './persistence/snapshot-save.mjs';
 
 const privateTemporaryRoot = await realpath(tmpdir());
 const capturedAt = '2026-09-24T02:00:00.000Z';

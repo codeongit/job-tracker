@@ -1,13 +1,13 @@
-import { parseBossJobUrl } from './boss-job-url.js';
+import { parseBossJobUrl } from './boss/contracts/job-url.js';
 import { runAppStartup } from './app-startup.js';
 import {
   groupBossObservations,
   bossObservationGroups,
   bossJobDetailsConfirmation,
-} from './boss-observations.js';
+} from './boss/application/observations.js';
 import { createSyncConflictUI } from './sync-conflict-ui.js';
 import { bossConflictTargets } from './settings-guidance.js';
-import { RESUME_STATES } from './resume-rules.js';
+import { RESUME_STATES } from './boss/rules/resume-rules.js';
 import { createDraftManager } from './drafts.js';
 import { createDiskBackup } from './disk-backup.js';
 import { createBackupUI } from './backup-ui.js';
@@ -61,11 +61,11 @@ import {
 import { githubClient, syncWorkspace, validateConfig } from './github.js';
 import { discoverLocalSsh, localSshClient } from './local-ssh.js';
 import { bindCommittedTextInput, trackComposition } from './text-input.js';
+import { createBossQueueConsumer } from './boss/client.js';
 import {
-  createBossQueueConsumer,
   bossWaitingReviewTarget,
   bossWaitingReviewCandidates,
-} from './boss-integration.js';
+} from './boss/application/integration.js';
 import { $, esc, options, download } from './ui.js';
 let state,
   view = 'today',

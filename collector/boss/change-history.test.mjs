@@ -8,7 +8,7 @@ import {
   failHistoryTask,
   recordHistoryWatermark,
   historySummary,
-} from './change-history.mjs';
+} from './history/change-history.mjs';
 
 const at = '2026-09-23T16:30:00.000Z'; // Shanghai: 2026-09-24 00:30
 const row = (key, label = '昨天', message = 'm1', preview = 'hello', jobId = 'job-a') => ({

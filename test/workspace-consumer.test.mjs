@@ -1,17 +1,17 @@
-import { bossEventDigestInput, bossBatchDigestInput } from '../dist/boss-batch.js';
+import { bossEventDigestInput, bossBatchDigestInput } from '../dist/boss/rules/batch.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm, writeFile, readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { WorkspaceStore, workspaceDigest } from '../scripts/workspace-store.mjs';
-import { BossInbox } from '../scripts/boss-inbox.mjs';
+import { BossInbox } from '../scripts/boss/delivery/inbox.mjs';
 import {
   createWorkspaceInboxConsumer,
   workspaceConflictScope,
 } from '../scripts/workspace-consumer.mjs';
 import { initialWorkspace, createBackup, restoreWorkspace } from '../dist/workspace.js';
-import { bindBossAccount } from '../dist/boss-integration.js';
+import { bindBossAccount } from '../dist/boss/application/integration.js';
 import { bossApplicationId, bossFactId } from '../dist/source-identity.js';
 
 const ACCOUNT = `boss-geek:${'a'.repeat(64)}`,

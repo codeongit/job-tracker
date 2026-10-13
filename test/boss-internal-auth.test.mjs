@@ -7,7 +7,7 @@ import {
   consumeBossInternalAuthorization,
   issueBossInternalAuthorization,
   revokeBossInternalAuthorization,
-} from '../scripts/boss-internal-auth.mjs';
+} from '../scripts/boss/control/internal-auth.mjs';
 
 const REQUEST = {
   command: 'collect-cycle',

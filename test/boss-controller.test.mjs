@@ -3,9 +3,9 @@ import { mkdtemp, mkdir, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { createBossController } from '../scripts/boss-controller.mjs';
-import { BossInbox } from '../scripts/boss-inbox.mjs';
-import { emptyControl } from '../scripts/boss-integration.mjs';
+import { createBossController } from '../scripts/boss/control/controller.mjs';
+import { BossInbox } from '../scripts/boss/delivery/inbox.mjs';
+import { emptyControl } from '../scripts/boss/delivery/integration.mjs';
 
 async function setup() {
   const root = await mkdtemp(join(tmpdir(), 'job-tracker-controller-')),

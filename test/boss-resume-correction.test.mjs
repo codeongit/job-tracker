@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import * as integration from '../dist/boss-integration.js';
+import * as integration from '../dist/boss/application/integration.js';
 import { markManualFields } from '../dist/model.js';
 import { bossApplicationId, bossFactId } from '../dist/source-identity.js';
 import { effectiveSourceFacts, effectiveSourceEvents } from '../dist/source-ledger.js';

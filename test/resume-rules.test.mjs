@@ -16,7 +16,7 @@ import {
   validateResumeEvidence,
   resumeEvidenceMeaning,
   resumeTransition,
-} from '../dist/resume-rules.js';
+} from '../dist/boss/rules/resume-rules.js';
 
 test('用户确认的平台文案含义保持固定，不从 request 字面重新推断业务含义', () => {
   const cases = [

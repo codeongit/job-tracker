@@ -4,8 +4,8 @@ import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { fairDetailInputs } from './detail-phase.mjs';
-import { compareLoadedSnapshotsV2, conversationKeyV2 } from './model-v2.mjs';
+import { fairDetailInputs } from './details/detail-phase.mjs';
+import { compareLoadedSnapshotsV2, conversationKeyV2 } from './materials/model-v2.mjs';
 import {
   loadRuntimeState,
   saveRuntimeState,
@@ -23,7 +23,7 @@ import {
   resumeDetailState,
   saveChangeCheckpoint,
   loadChangeCheckpoint,
-} from './runtime-state.mjs';
+} from './persistence/runtime-state.mjs';
 
 test('fair selection resumes after the prior item and wraps without starvation', () => {
   const values = ['a', 'b', 'c', 'd'].map((id) => ({ id }));

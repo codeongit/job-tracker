@@ -2,9 +2,9 @@ import { MAX_REQUEST_BYTES, MAX_BACKUP_BYTES } from '../dist/limits.js';
 import { timingSafeEqual } from 'node:crypto';
 import { BridgeError } from './ssh-store.mjs';
 import { BackupError } from './disk-backups.mjs';
-import { BossInboxError } from './boss-inbox.mjs';
+import { BossInboxError } from './boss/delivery/inbox.mjs';
 import { handleWorkspaceApi } from './workspace-api.mjs';
-import { handleBossControllerApi } from './boss-controller-api.mjs';
+import { handleBossControllerApi } from './boss/control/controller-api.mjs';
 import { WorkspaceStoreError, WORKSPACE_STORAGE_VERSION } from './workspace-store.mjs';
 const json = (res, status, body) => {
   res.writeHead(status, { 'Content-Type': 'application/json;charset=utf-8' });

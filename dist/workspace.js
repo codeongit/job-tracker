@@ -2,7 +2,7 @@ import { validateDrafts } from './draft-data.js';
 import { clone, emptyData, GROUPS, validateData, removeOpportunity } from './model.js';
 import { APP_VERSION, BACKUP_VERSION, DATA_VERSION, WORKSPACE_VERSION } from './version.js';
 import { upgradeSourceLedger } from './source-ledger.js';
-import { preserveBossResumeCorrections } from './boss-integration.js';
+import { preserveBossResumeCorrections } from './boss/application/integration.js';
 
 export function initialWorkspace() {
   return {

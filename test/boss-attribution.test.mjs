@@ -7,11 +7,14 @@ import {
   bossAttributionSummary,
   buildBossAttributionContext,
   assessBossAttribution,
-} from '../dist/boss-attribution.js';
+} from '../dist/boss/rules/attribution.js';
 import { bossIntegrationView } from '../dist/settings-view.js';
-import { recordAttributionDiagnostic } from '../scripts/boss-attribution-diagnostics.mjs';
-import { commit, latest } from '../collector/boss/storage.mjs';
-import { saveResumeCheckpoint, loadResumeCheckpoint } from '../collector/boss/runtime-state.mjs';
+import { recordAttributionDiagnostic } from '../scripts/boss/shared/diagnostics.mjs';
+import { commit, latest } from '../collector/boss/persistence/storage.mjs';
+import {
+  saveResumeCheckpoint,
+  loadResumeCheckpoint,
+} from '../collector/boss/persistence/runtime-state.mjs';
 
 const account = `boss-geek:${'a'.repeat(64)}`;
 const event = {

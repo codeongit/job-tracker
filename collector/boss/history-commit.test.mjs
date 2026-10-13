@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createHistoryCommit } from './history-commit.mjs';
-import { observeHistoryList } from './change-history.mjs';
-import { createEnvelopeV2, conversationKeyV2 } from './model-v2.mjs';
+import { createHistoryCommit } from './history/history-commit.mjs';
+import { observeHistoryList } from './history/change-history.mjs';
+import { createEnvelopeV2, conversationKeyV2 } from './materials/model-v2.mjs';
 
 const key = 'a'.repeat(64);
 const record = { key, timeLabel: '10:00', latestMessageId: 'first' };

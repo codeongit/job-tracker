@@ -1,10 +1,13 @@
-import { PLATFORM_JOB_LABELS, groupBossObservations } from './boss-observations.js';
+import { PLATFORM_JOB_LABELS, groupBossObservations } from './boss/application/observations.js';
 import { STAGES, getOpportunityStatus, live, today } from './model.js';
 import { DUE_DATE_PRESETS, addCalendarDays, getTaskDefaults } from './planning.js';
 import { getTodayItems } from './today.js';
 import { getDailyRecords } from './daily.js';
 import { esc, safeUrl, options } from './ui.js';
-import { latestPlatformObservation, platformObservationLabel } from './boss-integration.js';
+import {
+  latestPlatformObservation,
+  platformObservationLabel,
+} from './boss/application/integration.js';
 import { sourceApplicationForEvent, effectiveSourceFacts } from './source-ledger.js';
 
 function readableDate(value) {

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { compareSnapshots } from './compare.mjs';
+import { compareSnapshots } from './materials/compare.mjs';
 
 const at = (minute) => `2026-09-18T10:${String(minute).padStart(2, '0')}:00.000Z`;
 const row = (key, overrides = {}) => ({

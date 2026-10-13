@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseBossDetailTitle } from '../dist/boss-detail-title.js';
+import { parseBossDetailTitle } from '../dist/boss/contracts/detail-title.js';
 
 test('complete quoted and observed SEO titles retain their explicit job and employer', () => {
   const titles = [

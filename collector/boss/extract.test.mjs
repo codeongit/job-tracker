@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
-import { accountExpression, expression, toSnapshot } from './extract.mjs';
+import { accountExpression, expression, toSnapshot } from './platform/extract.mjs';
 
 const unknown = { status: 'unknown', label: null, source: null };
 const baseItem = {

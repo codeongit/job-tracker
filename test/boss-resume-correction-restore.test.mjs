@@ -4,7 +4,7 @@ import {
   applyBossBatch,
   bossReceiptGap,
   correctBossResumeSemantics,
-} from '../dist/boss-integration.js';
+} from '../dist/boss/application/integration.js';
 import { clone, markManualFields } from '../dist/model.js';
 import { createBackup, initialWorkspace, restoreWorkspace } from '../dist/workspace.js';
 import {

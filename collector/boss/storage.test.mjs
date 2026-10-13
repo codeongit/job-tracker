@@ -10,7 +10,7 @@ import {
   loadConnection,
   saveConnection,
   removeConnection,
-} from './storage.mjs';
+} from './persistence/storage.mjs';
 
 test('private immutable commits, contention, and no partial state', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'boss-tracker-test-'));

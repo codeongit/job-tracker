@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
-import { createCdpController, DETAIL_PAGE_STATE_EXPRESSION } from './cdp-browser.mjs';
-import { accountExpression, expression as loadedListExpression } from './extract.mjs';
+import { createCdpController, DETAIL_PAGE_STATE_EXPRESSION } from './platform/cdp-browser.mjs';
+import { accountExpression, expression as loadedListExpression } from './platform/extract.mjs';
 
 const url = 'https://www.zhipin.com/web/geek/chat';
 

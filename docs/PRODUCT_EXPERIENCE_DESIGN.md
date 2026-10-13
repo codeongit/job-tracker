@@ -81,7 +81,7 @@
 - 来源事件 `observedAt` 在不同转换路径中可能使用平台时间或采集时间，不能统一标成其中一种。仅当现有材料能确定含义时展示相应标签，否则标“记录时间（来源未区分）”或不展示。
 - 只有日期的材料不补出时分秒；无有效时间则显示“时间未记录”。
 
-首版不新增字段级审计历史，也不从整条岗位更新时间推断它。依据见 [model.js](../dist/model.js)、[boss-integration.js](../dist/boss-integration.js)和 [boss-conversion.mjs](../scripts/boss-conversion.mjs)。
+首版不新增字段级审计历史，也不从整条岗位更新时间推断它。依据见 [model.js](../dist/model.js)、[boss-integration.js](../dist/boss/application/integration.js)和 [boss-conversion.mjs](../scripts/boss/delivery/conversion.mjs)。
 
 ## 4. 待处理问题：按动作组织，按消息核对
 
@@ -169,7 +169,7 @@ BOSS 默认显示“跟踪状态、最近成功处理（含本机恢复）、待
 
 按钮必须读取真实运行状态；服务不可连接时显示终端启动指引，静态模式解释仅本机可用。控制响应不确定时先查运行状态，不能套用业务命令重试机制而再次发起平台动作。控制服务已有白名单与保护应独立核对，不能绕过串行预算或替用户回复、投递。
 
-现有接口为 [boss-controller-api.mjs](../scripts/boss-controller-api.mjs) 的版本化 `{ action }` 控制请求；它不同于带 revision/commandId 的正式数据命令。新增网页控制是待实施建议，现有页面仍以终端指令启动。
+现有接口为 [boss-controller-api.mjs](../scripts/boss/control/controller-api.mjs) 的版本化 `{ action }` 控制请求；它不同于带 revision/commandId 的正式数据命令。新增网页控制是待实施建议，现有页面仍以终端指令启动。
 
 ### 提醒
 

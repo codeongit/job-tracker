@@ -2,10 +2,17 @@ import { readFile, readdir, lstat } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { APP_VERSION } from '../dist/version.js';
 import { checkDocumentation } from './docs-check.mjs';
+import { checkModules } from './module-check.mjs';
 const root = new URL('../', import.meta.url);
 async function files(dir) {
   const result = [];
   for (const name of await readdir(new URL(dir, root))) {
+    if (!dir.startsWith('dist/') && (name.startsWith('.') || name === 'node_modules')) continue;
+    if (
+      dir.startsWith('collector/boss/') &&
+      ['data', 'profile', 'profiles', 'cdp', 'skills'].includes(name)
+    )
+      continue;
     const path = dir + name,
       info = await lstat(new URL(path, root));
     if (info.isSymbolicLink()) throw new Error(`${path} 不应包含符号链接。`);
@@ -15,15 +22,21 @@ async function files(dir) {
   return result;
 }
 const publicFiles = await files('dist/');
-for (const file of [...publicFiles, ...(await files('scripts/')), ...(await files('test/'))]) {
+for (const file of [
+  ...publicFiles,
+  ...(await files('scripts/')),
+  ...(await files('test/')),
+  ...(await files('collector/')),
+]) {
   if (!/\.(?:m?js)$/.test(file)) continue;
   const url = new URL(file, root),
     r = spawnSync(process.execPath, ['--check', url.pathname], { stdio: 'inherit' });
   if (r.status) process.exit(r.status);
-  const code = await readFile(url, 'utf8');
-  for (const match of code.matchAll(/from\s*['"](\.[^'"]+)['"]/g))
-    await readFile(new URL(match[1], url));
 }
+const moduleFindings = await checkModules(root);
+for (const finding of moduleFindings)
+  process.stderr.write(`${finding.file}:${finding.line} [${finding.code}] ${finding.message}\n`);
+if (moduleFindings.length) process.exit(1);
 const html = await readFile(new URL('dist/index.html', root), 'utf8');
 for (const match of html.matchAll(/(?:src|href)="\.\/([^"]+)"/g))
   await readFile(new URL('dist/' + match[1], root));
@@ -43,4 +56,6 @@ const documentationFindings = await checkDocumentation(root);
 for (const finding of documentationFindings)
   process.stderr.write(`${finding.file}:${finding.line} [${finding.code}] ${finding.message}\n`);
 if (documentationFindings.length) process.exit(1);
-process.stdout.write('语法、相对导入、入口资源、版本号、公开目录、文档链接与 ADR 索引检查通过。\n');
+process.stdout.write(
+  '语法、模块依赖边界与循环、入口资源、版本号、公开目录、文档链接与 ADR 索引检查通过。\n',
+);

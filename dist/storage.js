@@ -1,4 +1,4 @@
-import { propagatePlatformJobState } from './boss-observations.js';
+import { propagatePlatformJobState } from './boss/application/observations.js';
 import {
   clone,
   emptyData,

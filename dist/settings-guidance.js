@@ -1,5 +1,5 @@
-import { groupBossObservations } from './boss-observations.js';
-import { parseBossJobUrl } from './boss-job-url.js';
+import { groupBossObservations } from './boss/application/observations.js';
+import { parseBossJobUrl } from './boss/contracts/job-url.js';
 
 export function bossConflictTargets(data, applicationIds) {
   const factIds = new Set(

@@ -1,5 +1,5 @@
 import { DiskBackups } from './disk-backups.mjs';
-import { BossInbox } from './boss-inbox.mjs';
+import { BossInbox } from './boss/delivery/inbox.mjs';
 import { APP_VERSION, DATA_VERSION, WORKSPACE_VERSION, BACKUP_VERSION } from '../dist/version.js';
 import http from 'node:http';
 import { readFile, stat } from 'node:fs/promises';
@@ -22,7 +22,7 @@ import {
   SERVICE_FAILURE_CODES,
 } from './service-runtime.mjs';
 import { serviceProcessAlive } from './service-control.mjs';
-import { createBossController } from './boss-controller.mjs';
+import { createBossController } from './boss/control/controller.mjs';
 
 const publicRoot = fileURLToPath(new URL('../dist/', import.meta.url));
 const privatePath = (name) => fileURLToPath(new URL(`../.local/${name}`, import.meta.url));

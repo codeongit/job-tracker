@@ -2,7 +2,7 @@ import {
   resolveBossJobDetails,
   setBossJobState,
   propagatePlatformJobState,
-} from '../dist/boss-observations.js';
+} from '../dist/boss/application/observations.js';
 import {
   mkdir,
   open,
@@ -33,7 +33,7 @@ import {
   rejectMisattributedResumeObservation,
   ignoreBossObservations,
   correctBossResumeSemantics,
-} from '../dist/boss-integration.js';
+} from '../dist/boss/application/integration.js';
 import { MAX_BACKUP_BYTES } from '../dist/limits.js';
 
 export const WORKSPACE_PROTOCOL_VERSION = 1;

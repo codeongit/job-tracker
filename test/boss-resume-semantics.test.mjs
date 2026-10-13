@@ -3,22 +3,22 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { bossBatchDigestInput, bossEventDigestInput } from '../dist/boss-batch.js';
+import { bossBatchDigestInput, bossEventDigestInput } from '../dist/boss/rules/batch.js';
 import {
   applyBossBatch,
   bindBossAccount,
   ignoreBossObservations,
   rejectMisattributedResumeObservation,
   verifyBossBatch,
-} from '../dist/boss-integration.js';
+} from '../dist/boss/application/integration.js';
 import { emptyData, markManualFields } from '../dist/model.js';
-import { BossInbox, validateBossBatch } from '../scripts/boss-inbox.mjs';
+import { BossInbox, validateBossBatch } from '../scripts/boss/delivery/inbox.mjs';
 import {
   createResumeEvents,
   createResumeBatch,
   createIncrementalBatch,
   stableHash,
-} from '../scripts/boss-conversion.mjs';
+} from '../scripts/boss/delivery/conversion.mjs';
 import { createWorkspaceInboxConsumer } from '../scripts/workspace-consumer.mjs';
 import { initialWorkspace } from '../dist/workspace.js';
 import { WorkspaceStore } from '../scripts/workspace-store.mjs';

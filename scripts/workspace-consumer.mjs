@@ -1,9 +1,12 @@
-import { bossObservationGroups } from '../dist/boss-observations.js';
-import { parseBossJobUrl } from '../dist/boss-job-url.js';
-import { bossAttributionSummary, buildBossAttributionContext } from '../dist/boss-attribution.js';
-import { recordAttributionDiagnostic } from './boss-attribution-diagnostics.mjs';
+import { bossObservationGroups } from '../dist/boss/application/observations.js';
+import { parseBossJobUrl } from '../dist/boss/contracts/job-url.js';
+import {
+  bossAttributionSummary,
+  buildBossAttributionContext,
+} from '../dist/boss/rules/attribution.js';
+import { recordAttributionDiagnostic } from './boss/shared/diagnostics.mjs';
 import { readdir } from 'node:fs/promises';
-import { applyBossBatch, bossReceiptGap } from '../dist/boss-integration.js';
+import { applyBossBatch, bossReceiptGap } from '../dist/boss/application/integration.js';
 import { validateData, mergeData, equal } from '../dist/model.js';
 import { bossApplicationId, bossFactId, hasBossFactIdentity } from '../dist/source-identity.js';
 import { bossWaitingItems } from '../dist/source-ledger.js';

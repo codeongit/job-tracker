@@ -20,7 +20,7 @@ pnpm service status
 
 ## 每次改动
 
-系统结构与模块职责见[当前架构](ARCHITECTURE.md)。BOSS 变更按[文档影响与维护](agents/change-workflow.md#文档影响与维护)选择设计、实现或操作正文，在同次变更中更新受影响内容，或说明无需更新的核对依据；[架构重构清单](ARCHITECTURE_REFACTOR_PLAN.md)中的待实施项不代表现有接口或规则已经改变。
+系统结构与模块职责见[当前架构](ARCHITECTURE.md)。BOSS 变更按[文档影响与维护](agents/change-workflow.md#文档影响与维护)选择设计、实现或操作正文，在同次变更中更新受影响内容，或说明无需更新的核对依据；本次 BOSS 职责重构及保留条件见[重构记录](ARCHITECTURE_REFACTOR_PLAN.md)。
 
 代理改动按[现状理解与目标核对](agents/change-workflow.md)执行，检查范围随影响调整；该页统一维护修改前核对、独立测试预期及审查步骤。
 
@@ -31,7 +31,15 @@ pnpm check
 pnpm format:check
 ```
 
-小改动可按影响范围运行定向非浏览器测试；发布前运行完整 `pnpm test`。`pnpm check` 检查语法、公开资源及项目文档的本地链接、标题锚点和 ADR 编号/索引对应；文档范围为根目录 Markdown、docs、collector 和 `.github`，排除私有目录、依赖、第三方技能和测试材料，不访问外链。`pnpm format:check` 检查格式。纯文档改动核对格式、链接与差异；修改检查器本身还须运行其合成测试。结构检查不判断业务语义、历史版本是否过期或验收状态，结论仍由同一版本的独立 Spec 与 Standards 审查确认。
+小改动可按影响范围运行定向非浏览器测试；发布前运行完整 `pnpm test`。`pnpm check` 递归检查 dist、scripts、test 和 collector 的 JavaScript 语法，检查公开资源、版本号，以及项目文档的本地链接、标题锚点和 ADR 编号/索引对应；文档范围为根目录 Markdown、docs、collector 和 `.github`，排除私有目录、依赖、第三方技能和测试材料，不访问外链。`pnpm format:check` 检查格式。纯文档改动核对格式、链接与差异；修改检查器本身还须运行其合成测试。
+
+生产依赖检查由 `scripts/module-check.mjs` 完成：Node 24 子进程以 `--experimental-vm-modules` 的 `SourceTextModule.moduleRequests` 解析静态 import、side effect import 与 reexport，不链接或执行被检查模块。生产图只包括 dist、scripts、collector 的 `.js / .mjs`，不纳入测试；检查文件存在、大小写、目录及父路径符号链接、循环和依赖层级。
+
+dist 的全部传递依赖须留在 dist，不能依赖 Node 内置模块或外部包。BOSS 基础 contracts/rules 的传递依赖只允许同属 contracts/rules 的模块和明确的纯叶 `dist/source-identity.js`，不能引入 application、client、共享 model/storage 或界面模块；application 可以使用 model。采集器不能导入 control/delivery，只允许共用 Node 诊断叶模块；Node 服务及其传递依赖不能导入浏览器 client。
+
+扫描跳过私有目录、依赖及第三方技能；旧采集目录中的 data/profile 等材料也跳过，不能把公开目录里同名的合法源码一并排除。新增动态 import、require、importScripts、Worker、eval 或 Function 等写法会被保守拒绝。动态写法检测是词法检查，不能覆盖任意计算、间接别名或运行时生成代码；静态依赖合法不等于模块或运行行为全都纯净。
+
+结构检查不判断业务语义、历史版本是否过期或验收状态，结论仍由同一版本的独立 Spec 与 Standards 审查确认。
 
 新增功能按模块职责修改，说明数据影响，补能复现具体故障的测试。不要重写测试只匹配实现；也不要将真实数据作为测试输入。
 
@@ -122,6 +130,12 @@ status 和 doctor 只检查一次且不写日志。只有 start 对仍存活进�
 诊断不输出 Git 原始 stderr、私钥、PAT 或个人记录。报告问题时提供应用版本、错误代码、复现步骤；使用合成记录复现。
 
 BOSS 合成测试与人工验收分别按[代码阅读与测试](boss/IMPLEMENTATION.md#代码阅读与测试)和[人工验收](boss/OPERATIONS.md#人工验收)执行。首批历史 30/10/60 及 2026-09-18 日期规则保留原义，不在升级中重导；真实验收未确认时保留待人工验收状态。
+
+## 0.10.23 维护范围与验收
+
+历史读取、详情采集和已保存材料交付已收敛为共用阶段；BOSS contracts/rules、application 与浏览器 client 分开，采集器和 Node 模块按职责分目录，根 CLI 保留薄入口。批次格式常量共用，Node 哈希校验与队列文件保存分开；固定路径与脱敏诊断归入 shared。模块与接口以[实现说明](boss/IMPLEMENTATION.md#模块与调用顺序)为准。
+
+本次仅两项故障行为修复：DOM 先保存取得的结果再确认完成，且能纯本机恢复；独立详情最终账号核验失败优先报告账号故障。DOM 检查点内容升至 v2，其他当前格式与规则保持，无正式数据迁移；旧材料和未知切换保留。非浏览器检查与独立审查结果按最终交付记录汇总，真实界面仍待人工验收。本次文档和合成检查没有新增平台访问、服务启停或 GitHub 同步授权。
 
 ## 历史执行与验收记录
 
@@ -259,7 +273,7 @@ catalog 无效、缺失、不完整、未知版本或工作区身份不一致会
 
 ### 0.10.5 详情采集错误修复
 
-正常详情页可能使用完整 SEO 标题。标题解析由 `dist/boss-detail-title.js` 统一提供，采集和保存校验都使用同一定义；详情导航还需核对新文档已经加载，防止上一页面标题混入当前岗位。详情用人公司可不同于聊天招聘方，按 D038 的精确岗位身份规则处理；多个详情证据矛盾、身份不符及不完整标题仍拦截。
+正常详情页可能使用完整 SEO 标题。标题解析由 `dist/boss/contracts/detail-title.js` 统一提供，采集和保存校验都使用同一定义；详情导航还需核对新文档已经加载，防止上一页面标题混入当前岗位。详情用人公司可不同于聊天招聘方，按 D038 的精确岗位身份规则处理；多个详情证据矛盾、身份不符及不完整标题仍拦截。
 
 排查详情退避或隔离时先保留原始快照、运行状态和私有诊断，区分页面未就绪、标题格式变化与真实身份矛盾。已有完整且一致的本机详情材料，先经 `pnpm boss recover-saved` 纯本地交付；它也会交付不在当前列表但保留于采集状态的精确详情，不根据旧列表标签创建新日期。只有需要取得缺失真实材料时才在明确授权范围内使用既有串行采集和预算；本次不新增平台任务或重复采集入口。
 

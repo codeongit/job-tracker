@@ -1,5 +1,5 @@
-import { BOSS_JOB_ID, isCanonicalBossJobUrl } from './boss-job-url.js';
-import { RESUME_SUMMARIES, RESUME_STATE } from './resume-rules.js';
+import { BOSS_JOB_ID, isCanonicalBossJobUrl } from './boss/contracts/job-url.js';
+import { RESUME_SUMMARIES, RESUME_STATE } from './boss/rules/resume-rules.js';
 import { DATA_VERSION } from './version.js';
 import { bossApplicationId, bossFactId, hasBossFactIdentity } from './source-identity.js';
 export const GROUPS = [

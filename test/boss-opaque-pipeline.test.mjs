@@ -5,19 +5,19 @@ import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { BOSS_ACTION40_PLATFORM_CONTRACT } from '../dist/resume-rules.js';
-import { bindBossAccount } from '../dist/boss-integration.js';
+import { BOSS_ACTION40_PLATFORM_CONTRACT } from '../dist/boss/rules/resume-rules.js';
+import { bindBossAccount } from '../dist/boss/application/integration.js';
 import { initialWorkspace } from '../dist/workspace.js';
-import { accountNamespace } from '../collector/boss/extract.mjs';
-import { createEnvelopeV2, conversationKeyV2 } from '../collector/boss/model-v2.mjs';
+import { accountNamespace } from '../collector/boss/platform/extract.mjs';
+import { createEnvelopeV2, conversationKeyV2 } from '../collector/boss/materials/model-v2.mjs';
 import {
   createResumePageExpression,
   toResumeHistoryResult,
   applyResumeHistoryV2,
-} from '../collector/boss/resume-history.mjs';
-import { commit, latest } from '../collector/boss/storage.mjs';
-import { createResumeBatch } from '../scripts/boss-conversion.mjs';
-import { BossInbox } from '../scripts/boss-inbox.mjs';
+} from '../collector/boss/history/resume-history.mjs';
+import { commit, latest } from '../collector/boss/persistence/storage.mjs';
+import { createResumeBatch } from '../scripts/boss/delivery/conversion.mjs';
+import { BossInbox } from '../scripts/boss/delivery/inbox.mjs';
 import { WorkspaceStore } from '../scripts/workspace-store.mjs';
 import { createWorkspaceInboxConsumer } from '../scripts/workspace-consumer.mjs';
 

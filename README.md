@@ -115,19 +115,21 @@ pnpm boss status
 - `dist/storage.js`、`local-workspace.js`：本机命令适配、IndexedDB 缓存及静态模式事务。
 - `dist/github.js`：私有仓库校验、Contents API、SHA 冲突检测和同步快照确认。
 - `dist/app.js`：实际操作界面及可选的 WebMCP 打开新增表单入口。
-- `dist/boss-integration.js`、`source-ledger.js`：浏览器/后台共用的批次校验、业务应用、来源账本与平台观察规则。
+- `dist/boss/contracts/`、`rules/`：共用格式、岗位身份、简历含义、归属和岗位证据规则。
+- `dist/boss/application/`、`dist/source-ledger.js`：浏览器和服务共用的业务应用、人工决定及来源账本；`dist/boss/client.js` 负责浏览器服务连接。
 - `dist/jobs.js`、`dist/daily.js`：岗位列表筛选，以及按岗位合并的日期记录。
 - `scripts/serve.mjs`：仅监听本机的工作区服务、队列消费与显式跟踪控制。
 - `scripts/workspace-store.mjs`、`workspace-consumer.mjs`：不可变正式提交、CAS、命令幂等及后台录入。
 - `scripts/service-control.mjs`、`boss-control.mjs`：手动服务与跟踪生命周期入口。
 - `scripts/ssh-store.mjs`：使用独立 Git 缓存，通过系统 SSH 读写固定的私有数据文件。
 - `scripts/local-api.mjs`：限定同源和会话的本机 SSH 桥接接口。
-- `scripts/boss-integration.mjs`、`boss-inbox.mjs`：手动采集入口、私有队列、检查点与故障材料。
+- `collector/boss/`：platform/history/details/materials/persistence 分别负责平台读取、历史阶段、详情阶段、采集模型和私有保存恢复；`tracker.mjs` 编排一轮任务。
+- `scripts/boss/control/`、`delivery/`、`shared/`：授权和预算、已保存材料交付、固定路径与脱敏诊断。根 `scripts/boss-control.mjs`、`boss-integration.mjs` 保留 CLI 薄入口。
 - `test/`：纯函数及模拟 GitHub 同步回归测试，不访问真实仓库。
 
 ```sh
-npm test
-npm run check
+pnpm test
+pnpm check
 ```
 
 三方合并以稳定 ID 对齐记录；不同记录以及同一岗位的不同字段可自动合并，同字段人工分歧交由用户选择。冲突两侧都带上已确认的独立字段变化，选择后不会丢掉另一字段的修改。删除保留标记，岗位删除与新增关联任务冲突时会提示处理。
@@ -136,7 +138,7 @@ npm run check
 
 ## 长期维护
 
-当前应用版本以 [package.json](package.json) 和页面版本为准。开发使用固定 pnpm 与锁文件；本机服务没有数据库依赖。
+当前应用为 0.10.23、BOSS 规则 v17，版本以 [package.json](package.json) 和页面版本为准。开发使用固定 pnpm 与锁文件；本机服务没有数据库依赖。
 
 ```sh
 pnpm install --frozen-lockfile
@@ -145,6 +147,8 @@ pnpm check
 pnpm format:check
 ```
 
+`pnpm check` 以 Node 24 静态解析生产模块依赖，检查层级、循环、安全路径、dist 独立部署及采集器递归语法，并核对公开资源、版本和文档；不执行被检查模块，不替代运行行为测试。
+
 真实浏览器相关测试由用户人工负责。代理负责代码、非浏览器测试和静态检查，交付时列出人工验收项；默认不启动浏览器或执行包含浏览器测试的 `pnpm verify`。现有浏览器脚本与 CI 保留，具体分工见 [维护手册](docs/MAINTENANCE.md#真实浏览器测试分工)。
 
 “数据与同步”提供完整备份、本机快照、版本与连接检查。静态模式保留最近 20 个操作前浏览器快照；本机服务保留不可变完整提交与原始迁移副本。浏览器草稿的独立备份仍需要页面在线，请另行下载完整备份。
@@ -152,7 +156,7 @@ pnpm format:check
 - [领域术语](CONTEXT.md)
 - [关键决策索引与历史 ADR](docs/adr/README.md)
 - [当前架构与代码职责](docs/ARCHITECTURE.md)
-- [架构重构清单](docs/ARCHITECTURE_REFACTOR_PLAN.md)
+- [BOSS 职责重构记录](docs/ARCHITECTURE_REFACTOR_PLAN.md)
 - [产品体验设计草案（待实施）](docs/PRODUCT_EXPERIENCE_DESIGN.md)
 - [数据升级与恢复](docs/DATA_AND_RECOVERY.md)
 - [开发、发布与排障](docs/MAINTENANCE.md)

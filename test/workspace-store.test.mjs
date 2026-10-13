@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initialWorkspace, createBackup } from '../dist/workspace.js';
 import { WorkspaceStore } from '../scripts/workspace-store.mjs';
-import { bindBossAccount } from '../dist/boss-integration.js';
+import { bindBossAccount } from '../dist/boss/application/integration.js';
 
 const STAMP = '2026-09-21T12:00:00.000Z';
 async function fixture(t, options = {}) {

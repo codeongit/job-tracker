@@ -9,8 +9,8 @@ import {
   fingerprintPublicPlatformBytes,
   readLoadedPlatformReference,
   PLATFORM_REFERENCE_EXPRESSION,
-} from './platform-reference.mjs';
-import { accountNamespace } from './extract.mjs';
+} from './platform/platform-reference.mjs';
+import { accountNamespace } from './platform/extract.mjs';
 
 const app = 'https://static.zhipin.com/fe-zhipin-geek/web/chat-new/v5550/static/js/app.4d4a6ac8.js';
 const chat =

@@ -1,6 +1,6 @@
 # 当前系统架构
 
-本文描述当前实现：运行结构、模块职责、数据所有者与关键流程。本次职责核对日期为 2026-10-12，代码基线为 `68187539e26899042a4add76b10b5bec9a8a18fb`，应用为 0.10.22；当前格式版本以[数据与恢复](DATA_AND_RECOVERY.md#版本与两种存储模式)为准。历史决定及替代关系保留在 [ADR 索引](adr/README.md)，后续工作见[架构重构清单](ARCHITECTURE_REFACTOR_PLAN.md)。
+本文描述当前实现：运行结构、模块职责、数据所有者与关键流程。本次职责核对日期为 2026-10-13，应用为 0.10.23、BOSS 规则为 v17；当前格式版本以[数据与恢复](DATA_AND_RECOVERY.md#版本与两种存储模式)为准。历史决定及替代关系保留在 [ADR 索引](adr/README.md)，本次完成范围见[架构重构记录](ARCHITECTURE_REFACTOR_PLAN.md)。
 
 ## 阅读入口
 
@@ -51,28 +51,44 @@ flowchart LR
 | --------------- | -------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
 | 页面交互        | `app.js`、`app-startup.js`、`views.js`、`settings-view.js`、`ui.js`、`text-input.js`                     | 启动、渲染、表单、导航、输入与操作反馈               |
 | 共用业务规则    | `model.js`、`jobs.js`、`today.js`、`daily.js`、`planning.js`、BOSS 规则模块                              | 校验、查询、合并、业务含义、归属和应用结果           |
-| BOSS 采集与交付 | `collector/boss/`、`boss-controller.mjs`、`boss-runtime.mjs`、`boss-integration.mjs`、`boss-inbox.mjs`   | 显式调度、预算、取材、进度保存、确定性批次及入队     |
+| BOSS 采集与交付 | `collector/boss/`、`scripts/boss/control/`、`scripts/boss/delivery/`                                     | 显式调度、预算、取材、进度保存、确定性批次及入队     |
 | 工作区存储      | `storage.js`、`local-workspace.js`、`workspace-api.mjs`、`workspace-store.mjs`、`workspace-consumer.mjs` | 模式路由、固定命令、单写者提交、幂等、队列消费与回执 |
 | 同步与恢复      | `github.js`、`local-ssh.js`、`ssh-store.mjs`、`workspace.js`、备份和草稿模块                             | 手动同步、备份、恢复、冲突核对与草稿准备             |
 
-表中浏览器 `.js` 位于 `dist/`，服务 `.mjs` 位于 `scripts/`。这些是当前职责分组；一个文件可能覆盖多个职责，后续分离项另列于重构清单。
+表中浏览器 `.js` 位于 `dist/`，服务 `.mjs` 位于 `scripts/`。BOSS 模块按职责分目录；共享工作区、同步与备份仍位于各自原有层。测试保持原位置，模块目录不设置汇总所有能力的总入口。
 
 ### 规则与适配的实际位置
 
-| 事项               | 唯一规则或主要实现                                                           | 调用者与保留条件                                                   |
-| ------------------ | ---------------------------------------------------------------------------- | ------------------------------------------------------------------ |
-| 岗位查询与行动建议 | `jobs.js`、`today.js`、`daily.js`、`planning.js`                             | 页面与详情共用纯查询；日期查询展示当前岗位信息，不推断历史阶段     |
-| 简历语义与状态转换 | `resume-rules.js`；联动规则在 `model.js`                                     | 采集、转换、应用与展示共用；识别结果不授予归属或人工字段所有权     |
-| 岗位资料证据       | `collector/boss/job-evidence.mjs`、`boss-detail-title.js`、`boss-job-url.js` | 采集展示、详情交付和旧身份映射共用；三种用途的兼容语义分别保留     |
-| 普通资料应用判断   | `boss-job-materials.js`                                                      | 完整与缺标题观察、当前重评及恢复共用纯判断；原始观察不改写         |
-| 归属判断           | `boss-attribution.js`                                                        | 对各完整观察独立核对；上下文按当前材料构建，候选不等于已确认归属   |
-| 批次与来源身份     | `boss-batch.js`、`source-identity.js`                                        | 校验与稳定 ID 共用；旧事件身份不随规则升级改写                     |
-| 应用与人工决定     | `boss-integration.js`、`boss-observations.js`、`source-ledger.js`            | 正式消费和固定人工命令执行规则；事实与应用决定分别保存             |
-| 本机命令交付       | `local-workspace.js`                                                         | 普通编辑与固定操作共用串行、revision、精确重试及缓存更新           |
-| 变化驱动历史提交   | `collector/boss/history-commit.mjs`                                          | 先保存证据，再保存进度及移除检查点；当前未统一覆盖回填、DOM 和详情 |
-| 服务启动与身份     | `service-control.mjs`、`service-runtime.mjs`、`serve.mjs`                    | 共用健康检查；`doctor.mjs` 读取已验证结果，不另行猜测身份          |
+| 事项               | 唯一规则或主要实现                                                                          | 调用者与保留条件                                                     |
+| ------------------ | ------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| 岗位查询与行动建议 | `jobs.js`、`today.js`、`daily.js`、`planning.js`                                            | 页面与详情共用纯查询；日期查询展示当前岗位信息，不推断历史阶段       |
+| 简历语义与状态转换 | `boss/rules/resume-rules.js`；联动规则在 `model.js`                                         | 采集、转换、应用与展示共用；识别结果不授予归属或人工字段所有权       |
+| 岗位资料证据       | `boss/rules/job-evidence.js`、`boss/contracts/detail-title.js`、`boss/contracts/job-url.js` | 采集展示、详情交付和旧身份映射共用；三种用途的兼容语义分别保留       |
+| 普通资料应用判断   | `boss/application/job-materials.js`                                                         | 完整与缺标题观察、当前重评及恢复共用纯判断；原始观察不改写           |
+| 归属判断           | `boss/rules/attribution.js`                                                                 | 对各完整观察独立核对；上下文按当前材料构建，候选不等于已确认归属     |
+| 批次与来源身份     | `boss/contracts/batch-format.js`、`boss/rules/batch.js`、`source-identity.js`               | 校验与稳定 ID 共用；旧事件身份不随规则升级改写                       |
+| 应用与人工决定     | `boss/application/integration.js`、`boss/application/observations.js`、`source-ledger.js`   | 正式消费和固定人工命令执行规则；事实与应用决定分别保存               |
+| 本机命令交付       | `local-workspace.js`                                                                        | 普通编辑与固定操作共用串行、revision、精确重试及缓存更新             |
+| 历史阶段与提交     | `collector/boss/history/history-phase.mjs`、`history-commit.mjs`                            | 共用历史读取与恢复；变化任务逐条提交，公平补录在快照与导出成功后结算 |
+| 服务启动与身份     | `service-control.mjs`、`service-runtime.mjs`、`serve.mjs`                                   | 共用健康检查；`doctor.mjs` 读取已验证结果，不另行猜测身份            |
 
-`boss-integration.js` 当前同时包含纯应用函数和浏览器连接、队列状态 adapter；`app.js` 当前仍编排岗位编辑、详情导航及同步。文档保留这一现状，拟议接口与分离步骤见重构清单。
+BOSS 的目录边界如下：
+
+| 目录                             | 职责                                             |
+| -------------------------------- | ------------------------------------------------ |
+| `collector/boss/platform/`       | 浏览器连接、任务页和账号核验、平台字段与版本读取 |
+| `collector/boss/history/`        | 历史策略、共用读取与结算、可选 DOM 补采          |
+| `collector/boss/details/`        | 详情阶段安排与受控页面读取                       |
+| `collector/boss/materials/`      | 采集模型、证据采用、旧格式兼容与清单输出         |
+| `collector/boss/persistence/`    | 私有快照、运行进度、检查点与纯本机恢复           |
+| `dist/boss/contracts/`、`rules/` | 格式、岗位身份、简历含义、归属及证据选择规则     |
+| `dist/boss/application/`         | 按传入工作区计算业务应用、人工决定及观察展示数据 |
+| `dist/boss/client.js`            | 浏览器发现服务、队列状态与工作区连接适配         |
+| `scripts/boss/control/`          | 显式授权、生命周期、预算和单次票据               |
+| `scripts/boss/delivery/`         | 已保存材料校验、转换、入队和交付检查点           |
+| `scripts/boss/shared/`           | 固定源码及私有路径、脱敏诊断                     |
+
+`collectHistory / settleSaved`、`collectDetails` 和 `deliverSaved / recoverSaved` 分别收敛历史、详情和本机交付。基础 contracts/rules 的传递依赖仅限 contracts/rules 和纯叶 `dist/source-identity.js`；application 可使用共享 model，Node 服务复用 application，不导入 client。`batch-validation.mjs` 用 Node 哈希核验批次，不操作文件；`inbox.mjs` 负责队列保存。`shared/paths.mjs` 以源码仓库为根计算 CLI、采集器及私有路径，不依赖调用时的工作目录。`app.js` 仍编排岗位编辑、详情导航及手动同步。
 
 ### 依赖与写入约束
 
@@ -83,20 +99,20 @@ flowchart LR
 
 ## 数据所有者
 
-| 数据或材料                 | 负责维护它的模块                     | 用途与约束                                                                 |
-| -------------------------- | ------------------------------------ | -------------------------------------------------------------------------- |
-| 岗位、任务、沟通、导入记录 | 业务规则计算；本机服务或静态事务保存 | 面向用户的正式结果，包含人工字段与删除标记                                 |
-| `sourceBindings`           | 来源绑定及字段所有权规则             | 账号/岗位关联、自动字段和 last-auto；人工清空也受保护                      |
-| `sourceEvents`             | BOSS 批次应用                        | 原始观察及兼容历史映射；展示按当前应用决定解释，纠错不改写原始材料         |
-| `sourceFacts`              | 共用来源身份与账本                   | 稳定事实身份；同一事实可有多个完整观察候选，存在不代表已经应用             |
-| `sourceApplications`       | 业务应用及固定人工命令               | 应用状态、原因、规则版本、人工忽略/否决/资料处理决定                       |
-| `data`、`base`、`pending`  | 工作区、同步与恢复规则               | 当前数据、最后确认的云端基线、未解决冲突及其双方；`base` 不是备份          |
-| 不可变提交、HEAD、catalog  | `workspace-store.mjs`                | 正式 revision、持久命令定位和唯一原子根；不能手工改写                      |
-| 采集快照与检查点           | `collector/boss/`                    | 真实观察与采集进度，私有保存，恢复不能补造缺失身份                         |
-| 队列与回执                 | `boss-inbox.mjs`；消费器确认         | 交付材料及提交后的处理记录；回执不证明恢复后事实仍在                       |
-| 草稿                       | `draft-data.js`、`drafts.js`         | 浏览器 localStorage 的允许字段与不可变版本；不是正式记录，不保存设置或 PAT |
-| 浏览器缓存与旧快照         | `storage.js`                         | 本机模式下是副本；浏览器旧快照不等于服务提交历史                           |
-| 独立磁盘备份               | `disk-backup.js`、`disk-backups.mjs` | 完整工作区与草稿的私有副本，独立于 SSH 和浏览器清理                        |
+| 数据或材料                 | 负责维护它的模块                              | 用途与约束                                                                 |
+| -------------------------- | --------------------------------------------- | -------------------------------------------------------------------------- |
+| 岗位、任务、沟通、导入记录 | 业务规则计算；本机服务或静态事务保存          | 面向用户的正式结果，包含人工字段与删除标记                                 |
+| `sourceBindings`           | 来源绑定及字段所有权规则                      | 账号/岗位关联、自动字段和 last-auto；人工清空也受保护                      |
+| `sourceEvents`             | BOSS 批次应用                                 | 原始观察及兼容历史映射；展示按当前应用决定解释，纠错不改写原始材料         |
+| `sourceFacts`              | 共用来源身份与账本                            | 稳定事实身份；同一事实可有多个完整观察候选，存在不代表已经应用             |
+| `sourceApplications`       | 业务应用及固定人工命令                        | 应用状态、原因、规则版本、人工忽略/否决/资料处理决定                       |
+| `data`、`base`、`pending`  | 工作区、同步与恢复规则                        | 当前数据、最后确认的云端基线、未解决冲突及其双方；`base` 不是备份          |
+| 不可变提交、HEAD、catalog  | `workspace-store.mjs`                         | 正式 revision、持久命令定位和唯一原子根；不能手工改写                      |
+| 采集快照与检查点           | `collector/boss/`                             | 真实观察与采集进度，私有保存，恢复不能补造缺失身份                         |
+| 队列与回执                 | `scripts/boss/delivery/inbox.mjs`；消费器确认 | 交付材料及提交后的处理记录；回执不证明恢复后事实仍在                       |
+| 草稿                       | `draft-data.js`、`drafts.js`                  | 浏览器 localStorage 的允许字段与不可变版本；不是正式记录，不保存设置或 PAT |
+| 浏览器缓存与旧快照         | `storage.js`                                  | 本机模式下是副本；浏览器旧快照不等于服务提交历史                           |
+| 独立磁盘备份               | `disk-backup.js`、`disk-backups.mjs`          | 完整工作区与草稿的私有副本，独立于 SSH 和浏览器清理                        |
 
 正常导入只推进满足规则的自动字段，不回退新状态、不复活删除。人工忽略和否决按来源事实持续保留；该会话的新消息独立处理。已应用历史的人工纠错需要明确审阅的清单与固定命令，不属于自动全量回退。
 
@@ -181,4 +197,4 @@ flowchart LR
 
 改动前按[现状与目标核对](agents/change-workflow.md)追踪实际调用者；新业务规则放入对应共用模块，测试预期从原始要求独立确定。规则、应用决定、持久化交付及页面反馈各自核对，成功计数或回执不能代替结果验证。
 
-纯文档整理检查格式、链接与内容准确性。后续代码重构按[分阶段清单](ARCHITECTURE_REFACTOR_PLAN.md)逐条推进；每步保留稳定身份、业务结果、人工保护、冲突与恢复语义，运行相关非浏览器检查，发布前运行完整 `pnpm test`、`pnpm check` 和 `pnpm format:check`。浏览器及真实平台验收由用户完成，服务更新不自动恢复跟踪或同步 GitHub。
+本次 BOSS 职责重构已完成，范围及历史依据见[重构记录](ARCHITECTURE_REFACTOR_PLAN.md)。`pnpm check` 以 Node 24 的静态模块解析检查生产依赖、层级、循环和 dist 独立部署，并递归检查采集器语法；它不执行被检查模块，也不证明运行时纯度。具体范围和动态写法限制见[维护检查](MAINTENANCE.md#每次改动)。后续改动继续保留稳定身份、业务结果、人工保护、冲突与恢复语义；发布前运行完整 `pnpm test`、`pnpm check` 和 `pnpm format:check`。浏览器及真实平台验收由用户完成，服务更新不自动恢复跟踪或同步 GitHub。

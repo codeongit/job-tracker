@@ -1,7 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { collectDetailTitleEvidence, parseBossDetailTitle } from './detail-enrich.mjs';
-import { applyDetailEvidenceV2, compareLoadedSnapshotsV2, conversationKeyV2 } from './model-v2.mjs';
+import { collectDetailTitleEvidence, parseBossDetailTitle } from './details/detail-enrich.mjs';
+import {
+  applyDetailEvidenceV2,
+  compareLoadedSnapshotsV2,
+  conversationKeyV2,
+} from './materials/model-v2.mjs';
 
 const url = (id) => `https://www.zhipin.com/job_detail/${id}.html`;
 const candidate = (conversationKey, jobId, company, overrides = {}) => ({

@@ -3,9 +3,12 @@ import {
   bossObservationGroups,
   PLATFORM_JOB_LABELS,
   bossJobDetailsConfirmation,
-} from './boss-observations.js';
-import { bossWaitingReviewTarget, bossWaitingReviewCandidates } from './boss-integration.js';
-import { BOSS_OBSERVATION_REASONS } from './boss-attribution.js';
+} from './boss/application/observations.js';
+import {
+  bossWaitingReviewTarget,
+  bossWaitingReviewCandidates,
+} from './boss/application/integration.js';
+import { BOSS_OBSERVATION_REASONS } from './boss/rules/attribution.js';
 import { live, serialize, equal } from './model.js';
 import {
   bossFailureGuidance,

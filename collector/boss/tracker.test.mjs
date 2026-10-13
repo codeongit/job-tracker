@@ -1,6 +1,6 @@
-import { detailInputs, fairDetailInputs } from './detail-phase.mjs';
-import { saveEnvelope } from './snapshot-save.mjs';
-import { collectHistory, fairResumeTargets } from './history-phase.mjs';
+import { detailInputs, fairDetailInputs } from './details/detail-phase.mjs';
+import { saveEnvelope } from './persistence/snapshot-save.mjs';
+import { collectHistory, fairResumeTargets } from './history/history-phase.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, rm, realpath, readdir, readFile } from 'node:fs/promises';
@@ -13,18 +13,22 @@ import {
   summarizeEnvelope,
   trackerFailureReport,
 } from './tracker.mjs';
-import { latest, saveConnection } from './storage.mjs';
-import { assessLoadedPlatformReference } from './platform-reference.mjs';
-import { accountNamespace } from './extract.mjs';
-import { applyDetailEvidenceV2, compareLoadedSnapshotsV2, conversationKeyV2 } from './model-v2.mjs';
+import { latest, saveConnection } from './persistence/storage.mjs';
+import { assessLoadedPlatformReference } from './platform/platform-reference.mjs';
+import { accountNamespace } from './platform/extract.mjs';
+import {
+  applyDetailEvidenceV2,
+  compareLoadedSnapshotsV2,
+  conversationKeyV2,
+} from './materials/model-v2.mjs';
 import {
   loadChangeCheckpoint,
   normalizeRuntimeState,
   recordDetailFailure,
   saveChangeCheckpoint,
   saveResumeCheckpoint,
-} from './runtime-state.mjs';
-import { observeHistoryList, pendingHistory } from './change-history.mjs';
+} from './persistence/runtime-state.mjs';
+import { observeHistoryList, pendingHistory } from './history/change-history.mjs';
 
 // macOS exposes /var as a symlink; private-writer fixtures use its real location.
 const privateTemporaryRoot = await realpath(tmpdir());
@@ -1310,7 +1314,7 @@ test('v6 本地状态命令仍计算详情待处理和 DOM 状态，不访问浏
   const { mkdir } = await import('node:fs/promises');
   const { execFile } = await import('node:child_process');
   const { promisify } = await import('node:util');
-  const { commit } = await import('./storage.mjs');
+  const { commit } = await import('./persistence/storage.mjs');
   const root = await mkdtemp(join(tmpdir(), 'boss-v4-status-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const directory = join(root, 'main');

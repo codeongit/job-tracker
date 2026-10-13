@@ -7,8 +7,8 @@ import { initialWorkspace, createBackup, parseBackup } from '../dist/workspace.j
 import { WorkspaceStore, workspaceDigest } from '../scripts/workspace-store.mjs';
 import { handleLocalApi } from '../scripts/local-api.mjs';
 import { markManualFields } from '../dist/model.js';
-import { bossReceiptGap } from '../dist/boss-integration.js';
-import { BossInbox } from '../scripts/boss-inbox.mjs';
+import { bossReceiptGap } from '../dist/boss/application/integration.js';
+import { BossInbox } from '../scripts/boss/delivery/inbox.mjs';
 import { correctionFixture } from './fixtures/boss-resume-correction.mjs';
 
 const SECRET = 'f'.repeat(64);

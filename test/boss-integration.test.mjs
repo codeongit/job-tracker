@@ -1,10 +1,10 @@
-import { compareLoadedSnapshotsV2 } from '../collector/boss/model-v2.mjs';
+import { compareLoadedSnapshotsV2 } from '../collector/boss/materials/model-v2.mjs';
 import {
   collectDomSupplement,
   DOM_RULE_ID,
   DOM_STATUS_SOURCE,
-} from '../collector/boss/dom-supplement.mjs';
-import { bossBatchDigestInput } from '../dist/boss-batch.js';
+} from '../collector/boss/history/dom-supplement.mjs';
+import { bossBatchDigestInput } from '../dist/boss/rules/batch.js';
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
 import {
@@ -21,8 +21,12 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { BossInbox, validateBossBatch, validateBossReceipt } from '../scripts/boss-inbox.mjs';
-import { deliverSaved, recoverSaved } from '../scripts/boss-delivery.mjs';
+import {
+  BossInbox,
+  validateBossBatch,
+  validateBossReceipt,
+} from '../scripts/boss/delivery/inbox.mjs';
+import { deliverSaved, recoverSaved } from '../scripts/boss/delivery/saved.mjs';
 import {
   checkCommand,
   createDatedYesterdayBatch,
@@ -45,7 +49,7 @@ import {
   resumeCommand,
   stableHash,
   validateTrackerEnvelope,
-} from '../scripts/boss-integration.mjs';
+} from '../scripts/boss/delivery/integration.mjs';
 
 const ACCOUNT = `boss-geek:${'a'.repeat(64)}`;
 const START = '2026-09-18T14:45:09.648Z';
@@ -1089,7 +1093,7 @@ test('CLI preview, resume and config failures each preserve a private run and in
 });
 
 test('归属材料补充独立于事件 ID，增量与补录共用转换结果', async () => {
-  const { createIncrementalBatch } = await import('../scripts/boss-conversion.mjs');
+  const { createIncrementalBatch } = await import('../scripts/boss/delivery/conversion.mjs');
   const envelope = fixture({ rows: 1 });
   envelope.version = 4;
   const observation = { ...resumeObservation(envelope), attribution: null };
@@ -1149,7 +1153,7 @@ test('诊断写入失败不能产生队列批次或推进消费', async (t) => {
 });
 
 test('旧快照岗位波浪号与归属岗位字段共用岗位 ID 规则，账号消息规则不放宽', async () => {
-  const { validateAttributionEvidence } = await import('../dist/boss-attribution.js');
+  const { validateAttributionEvidence } = await import('../dist/boss/rules/attribution.js');
   const envelope = JSON.parse(JSON.stringify(fixture({ rows: 1 })).replaceAll('job_1', 'job_1~'));
   assert.equal(
     validateTrackerEnvelope(envelope).snapshot.records[0].jobAssociation.jobId,

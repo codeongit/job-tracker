@@ -1,14 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
-import { assessBossAttribution } from '../../dist/boss-attribution.js';
-import { BOSS_ACTION40_PLATFORM_CONTRACT } from '../../dist/resume-rules.js';
+import { assessBossAttribution } from '../../dist/boss/rules/attribution.js';
+import { BOSS_ACTION40_PLATFORM_CONTRACT } from '../../dist/boss/rules/resume-rules.js';
 import {
   createEnvelopeV2,
   conversationKeyV2,
   validateEnvelopeV2,
   upgradeEnvelope,
-} from './model-v2.mjs';
+} from './materials/model-v2.mjs';
 import {
   createResumeHistoryExpression,
   createResumeFriendExpression,
@@ -16,7 +16,7 @@ import {
   runResumeHistoryRequests,
   toResumeHistoryResult,
   applyResumeHistoryV2,
-} from './resume-history.mjs';
+} from './history/resume-history.mjs';
 
 const namespace = 'boss-geek:' + 'c'.repeat(64);
 const conversationKey = conversationKeyV2(namespace, '301', '0');

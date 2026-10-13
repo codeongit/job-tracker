@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { collectDetailTitleEvidence } from './detail-enrich.mjs';
-import { detailInputs } from './detail-phase.mjs';
+import { collectDetailTitleEvidence } from './details/detail-enrich.mjs';
+import { detailInputs } from './details/detail-phase.mjs';
 import {
   applyDetailEvidenceV2,
   canonicalJobUrlV2,
@@ -17,7 +17,7 @@ import {
   validateCurrentEnvelope,
   validateEnvelope,
   validateLoadedSnapshotV2,
-} from './model-v2.mjs';
+} from './materials/model-v2.mjs';
 
 const at = (minute) => `2026-09-18T10:${String(minute).padStart(2, '0')}:00.000Z`;
 const namespace = 'boss-account-fixture';

@@ -3,17 +3,20 @@ import test from 'node:test';
 import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { buildBossAttributionContext, assessBossAttribution } from '../dist/boss-attribution.js';
-import { bossBatchDigestInput, bossEventDigestInput } from '../dist/boss-batch.js';
+import {
+  buildBossAttributionContext,
+  assessBossAttribution,
+} from '../dist/boss/rules/attribution.js';
+import { bossBatchDigestInput, bossEventDigestInput } from '../dist/boss/rules/batch.js';
 import {
   applyBossBatch,
   bindBossAccount,
   ignoreBossObservations,
-} from '../dist/boss-integration.js';
+} from '../dist/boss/application/integration.js';
 import { emptyData } from '../dist/model.js';
 import { bossWaitingItems, sourceReviewCounts } from '../dist/source-ledger.js';
 import { initialWorkspace } from '../dist/workspace.js';
-import { BossInbox } from '../scripts/boss-inbox.mjs';
+import { BossInbox } from '../scripts/boss/delivery/inbox.mjs';
 import { WorkspaceStore, workspaceDigest } from '../scripts/workspace-store.mjs';
 import { createWorkspaceInboxConsumer } from '../scripts/workspace-consumer.mjs';
 

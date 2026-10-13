@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseReceipt, receiptCounts } from './receipt.mjs';
+import { parseReceipt, receiptCounts } from './platform/receipt.mjs';
 const candidate = (label, css, visible = true) => ({
   label,
   classes: ['message-status', css],

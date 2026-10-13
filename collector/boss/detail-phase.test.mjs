@@ -6,13 +6,17 @@ import {
   detailFailureScope,
   detailInputs,
   fairDetailInputs,
-} from './detail-phase.mjs';
-import { DETAIL_NAVIGATION_DELAY_MS } from './detail-enrich.mjs';
-import { applyDetailEvidenceV2, compareLoadedSnapshotsV2, conversationKeyV2 } from './model-v2.mjs';
-import { normalizeRuntimeState, recordDetailFailure } from './runtime-state.mjs';
-import { observeHistoryList } from './change-history.mjs';
-import { createIncrementalBatch } from '../../scripts/boss-conversion.mjs';
-import { applyBossBatch, bindBossAccount } from '../../dist/boss-integration.js';
+} from './details/detail-phase.mjs';
+import { DETAIL_NAVIGATION_DELAY_MS } from './details/detail-enrich.mjs';
+import {
+  applyDetailEvidenceV2,
+  compareLoadedSnapshotsV2,
+  conversationKeyV2,
+} from './materials/model-v2.mjs';
+import { normalizeRuntimeState, recordDetailFailure } from './persistence/runtime-state.mjs';
+import { observeHistoryList } from './history/change-history.mjs';
+import { createIncrementalBatch } from '../../scripts/boss/delivery/conversion.mjs';
+import { applyBossBatch, bindBossAccount } from '../../dist/boss/application/integration.js';
 import { emptyData } from '../../dist/model.js';
 
 const ACCOUNT = `boss-geek:${'a'.repeat(64)}`;

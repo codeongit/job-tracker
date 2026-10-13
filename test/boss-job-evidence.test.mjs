@@ -6,19 +6,25 @@ import {
   applyDetailEvidenceV2,
   resolveJobRowsV2,
   listEnrichmentTargetsV2,
-} from '../collector/boss/model-v2.mjs';
-import { toResumeHistoryResult, applyResumeHistoryV2 } from '../collector/boss/resume-history.mjs';
+} from '../collector/boss/materials/model-v2.mjs';
+import {
+  toResumeHistoryResult,
+  applyResumeHistoryV2,
+} from '../collector/boss/history/resume-history.mjs';
 import {
   resolveJobRows,
   createResumeBatch,
   createIncrementalBatch,
   stableHash,
-} from '../scripts/boss-conversion.mjs';
-import { createInitialBatch, createDatedYesterdayBatch } from '../scripts/boss-legacy-import.mjs';
+} from '../scripts/boss/delivery/conversion.mjs';
+import {
+  createInitialBatch,
+  createDatedYesterdayBatch,
+} from '../scripts/boss/delivery/legacy-import.mjs';
 
-import { resolveBossJobEvidence } from '../collector/boss/job-evidence.mjs';
+import { resolveBossJobEvidence } from '../dist/boss/rules/job-evidence.js';
 import { bossFactId, bossApplicationId } from '../dist/source-identity.js';
-import { bossBatchDigestInput } from '../dist/boss-batch.js';
+import { bossBatchDigestInput } from '../dist/boss/rules/batch.js';
 
 const ACCOUNT = `boss-geek:${'a'.repeat(64)}`;
 const FIRST = '2026-09-18T08:00:00.000Z';

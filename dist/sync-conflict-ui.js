@@ -1,8 +1,8 @@
 import { canonical, equal, live, resolveConflicts } from './model.js';
 import { $, esc } from './ui.js';
-import { BOSS_OBSERVATION_REASONS } from './boss-attribution.js';
-import { RESUME_RULES } from './resume-rules.js';
-import { platformObservationLabel } from './boss-integration.js';
+import { BOSS_OBSERVATION_REASONS } from './boss/rules/attribution.js';
+import { RESUME_RULES } from './boss/rules/resume-rules.js';
+import { platformObservationLabel } from './boss/application/integration.js';
 import { sourceApplicationForEvent } from './source-ledger.js';
 
 const GROUP_LABELS = {

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { compareSnapshots } from './compare.mjs';
+import { compareSnapshots } from './materials/compare.mjs';
 const snapshot = {
   capturedAt: '2026-09-18T09:00:00.000Z',
   scope: 'loaded-chat-list',

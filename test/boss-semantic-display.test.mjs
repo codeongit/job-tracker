@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { bossAttributionSummary } from '../dist/boss-attribution.js';
-import { groupBossObservations } from '../dist/boss-observations.js';
+import { bossAttributionSummary } from '../dist/boss/rules/attribution.js';
+import { groupBossObservations } from '../dist/boss/application/observations.js';
 import { bossIntegrationView, bossObservationReason } from '../dist/settings-view.js';
 import { syncConflictView } from '../dist/sync-conflict-ui.js';
 import { initialWorkspace } from '../dist/workspace.js';
 import { createViews } from '../dist/views.js';
 import { effectiveSourceEvents, effectiveSourceFacts } from '../dist/source-ledger.js';
-import { platformObservationLabel } from '../dist/boss-integration.js';
+import { platformObservationLabel } from '../dist/boss/application/integration.js';
 
 const reason = 'resume_semantics_missing';
 const label = '缺少可核对的简历状态依据';

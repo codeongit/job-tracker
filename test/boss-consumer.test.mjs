@@ -1,12 +1,12 @@
-import { bossEventDigestInput, bossBatchDigestInput } from '../dist/boss-batch.js';
+import { bossEventDigestInput, bossBatchDigestInput } from '../dist/boss/rules/batch.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { stableHash } from '../scripts/boss-integration.mjs';
+import { stableHash } from '../scripts/boss/delivery/integration.mjs';
 import { WorkspaceStore } from '../scripts/workspace-store.mjs';
-import { validateBossBatch as validateQueuedBossBatch } from '../scripts/boss-inbox.mjs';
+import { validateBossBatch as validateQueuedBossBatch } from '../scripts/boss/delivery/inbox.mjs';
 import { emptyData, live, markManualFields } from '../dist/model.js';
 import { bossFactId } from '../dist/source-identity.js';
 import {
@@ -27,10 +27,10 @@ import {
   ignoreBossObservations,
   bossWaitingReviewTarget,
   bossWaitingReviewCandidates,
-  createBossQueueConsumer,
   latestPlatformObservation,
   verifyBossBatch,
-} from '../dist/boss-integration.js';
+} from '../dist/boss/application/integration.js';
+import { createBossQueueConsumer } from '../dist/boss/client.js';
 import { createViews } from '../dist/views.js';
 
 const ACCOUNT = `boss-geek:${'a'.repeat(64)}`;
@@ -2431,7 +2431,7 @@ test('明确详情资料冲突展示来源公司和本机候选，不提供忽�
 });
 
 test('详情页补资料允许招聘方与用人公司不同，原观察与身份不改，人工字段不覆盖', async () => {
-  const { parseBossJobUrl } = await import('../dist/boss-job-url.js');
+  const { parseBossJobUrl } = await import('../dist/boss/contracts/job-url.js');
   assert.deepEqual(
     parseBossJobUrl('https://www.zhipin.com/job_detail/job~.html?securityId=synthetic#top'),
     { jobId: 'job~', canonicalUrl: 'https://www.zhipin.com/job_detail/job~.html' },
@@ -2510,7 +2510,7 @@ test('详情页补资料允许招聘方与用人公司不同，原观察与身�
 
 test('人工定点补齐只完成普通资料观察，持续重放保留决定、原证据和简历状态', async () => {
   const { resolveBossJobDetails, groupBossObservations } =
-    await import('../dist/boss-observations.js');
+    await import('../dist/boss/application/observations.js');
   const observations = [
     event({ externalJobId: '', canonicalUrl: '', jobName: '', intent: 'review' }),
     event({
@@ -2596,7 +2596,7 @@ test('人工定点补齐只完成普通资料观察，持续重放保留决定�
 
 test('关闭标识可保存在无岗位的观察，重放仍等待，消息分组隔离账号且冲突优先', async () => {
   const { setBossJobState, groupBossObservations, propagatePlatformJobState } =
-    await import('../dist/boss-observations.js');
+    await import('../dist/boss/application/observations.js');
   const observations = [
     event({ jobName: '', intent: 'review' }),
     event({

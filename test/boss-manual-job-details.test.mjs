@@ -1,9 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { bossJobDetailsConfirmation, resolveBossJobDetails } from '../dist/boss-observations.js';
-import { applyBossBatch, bindBossAccount } from '../dist/boss-integration.js';
+import {
+  bossJobDetailsConfirmation,
+  resolveBossJobDetails,
+} from '../dist/boss/application/observations.js';
+import { applyBossBatch, bindBossAccount } from '../dist/boss/application/integration.js';
 import { emptyData } from '../dist/model.js';
-import { stableHash } from '../scripts/boss-integration.mjs';
+import { stableHash } from '../scripts/boss/delivery/integration.mjs';
 import { bossApplicationId, bossFactId } from '../dist/source-identity.js';
 
 const ACCOUNT = `boss-geek:${'a'.repeat(64)}`;

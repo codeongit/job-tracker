@@ -12,14 +12,14 @@ import {
   domSupplementTasks,
   normalizeDomSupplementPolicy,
   recoverDomSupplement,
-} from './dom-supplement.mjs';
-import { saveEnvelope } from './tracker.mjs';
-import { commit, latest } from './storage.mjs';
+} from './history/dom-supplement.mjs';
+import { saveEnvelope } from './persistence/snapshot-save.mjs';
+import { commit, latest } from './persistence/storage.mjs';
 import {
   compareLoadedSnapshotsV2,
   conversationKeyV2,
   validateCurrentEnvelope,
-} from './model-v2.mjs';
+} from './materials/model-v2.mjs';
 
 const namespace = 'boss-geek:' + 'a'.repeat(64);
 const capturedAt = '2026-09-21T10:00:00.000Z';

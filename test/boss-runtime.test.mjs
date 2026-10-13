@@ -7,7 +7,7 @@ import {
   BossRuntime,
   BossRuntimeStateStore,
   validateBossRuntimeState,
-} from '../scripts/boss-runtime.mjs';
+} from '../scripts/boss/control/runtime.mjs';
 
 async function fixture(options = {}) {
   const root = await mkdtemp(join(tmpdir(), 'job-tracker-runtime-')),

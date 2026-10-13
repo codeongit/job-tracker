@@ -10,23 +10,32 @@ import {
   evaluateBound,
   createCdpDetailAdapter,
   disconnect as disconnectBrowser,
-} from './cdp-browser.mjs';
-import { accountExpression, expression, toSnapshot } from './extract.mjs';
-import { latest, lock, loadConnection, saveConnection, removeConnection } from './storage.mjs';
+} from './platform/cdp-browser.mjs';
+import { accountExpression, expression, toSnapshot } from './platform/extract.mjs';
+import {
+  latest,
+  lock,
+  loadConnection,
+  saveConnection,
+  removeConnection,
+} from './persistence/storage.mjs';
 import {
   compareLoadedSnapshotsV2,
   migrateV1ToV2,
   resolveJobRowsV2,
   validateEnvelope,
-} from './model-v2.mjs';
-import { MAX_DETAIL_ENRICH_JOBS } from './detail-enrich.mjs';
-import { collectDetails, currentDetailSummary, detailFailureScope } from './detail-phase.mjs';
-import { exportCurrent, saveEnvelope } from './snapshot-save.mjs';
-export { saveEnvelope } from './snapshot-save.mjs';
-import { jobCounts } from './job.mjs';
-import { receiptCounts } from './receipt.mjs';
+} from './materials/model-v2.mjs';
+import { MAX_DETAIL_ENRICH_JOBS } from './details/detail-enrich.mjs';
+import {
+  collectDetails,
+  currentDetailSummary,
+  detailFailureScope,
+} from './details/detail-phase.mjs';
+import { exportCurrent, saveEnvelope } from './persistence/snapshot-save.mjs';
+import { jobCounts } from './materials/job.mjs';
+import { receiptCounts } from './platform/receipt.mjs';
 
-import { collectDomSupplement, domSupplementStatus } from './dom-supplement.mjs';
+import { collectDomSupplement, domSupplementStatus } from './history/dom-supplement.mjs';
 import {
   loadRuntimeState,
   saveRuntimeState,
@@ -34,9 +43,9 @@ import {
   clearCdpRetry,
   runWithPersistentCdpRetry,
   resumeDetailState,
-} from './runtime-state.mjs';
-import { historySummary } from './change-history.mjs';
-import { collectHistory, settleSaved } from './history-phase.mjs';
+} from './persistence/runtime-state.mjs';
+import { historySummary } from './history/change-history.mjs';
+import { collectHistory, settleSaved } from './history/history-phase.mjs';
 import { randomUUID } from 'node:crypto';
 import { accountDataDirectory } from './paths.mjs';
 

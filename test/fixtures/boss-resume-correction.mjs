@@ -1,7 +1,7 @@
-import { applyBossBatch, bindBossAccount } from '../../dist/boss-integration.js';
-import { bossBatchDigestInput, bossEventDigestInput } from '../../dist/boss-batch.js';
+import { applyBossBatch, bindBossAccount } from '../../dist/boss/application/integration.js';
+import { bossBatchDigestInput, bossEventDigestInput } from '../../dist/boss/rules/batch.js';
 import { emptyData, validateData } from '../../dist/model.js';
-import { stableHash } from '../../scripts/boss-conversion.mjs';
+import { stableHash } from '../../scripts/boss/delivery/conversion.mjs';
 
 export const CORRECTION_ACCOUNT = `boss-geek:${'a'.repeat(64)}`;
 export const CORRECTION_SOURCE = '00000000-0000-4000-8000-000000000001';

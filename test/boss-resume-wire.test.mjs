@@ -4,9 +4,9 @@ import {
   validateBossBatch as validateStructure,
   bossEventDigestInput,
   bossBatchDigestInput,
-} from '../dist/boss-batch.js';
-import { validateBossBatch, BOSS_INTEGRATION_VERSION } from '../scripts/boss-inbox.mjs';
-import { stableHash } from '../scripts/boss-conversion.mjs';
+} from '../dist/boss/rules/batch.js';
+import { validateBossBatch, BOSS_INTEGRATION_VERSION } from '../scripts/boss/delivery/inbox.mjs';
+import { stableHash } from '../scripts/boss/delivery/conversion.mjs';
 import { correctionBatch } from './fixtures/boss-resume-correction.mjs';
 
 const viewedProof = {

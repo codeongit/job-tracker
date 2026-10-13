@@ -3,10 +3,10 @@ import test from 'node:test';
 import { mkdtemp, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { applyBossBatch, bindBossAccount } from '../dist/boss-integration.js';
+import { applyBossBatch, bindBossAccount } from '../dist/boss/application/integration.js';
 import { emptyData, markManualFields } from '../dist/model.js';
-import { bossBatchDigestInput, validateBossBatch } from '../dist/boss-batch.js';
-import { stableHash } from '../scripts/boss-conversion.mjs';
+import { bossBatchDigestInput, validateBossBatch } from '../dist/boss/rules/batch.js';
+import { stableHash } from '../scripts/boss/delivery/conversion.mjs';
 import {
   correctionBatch,
   CORRECTION_ACCOUNT,
@@ -18,7 +18,7 @@ import {
   loadResumeCheckpoint,
   saveChangeCheckpoint,
   loadChangeCheckpoint,
-} from '../collector/boss/runtime-state.mjs';
+} from '../collector/boss/persistence/runtime-state.mjs';
 
 const proof = {
   version: 3,
