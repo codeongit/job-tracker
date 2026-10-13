@@ -1,7 +1,23 @@
+import { compareLoadedSnapshotsV2 } from '../collector/boss/model-v2.mjs';
+import {
+  collectDomSupplement,
+  DOM_RULE_ID,
+  DOM_STATUS_SOURCE,
+} from '../collector/boss/dom-supplement.mjs';
 import { bossBatchDigestInput } from '../dist/boss-batch.js';
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
-import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import {
+  chmod,
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  unlink,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -1158,4 +1174,151 @@ test('旧快照岗位波浪号与归属岗位字段共用岗位 ID 规则，账�
   evidence.conversationKey = 'a'.repeat(64);
   assert.equal(validateAttributionEvidence(evidence).messageJobId, 'job_1~');
   assert.throws(() => validateAttributionEvidence({ ...evidence, senderId: 'actor~' }));
+});
+
+function domRecoveryEnvelope({ rows = 100, pendingIndex = 0 } = {}) {
+  const source = fixture({ rows });
+  source.snapshot.records.forEach((row, index) => {
+    row.observedJobName = `岗位${index + 1}`;
+  });
+  const envelope = compareLoadedSnapshotsV2(null, source.snapshot).envelope;
+  envelope.resume.lastUnresolved = [
+    { conversationKey: source.snapshot.records[pendingIndex].key, reason: 'HISTORY_UNAVAILABLE' },
+  ];
+  return envelope;
+}
+
+test('recover-saved commits a new unsaved conversation DOM result without policy or platform execution', async (t) => {
+  const envelope = domRecoveryEnvelope({ rows: 101, pendingIndex: 100 });
+  const { config, data, inbox, expectedInitial } = await tempProject(t, domRecoveryEnvelope());
+  assert.equal(
+    (await readTrackerSnapshot(join(data, FIRST_NAME))).envelope.snapshot.records.length,
+    100,
+  );
+  await enqueueCommand(config, inbox, expectedInitial);
+  const policyPath = join(data, '.dom-supplement-policy-v1.json');
+  await writeFile(
+    policyPath,
+    JSON.stringify({
+      version: 1,
+      enabled: true,
+      accountNamespace: ACCOUNT,
+      rule: {
+        id: DOM_RULE_ID,
+        acceptedBy: 'user',
+        acceptedAt: START,
+        noUnreadProof: 'vue_source_unreadMsgCount_zero',
+        rowIdentity: 'vue_source_friendId_friendSource_uniqueId',
+        messageIdentity: 'data-message-id_and_data-message-time',
+      },
+    }),
+    { mode: 0o600 },
+  );
+  let executions = 0;
+  await assert.rejects(
+    collectDomSupplement({
+      directory: data,
+      envelope,
+      maxSwitches: 1,
+      now: () => new Date('2026-09-21T10:01:00.000Z'),
+      saveEvidence: async () => {
+        throw new Error('SYNTHETIC_MATERIAL_SAVE_FAILED');
+      },
+      execute: async (_expression, { kind, target }) => {
+        executions += 1;
+        if (kind === 'dom_preflight')
+          return {
+            ok: true,
+            url: 'https://www.zhipin.com/web/geek/chat',
+            target,
+            selected: false,
+            switchAttempted: false,
+            proof: {
+              ruleId: DOM_RULE_ID,
+              unreadMsgCount: 0,
+              latestMessageId: target.latestMessageId,
+            },
+          };
+        return {
+          ok: true,
+          url: 'https://www.zhipin.com/web/geek/chat',
+          target,
+          switchAttempted: true,
+          capturedAt: '2026-09-21T10:01:05.000Z',
+          observations: [
+            {
+              conversationKey: target.conversationKey,
+              friendId: target.friendId,
+              friendSource: target.friendSource,
+              messageId: 'dom-system-1',
+              direction: 'system',
+              messageType: 5,
+              kind: 'request_sent',
+              platformTime: '2026-09-21T09:59:00.000Z',
+              externalJobId: 'job_101',
+              source: DOM_STATUS_SOURCE,
+              resumeEvidence: {
+                version: 1,
+                messageType: 5,
+                field: 'message.content',
+                text: '附件简历请求已发送',
+              },
+            },
+          ],
+          unresolved: [],
+          coverage: {
+            requestedConversations: 1,
+            resolvedConversations: 1,
+            pagesPerConversation: 0,
+          },
+        };
+      },
+    }),
+    (error) => error.message === 'SYNTHETIC_MATERIAL_SAVE_FAILED' && error.usage.domSwitches === 1,
+  );
+  await unlink(policyPath);
+  const recovered = await recoverSavedCommand(config, inbox, () => {}, expectedInitial);
+  assert.equal(executions, 2);
+  assert.equal(recovered.recovered.domRecovery.recovered, true);
+  assert.equal(recovered.recovered.recovered, 2);
+  assert.deepEqual(recovered.usage, { historyRequests: 0, domSwitches: 0, detailNavigations: 0 });
+  const batches = await inbox.list();
+  assert.equal(batches.length, 3);
+  const batch = await inbox.read(batches.find((item) => item.sourceSequence === 3).batchId);
+  assert.equal(batch.events.filter((item) => item.summary === 'resume_request_sent').length, 1);
+  assert.equal(
+    JSON.parse(await readFile(join(data, '.dom-supplement-state-v1.json'), 'utf8')).completed
+      .length,
+    1,
+  );
+  const repeated = await recoverSavedCommand(config, inbox, () => {}, expectedInitial);
+  assert.equal(repeated.recovered.recovered, 0);
+  assert.equal((await inbox.list()).length, 3);
+});
+
+test('an unknown old DOM switch cannot clear a local pause during saved recovery', async (t) => {
+  const envelope = domRecoveryEnvelope();
+  const { config, data, inbox, expectedInitial } = await tempProject(t, envelope);
+  await enqueueCommand(config, inbox, expectedInitial);
+  const control = await inbox.readControl();
+  await inbox.writeControl({ ...control, paused: true, pauseCode: 'BOSS_CHECKPOINT_CHANGED' });
+  await writeFile(
+    join(data, '.dom-supplement-checkpoint-v1.json'),
+    JSON.stringify({
+      version: 1,
+      taskId: 'b'.repeat(64),
+      conversationKey: envelope.snapshot.records[0].key,
+      latestMessageId: 'message_1',
+      ruleId: DOM_RULE_ID,
+      stage: 'switch_issued',
+      selectedAt: START,
+      issuedAt: START,
+    }),
+    { mode: 0o600 },
+  );
+  const recovered = await recoverSavedCommand(config, inbox, () => {}, expectedInitial);
+  assert.equal(recovered.recovered.domRecovery.error, 'DOM_SWITCH_OUTCOME_UNKNOWN');
+  assert.equal(recovered.pauseCleared, false);
+  assert.equal(recovered.requiresResume, true);
+  assert.equal((await inbox.list()).length, 1);
 });

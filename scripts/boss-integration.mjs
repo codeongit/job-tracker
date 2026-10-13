@@ -1,3 +1,4 @@
+import { recoverDomSaved } from '../collector/boss/recover-saved.mjs';
 import { BOSS_JOB_ID } from '../dist/boss-job-url.js';
 import { BossIntegrationError, integrationFail } from './boss-integration-error.mjs';
 export { BossIntegrationError } from './boss-integration-error.mjs';
@@ -822,6 +823,7 @@ async function recoverUnexported(
   initialIdentity = APPROVED_INITIAL,
 ) {
   if (!control.checkpoint) return { control, recovered: 0, batches: 0, events: 0 };
+  const dom = await recoverDomSaved(snapshotDirectory(config), control.accountNamespace);
   onStage('scan_saved_snapshots');
   const names = await listSnapshotNames(config);
   const index = names.indexOf(control.checkpoint.snapshotName);
@@ -853,7 +855,22 @@ async function recoverUnexported(
     }
     previous = current;
   }
-  return { control: currentControl, recovered, batches, events };
+  return {
+    control: currentControl,
+    recovered,
+    batches,
+    events,
+    ...(dom.recovered || dom.checkpointPending
+      ? {
+          domRecovery: {
+            recovered: dom.recovered,
+            checkpointPending: dom.checkpointPending,
+            partial: dom.partial,
+            error: dom.error ?? null,
+          },
+        }
+      : {}),
+  };
 }
 
 function normalizedUsage(value, fallback = {}) {
@@ -1111,7 +1128,8 @@ export async function recoverSavedCommand(
   if (!control?.checkpoint) integrationFail('BOSS_INITIAL_ENQUEUE_REQUIRED');
   const recovered = await recoverUnexported(config, inbox, control, onStage, initialIdentity);
   control = recovered.control;
-  const pauseCleared = control.paused && locallyRecoverablePause(control.pauseCode);
+  const pauseCleared =
+    control.paused && !recovered.domRecovery?.partial && locallyRecoverablePause(control.pauseCode);
   if (pauseCleared) {
     control = validateBossControl({ ...control, paused: false, pauseCode: '' });
     onStage('clear_local_snapshot_pause');

@@ -13,21 +13,13 @@ import {
 } from './cdp-browser.mjs';
 import { accountExpression, expression, toSnapshot } from './extract.mjs';
 import { readLoadedPlatformReference } from './platform-reference.mjs';
-import {
-  latest,
-  lock,
-  commit,
-  loadConnection,
-  saveConnection,
-  removeConnection,
-} from './storage.mjs';
+import { latest, lock, loadConnection, saveConnection, removeConnection } from './storage.mjs';
 import {
   compareLoadedSnapshotsV2,
   migrateV1ToV2,
   resolveJobRowsV2,
   listEnrichmentTargetsV2,
   applyDetailEvidenceV2,
-  upgradeEnvelope,
   validateEnvelope,
 } from './model-v2.mjs';
 import {
@@ -35,7 +27,8 @@ import {
   DETAIL_NAVIGATION_DELAY_MS,
   MAX_DETAIL_ENRICH_JOBS,
 } from './detail-enrich.mjs';
-import { renderJobs, writePrivateMarkdown } from './export-jobs.mjs';
+import { exportCurrent, saveEnvelope } from './snapshot-save.mjs';
+export { saveEnvelope } from './snapshot-save.mjs';
 import { jobCounts } from './job.mjs';
 import { receiptCounts } from './receipt.mjs';
 import {
@@ -337,13 +330,6 @@ async function readLegacyJobs(directory) {
   return value;
 }
 
-async function exportCurrent(directory, envelope) {
-  const markdown = renderJobs(envelope, { resolveV2: resolveJobRowsV2 });
-  const output = join(directory, 'jobs.md');
-  await writePrivateMarkdown(output, markdown);
-  return output;
-}
-
 export function detailInputs(envelope, timeLabel = null) {
   const { targets } = listEnrichmentTargetsV2(envelope);
   const allowedConversations =
@@ -393,22 +379,6 @@ export function detailInputs(envelope, timeLabel = null) {
     .filter((entry) => !entry.conflict)
     .map((entry) => entry.value);
   return { candidates, knownEvidence };
-}
-
-export async function saveEnvelope(directory, envelope, { exportJobs = exportCurrent } = {}) {
-  const current = upgradeEnvelope(envelope);
-  const file = await commit(directory, current);
-  let jobsFile;
-  try {
-    jobsFile = await exportJobs(directory, current);
-  } catch (caught) {
-    // Export errors can contain field values. Only a machine code and the
-    // committed snapshot path may cross the tracker reporting boundary.
-    const error = new Error(safeError(caught, 'JOB_EXPORT_FAILED'));
-    error.snapshotPath = file;
-    throw error;
-  }
-  return { file, jobsFile };
 }
 
 export function fairResumeTargets(
@@ -1529,6 +1499,7 @@ export async function main(argv = process.argv.slice(2), { resumeIdentity = resu
           directory,
           envelope,
           maxSwitches: domLimit,
+          saveEvidence: (value) => saveEnvelope(directory, value),
           verify: async () => {
             const result = await retryReport(() =>
               resumeIdentity(activeConnection, identityOptions),
@@ -1742,11 +1713,17 @@ export async function main(argv = process.argv.slice(2), { resumeIdentity = resu
       ),
     );
   } catch (error) {
-    if (mode === 'run' && Object.hasOwn(error?.usage ?? {}, 'historyRequests')) {
-      const reported = error.usage.historyRequests;
-      if (Number.isSafeInteger(reported) && reported >= 0 && reported <= historyRequests)
-        failureUsage.historyRequests = reported;
-      else delete failureUsage.historyRequests;
+    if (mode === 'run') {
+      for (const [dimension, limit] of [
+        ['historyRequests', historyRequests],
+        ['domSwitches', domLimit],
+      ]) {
+        if (!Object.hasOwn(error?.usage ?? {}, dimension)) continue;
+        const reported = error.usage[dimension];
+        if (Number.isSafeInteger(reported) && reported >= 0 && reported <= limit)
+          failureUsage[dimension] = reported;
+        else delete failureUsage[dimension];
+      }
     }
     let savedFailureRuntime = null;
     if (mode === 'run' && runRuntime && runStartedAt && runId && !runFinalized) {

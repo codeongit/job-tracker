@@ -3,13 +3,22 @@ import {
   classifyResumeText,
   classifyResumeEvidence,
   assessResumeEvidence,
+  RESUME_STATUS_KINDS,
+  validateResumeEvidence,
 } from '../../dist/resume-rules.js';
+import { validateAttributionEvidence } from '../../dist/boss-attribution.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, open, readFile, rename, unlink, lstat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { expectedUrl } from './guard.mjs';
 import { applyResumeHistoryV2, toResumeHistoryResult } from './resume-history.mjs';
-import { validateEnvelope, validateCurrentEnvelope } from './model-v2.mjs';
+import {
+  conversationKeyV2,
+  validateEnvelope,
+  validateCurrentEnvelope,
+  upgradeEnvelope,
+} from './model-v2.mjs';
+import { commit } from './storage.mjs';
 
 export const DOM_STATUS_SOURCE = 'dom_chat_status_message_v1';
 export const DOM_RULE_ID = 'boss_dom_status_v1';
@@ -108,7 +117,7 @@ export async function loadDomSupplementPolicy(directory, accountNamespace) {
 
 function normalizeState(value) {
   if (
-    !value ||
+    !onlyFields(value, ['version', 'cursor', 'lastSwitchAt', 'completed', 'updatedAt']) ||
     value.version !== 1 ||
     (value.cursor !== null && !keyPattern.test(value.cursor ?? '')) ||
     (value.lastSwitchAt !== null && !iso(value.lastSwitchAt)) ||
@@ -119,7 +128,7 @@ function normalizeState(value) {
     throw new Error('DOM_SUPPLEMENT_STATE_INVALID');
   const completed = value.completed.map((item) => {
     if (
-      !item ||
+      !onlyFields(item, ['taskId', 'completedAt', 'outcome']) ||
       !keyPattern.test(item.taskId ?? '') ||
       !iso(item.completedAt) ||
       !['observed', 'no_matching_status'].includes(item.outcome)
@@ -141,14 +150,36 @@ function normalizeState(value) {
 }
 
 function normalizeCheckpoint(value) {
+  const legacyFields = [
+    'version',
+    'taskId',
+    'conversationKey',
+    'latestMessageId',
+    'ruleId',
+    'stage',
+    'selectedAt',
+    'issuedAt',
+  ];
+  const resultFields = ['capturedAt', 'switchAttempted', 'observations', 'unresolved', 'coverage'];
+  const fields =
+    value?.version === 1
+      ? legacyFields
+      : [
+          ...legacyFields,
+          'accountNamespace',
+          'target',
+          ...(value?.stage === 'result_ready' ? resultFields : []),
+        ];
   if (
-    !value ||
-    value.version !== 1 ||
+    !onlyFields(value, fields) ||
+    ![1, 2].includes(value.version) ||
     !keyPattern.test(value.taskId ?? '') ||
     !keyPattern.test(value.conversationKey ?? '') ||
     !idPattern.test(value.latestMessageId ?? '') ||
     value.ruleId !== DOM_RULE_ID ||
-    !['selected', 'switch_issued'].includes(value.stage) ||
+    !['selected', 'switch_issued', ...(value.version === 2 ? ['result_ready'] : [])].includes(
+      value.stage,
+    ) ||
     !iso(value.selectedAt) ||
     (value.issuedAt !== null && !iso(value.issuedAt)) ||
     (value.stage === 'selected' && value.issuedAt !== null) ||
@@ -156,7 +187,109 @@ function normalizeCheckpoint(value) {
   ) {
     throw new Error('DOM_SUPPLEMENT_CHECKPOINT_INVALID');
   }
+  if (value.version === 2) {
+    try {
+      const target = normalizedTarget(value.target);
+      if (
+        !/^boss-geek:[a-f0-9]{64}$/.test(value.accountNamespace ?? '') ||
+        value.taskId !== target.taskId ||
+        value.conversationKey !== target.conversationKey ||
+        value.latestMessageId !== target.latestMessageId ||
+        target.conversationKey !==
+          conversationKeyV2(value.accountNamespace, target.friendId, target.friendSource) ||
+        target.taskId !==
+          taskId(value.accountNamespace, {
+            key: target.conversationKey,
+            latestMessageId: target.latestMessageId,
+          })
+      )
+        throw new Error('INVALID_TARGET');
+      if (value.stage === 'result_ready') {
+        if (
+          !iso(value.capturedAt) ||
+          typeof value.switchAttempted !== 'boolean' ||
+          (value.switchAttempted && value.issuedAt === null) ||
+          !Array.isArray(value.observations) ||
+          !Array.isArray(value.unresolved) ||
+          !onlyFields(value.coverage, [
+            'requestedConversations',
+            'resolvedConversations',
+            'pagesPerConversation',
+            'requestedPages',
+            'completedPages',
+            'exhaustedConversations',
+            'truncatedConversations',
+            'failedConversations',
+          ]) ||
+          value.coverage.requestedConversations !== 1 ||
+          value.coverage.resolvedConversations !== 1 ||
+          value.coverage.pagesPerConversation !== 0 ||
+          Object.values(value.coverage).some((item) => !Number.isSafeInteger(item) || item < 0)
+        )
+          throw new Error('INVALID_RESULT');
+        for (const observation of value.observations) {
+          if (
+            !onlyFields(observation, [
+              'conversationKey',
+              'friendId',
+              'friendSource',
+              'messageId',
+              'direction',
+              'messageType',
+              'kind',
+              'platformTime',
+              'externalJobId',
+              'source',
+              'resumeEvidence',
+              'attribution',
+            ]) ||
+            observation.conversationKey !== target.conversationKey ||
+            observation.friendId !== target.friendId ||
+            observation.friendSource !== target.friendSource ||
+            !/^[A-Za-z0-9_-]{1,128}$/.test(observation.messageId ?? '') ||
+            observation.direction !== 'system' ||
+            observation.messageType !== 5 ||
+            !RESUME_STATUS_KINDS.includes(observation.kind) ||
+            !iso(observation.platformTime) ||
+            (observation.externalJobId !== null &&
+              !/^[A-Za-z0-9_~\-]{1,300}$/.test(observation.externalJobId ?? '')) ||
+            observation.source !== DOM_STATUS_SOURCE
+          )
+            throw new Error('INVALID_OBSERVATION');
+          const proof = validateResumeEvidence(observation.resumeEvidence);
+          if (proof && proof.messageType !== observation.messageType)
+            throw new Error('INVALID_PROOF');
+          validateAttributionEvidence(observation.attribution);
+          if (
+            observation.attribution &&
+            observation.attribution.accountNamespace !== value.accountNamespace
+          )
+            throw new Error('INVALID_ACCOUNT');
+        }
+        if (
+          value.unresolved.some(
+            (item) =>
+              !onlyFields(item, ['conversationKey', 'reason']) ||
+              item.conversationKey !== target.conversationKey ||
+              !codePattern.test(item.reason ?? ''),
+          )
+        )
+          throw new Error('INVALID_UNRESOLVED');
+      }
+    } catch {
+      throw new Error('DOM_SUPPLEMENT_CHECKPOINT_INVALID');
+    }
+  }
   return structuredClone(value);
+}
+
+function onlyFields(value, fields) {
+  return (
+    value &&
+    typeof value === 'object' &&
+    !Array.isArray(value) &&
+    Object.keys(value).every((key) => fields.includes(key))
+  );
 }
 
 async function writePrivateJson(directory, name, value) {
@@ -299,7 +432,15 @@ export async function domSupplementStatus(
 
 function normalizedTarget(value) {
   if (
-    !value ||
+    !onlyFields(value, [
+      'taskId',
+      'conversationKey',
+      'friendId',
+      'friendSource',
+      'uniqueId',
+      'latestMessageId',
+    ]) ||
+    Object.values(value).some((item) => typeof item !== 'string') ||
     !keyPattern.test(value.conversationKey ?? '') ||
     !keyPattern.test(value.taskId ?? '') ||
     !/^\d+$/.test(value.friendId ?? '') ||
@@ -429,7 +570,187 @@ function applyDomPayload(payload, envelope, target) {
   applied.envelope.resume.lastCoverage = structuredClone(previous.lastCoverage);
   applied.envelope.resume.lastUnresolved = structuredClone(previous.lastUnresolved);
   applied.envelope = validateCurrentEnvelope(applied.envelope);
+  applied.result = normalized;
   return applied;
+}
+
+function checkpointFor(target, accountNamespace, stage, selectedAt, issuedAt) {
+  return {
+    version: 2,
+    taskId: target.taskId,
+    conversationKey: target.conversationKey,
+    latestMessageId: target.latestMessageId,
+    ruleId: DOM_RULE_ID,
+    stage,
+    selectedAt,
+    issuedAt,
+    accountNamespace,
+    target: structuredClone(target),
+  };
+}
+
+function readyCheckpoint(checkpoint, payload, result) {
+  return normalizeCheckpoint({
+    ...checkpoint,
+    stage: 'result_ready',
+    capturedAt: result.capturedAt,
+    switchAttempted: payload.switchAttempted,
+    observations: result.observations.map((item) => ({
+      conversationKey: item.conversationKey,
+      friendId: item.platformIdentity.friendId,
+      friendSource: item.platformIdentity.friendSource,
+      messageId: item.messageId,
+      direction: item.direction,
+      messageType: item.messageType,
+      kind: item.kind,
+      platformTime: item.platformTime,
+      externalJobId: item.externalJobId,
+      source: item.source,
+      resumeEvidence: item.resumeEvidence,
+      attribution: item.attribution,
+    })),
+    unresolved: result.unresolved,
+    coverage: result.coverage,
+  });
+}
+
+const defaultCheckpoints = {
+  load: readCheckpoint,
+  save: saveCheckpoint,
+  remove: removeCheckpoint,
+};
+
+function domReport(envelope, checkpoint = null) {
+  return {
+    envelope,
+    recovered: false,
+    usage: { domSwitches: 0 },
+    counts: { pending: 0, selected: 0, switched: 0, observed: 0, added: 0, unresolved: 0 },
+    partial: false,
+    error: null,
+    nextAllowedAt: null,
+    policyStatus: 'not_checked',
+    checkpointPending: Boolean(checkpoint),
+    reason: null,
+  };
+}
+
+function withUsage(error, domSwitches) {
+  const failure = error instanceof Error ? error : new Error('DOM_SUPPLEMENT_SAVE_FAILED');
+  failure.usage = { ...failure.usage, domSwitches };
+  return failure;
+}
+
+async function commitDomResult({
+  directory,
+  envelope,
+  state,
+  checkpoint,
+  saveEvidence,
+  saveProgress,
+  checkpoints,
+}) {
+  const payload = {
+    ok: true,
+    url: expectedUrl,
+    target: checkpoint.target,
+    switchAttempted: checkpoint.switchAttempted,
+    capturedAt: checkpoint.capturedAt,
+    observations: checkpoint.observations,
+    unresolved: checkpoint.unresolved,
+    coverage: checkpoint.coverage,
+  };
+  const applied = applyDomPayload(payload, envelope, checkpoint.target);
+  const completed = state.completed.find((item) => item.taskId === checkpoint.taskId);
+  const nextState = completed
+    ? state
+    : normalizeState({
+        ...state,
+        cursor: checkpoint.conversationKey,
+        lastSwitchAt: checkpoint.issuedAt ?? state.lastSwitchAt,
+        completed: [
+          ...state.completed,
+          {
+            taskId: checkpoint.taskId,
+            completedAt: checkpoint.capturedAt,
+            outcome: applied.report.counts.observed ? 'observed' : 'no_matching_status',
+          },
+        ],
+        updatedAt: checkpoint.capturedAt,
+      });
+  const files = await saveEvidence(applied.envelope);
+  const snapshotPath =
+    typeof files === 'string' ? files : (files?.snapshotPath ?? files?.file ?? null);
+  try {
+    await saveProgress(nextState);
+    await checkpoints.remove(directory);
+  } catch (error) {
+    if (error instanceof Error && snapshotPath) error.snapshotPath ??= snapshotPath;
+    throw error;
+  }
+  return {
+    ...domReport(applied.envelope),
+    recovered: true,
+    snapshotPath,
+    counts: {
+      pending: domSupplementTasks(applied.envelope, { state: nextState }).pending,
+      selected: 1,
+      switched: 0,
+      observed: applied.report.counts.observed,
+      added: applied.report.counts.added,
+      unresolved: applied.report.counts.unresolved,
+    },
+  };
+}
+
+// Only replays validated local results. Pending selection and uncertain actions
+// remain untouched until an authorized collection or an explicit review.
+export async function recoverDomSupplement({
+  directory,
+  envelope,
+  saveEvidence = (value) => commit(directory, value),
+  saveProgress = (value) => saveState(directory, value),
+  checkpoints = defaultCheckpoints,
+} = {}) {
+  const checked = validateEnvelope(envelope);
+  checkpoints = { ...defaultCheckpoints, ...checkpoints };
+  if (
+    typeof directory !== 'string' ||
+    !directory ||
+    typeof saveEvidence !== 'function' ||
+    typeof saveProgress !== 'function' ||
+    !checkpoints ||
+    ['load', 'save', 'remove'].some((key) => typeof checkpoints[key] !== 'function')
+  )
+    throw new TypeError('DOM_SUPPLEMENT_INPUT_INVALID');
+  try {
+    const [state, loaded] = await Promise.all([readState(directory), checkpoints.load(directory)]);
+    const checkpoint = loaded === null ? null : normalizeCheckpoint(loaded);
+    const base = domReport(checked, checkpoint);
+    if (!checkpoint) return base;
+    if (checkpoint.version === 2 && checkpoint.accountNamespace !== checked.accountNamespace)
+      throw new Error('DOM_SUPPLEMENT_CHECKPOINT_ACCOUNT_MISMATCH');
+    if (checkpoint.stage === 'selected')
+      return { ...base, reason: 'DOM_CHECKPOINT_AWAITING_AUTHORIZATION' };
+    if (checkpoint.stage === 'switch_issued')
+      return {
+        ...base,
+        partial: true,
+        error: 'DOM_SWITCH_OUTCOME_UNKNOWN',
+        reason: 'DOM_CHECKPOINT_REQUIRES_REVIEW',
+      };
+    return await commitDomResult({
+      directory,
+      envelope: checked,
+      state,
+      checkpoint,
+      saveEvidence,
+      saveProgress,
+      checkpoints,
+    });
+  } catch (error) {
+    throw withUsage(error, 0);
+  }
 }
 
 export async function collectDomSupplement({
@@ -440,8 +761,13 @@ export async function collectDomSupplement({
   verify = async () => ({ ok: true }),
   now = () => new Date(),
   minimumIntervalMs = 30_000,
+  saveRecoveryBase = (value) => commit(directory, upgradeEnvelope(value)),
+  saveEvidence = (value) => commit(directory, value),
+  saveProgress = (value) => saveState(directory, value),
+  checkpoints = defaultCheckpoints,
 } = {}) {
   const checked = validateEnvelope(envelope);
+  checkpoints = { ...defaultCheckpoints, ...checkpoints };
   if (
     typeof directory !== 'string' ||
     !directory ||
@@ -451,25 +777,30 @@ export async function collectDomSupplement({
     typeof execute !== 'function' ||
     typeof verify !== 'function' ||
     typeof now !== 'function' ||
+    typeof saveRecoveryBase !== 'function' ||
+    typeof saveEvidence !== 'function' ||
+    typeof saveProgress !== 'function' ||
     !Number.isInteger(minimumIntervalMs) ||
     minimumIntervalMs < 30_000
   ) {
     throw new TypeError('DOM_SUPPLEMENT_INPUT_INVALID');
   }
+  const recovered = await recoverDomSupplement({
+    directory,
+    envelope: checked,
+    saveEvidence,
+    saveProgress,
+    checkpoints,
+  });
+  if (recovered.recovered || recovered.partial) return recovered;
   const [policyResult, state, checkpoint] = await Promise.all([
     loadDomSupplementPolicy(directory, checked.accountNamespace),
     readState(directory),
-    readCheckpoint(directory),
+    checkpoints.load(directory),
   ]);
   const base = {
-    envelope: checked,
-    usage: { domSwitches: 0 },
-    counts: { pending: 0, selected: 0, switched: 0, observed: 0, added: 0, unresolved: 0 },
-    partial: false,
-    error: null,
-    nextAllowedAt: null,
+    ...domReport(checked, checkpoint),
     policyStatus: policyResult.status,
-    checkpointPending: Boolean(checkpoint),
   };
   if (maxSwitches === 0) return { ...base, error: null, reason: 'DOM_BUDGET_ZERO' };
   const selection = domSupplementTasks(checked, { policy: policyResult.policy, state, checkpoint });
@@ -496,17 +827,23 @@ export async function collectDomSupplement({
   if (nextAllowedAt && Date.parse(currentIso) < Date.parse(nextAllowedAt)) {
     return { ...base, nextAllowedAt, reason: 'DOM_SWITCH_INTERVAL' };
   }
-  if (!checkpoint)
-    await saveCheckpoint(directory, {
-      version: 1,
-      taskId: target.taskId,
-      conversationKey: target.conversationKey,
-      latestMessageId: target.latestMessageId,
-      ruleId: DOM_RULE_ID,
-      stage: 'selected',
-      selectedAt: currentIso,
-      issuedAt: null,
-    });
+  // A newly loaded target may not exist in the prior immutable snapshot. Keep
+  // its validated model context before any target read so a ready result can
+  // be recovered from disk even if the later evidence save fails.
+  try {
+    await saveRecoveryBase(checked);
+  } catch (error) {
+    throw withUsage(error, 0);
+  }
+  const selectedAt = checkpoint?.selectedAt ?? currentIso;
+  let activeCheckpoint = checkpointFor(
+    target,
+    checked.accountNamespace,
+    'selected',
+    selectedAt,
+    null,
+  );
+  if (!checkpoint) await checkpoints.save(directory, activeCheckpoint);
   const identity = await verify();
   if (!identity?.ok)
     return {
@@ -541,19 +878,17 @@ export async function collectDomSupplement({
   const needsSwitch = !preflight.selected;
   const issuedAt = currentIso;
   if (needsSwitch) {
-    await saveCheckpoint(directory, {
-      version: 1,
-      taskId: target.taskId,
-      conversationKey: target.conversationKey,
-      latestMessageId: target.latestMessageId,
-      ruleId: DOM_RULE_ID,
-      stage: 'switch_issued',
-      selectedAt: checkpoint?.selectedAt ?? currentIso,
+    activeCheckpoint = checkpointFor(
+      target,
+      checked.accountNamespace,
+      'switch_issued',
+      selectedAt,
       issuedAt,
-    });
+    );
+    await checkpoints.save(directory, activeCheckpoint);
   }
   let nextState = needsSwitch ? { ...state, lastSwitchAt: issuedAt, updatedAt: issuedAt } : state;
-  if (needsSwitch) await saveState(directory, nextState);
+  if (needsSwitch) await saveProgress(nextState);
   let payload;
   try {
     payload = await execute(
@@ -572,23 +907,27 @@ export async function collectDomSupplement({
   }
   if (!payload?.ok) {
     const switched = payload?.switchAttempted === true;
-    if (!switched)
-      await saveCheckpoint(directory, {
-        version: 1,
-        taskId: target.taskId,
-        conversationKey: target.conversationKey,
-        latestMessageId: target.latestMessageId,
-        ruleId: DOM_RULE_ID,
-        stage: 'selected',
-        selectedAt: checkpoint?.selectedAt ?? currentIso,
-        issuedAt: null,
-      });
+    const unknown = typeof payload?.switchAttempted !== 'boolean' && needsSwitch;
+    if (!switched && !unknown) {
+      try {
+        await checkpoints.save(
+          directory,
+          checkpointFor(target, checked.accountNamespace, 'selected', selectedAt, null),
+        );
+      } catch (error) {
+        throw withUsage(error, 0);
+      }
+    }
     return {
       ...base,
-      usage: { domSwitches: switched ? 1 : 0 },
-      counts: { ...base.counts, switched: switched ? 1 : 0 },
-      partial: switched,
-      error: switched ? safeReason(payload.reason, 'DOM_SUPPLEMENT_FAILED') : null,
+      usage: { domSwitches: switched || unknown ? 1 : 0 },
+      counts: { ...base.counts, switched: switched || unknown ? 1 : 0 },
+      partial: switched || unknown,
+      error: unknown
+        ? 'DOM_SWITCH_OUTCOME_UNKNOWN'
+        : switched
+          ? safeReason(payload.reason, 'DOM_SUPPLEMENT_FAILED')
+          : null,
       checkpointPending: true,
       reason: safeReason(payload?.reason, 'DOM_SUPPLEMENT_REJECTED'),
     };
@@ -599,35 +938,40 @@ export async function collectDomSupplement({
   } catch (error) {
     return {
       ...base,
-      usage: { domSwitches: payload.switchAttempted ? 1 : 0 },
+      usage: {
+        domSwitches:
+          typeof payload.switchAttempted === 'boolean'
+            ? Number(payload.switchAttempted)
+            : Number(needsSwitch),
+      },
       partial: true,
       error: safeReason(error?.message, 'DOM_SUPPLEMENT_RESULT_INVALID'),
       checkpointPending: true,
       reason: 'DOM_RESULT_REJECTED',
     };
   }
-  const completedAt = payload.capturedAt;
-  nextState = normalizeState({
-    ...nextState,
-    cursor: target.conversationKey,
-    completed: [
-      ...nextState.completed,
-      {
-        taskId: target.taskId,
-        completedAt,
-        outcome: applied.report.counts.observed ? 'observed' : 'no_matching_status',
-      },
-    ],
-    updatedAt: completedAt,
-  });
-  await saveState(directory, nextState);
-  await removeCheckpoint(directory);
+  let committed;
+  try {
+    const ready = readyCheckpoint(activeCheckpoint, payload, applied.result);
+    await checkpoints.save(directory, ready);
+    committed = await commitDomResult({
+      directory,
+      envelope: checked,
+      state: nextState,
+      checkpoint: ready,
+      saveEvidence,
+      saveProgress,
+      checkpoints,
+    });
+  } catch (error) {
+    throw withUsage(error, payload.switchAttempted ? 1 : 0);
+  }
   return {
-    ...base,
-    envelope: applied.envelope,
+    ...committed,
+    recovered: false,
     usage: { domSwitches: payload.switchAttempted ? 1 : 0 },
     counts: {
-      pending: Math.max(0, selection.pending - 1),
+      pending: committed.counts.pending,
       selected: 1,
       switched: payload.switchAttempted ? 1 : 0,
       observed: applied.report.counts.observed,
