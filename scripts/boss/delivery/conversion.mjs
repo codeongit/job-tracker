@@ -476,6 +476,7 @@ export function createBatch({
     coverage: coverageOf(envelope),
     events: events.map((event) => {
       const row = rows.get(event.conversationKey);
+      const details = row?.jobDetails;
       return {
         ...(event.eventType === 'resume_observed'
           ? {
@@ -484,7 +485,12 @@ export function createBatch({
               resumeEvidence: event.resumeEvidence ?? null,
             }
           : structuredClone(event)),
-        jobDetails: row?.jobDetails ?? null,
+        jobDetails:
+          details &&
+          details.jobId === event.externalJobId &&
+          details.canonicalUrl === event.canonicalUrl
+            ? details
+            : null,
       };
     }),
   };

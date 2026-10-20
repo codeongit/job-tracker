@@ -18,6 +18,8 @@ for (const failingStep of ['evidence', 'progress', 'remove']) {
   test(`completed history checkpoint recovers after ${failingStep} fails`, async () => {
     let durableState = initialState;
     let checkpoint = {
+      version: 7,
+      previousPageHash: 'a'.repeat(64),
       nextConversationKey: null,
       completedConversationKey: key,
       targetFingerprint: fingerprint,
@@ -119,7 +121,8 @@ function unresolvedFixture() {
   );
   const reason = { conversationKey, reason: 'RESUME_ACTION_PLATFORM_CONTRACT_UNVERIFIED' };
   const checkpoint = {
-    version: 6,
+    version: 7,
+    previousPageHash: 'a'.repeat(64),
     capturedAt: '2026-09-24T02:01:00.000Z',
     nextConversationKey: null,
     completedConversationKey: conversationKey,

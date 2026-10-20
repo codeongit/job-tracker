@@ -791,10 +791,12 @@ test('both history continuations retain an unsupported-only prior page when the 
         reason: 'RESUME_ACTION_PLATFORM_CONTRACT_UNVERIFIED',
       };
       await save(directory, {
-        version: 6,
+        version: 7,
         capturedAt: '2026-09-24T02:01:00.000Z',
         nextConversationKey: record.key,
         nextPage: 2,
+        nextCursor: '81',
+        previousPageHash: 'a'.repeat(64),
         observations: [],
         unresolved: [reason],
         coverage: { requestedConversations: 1, resolvedConversations: 1, pagesPerConversation: 1 },
@@ -828,6 +830,7 @@ test('both history continuations retain an unsupported-only prior page when the 
           if (metadata.kind === 'friend')
             return { ok: true, identity: { bossId: '901', securityId: 'synthetic-security' } };
           assert.equal(metadata.page, 2);
+          assert.equal(metadata.maxMsgId, '81');
           return {
             ok: true,
             observations: [],
@@ -974,13 +977,15 @@ test('completed checkpoint replay never bypasses the budget for later queued con
       const { envelope, history } = changedHistoryFixture(12);
       const completed = pendingHistory(history)[0];
       await saveChangeCheckpoint(directory, {
-        version: 2,
+        version: 7,
         capturedAt: envelope.snapshot.capturedAt,
         nextConversationKey: null,
         nextPage: 0,
         completedConversationKey: completed.key,
         targetFingerprint: completed.task.fingerprint,
         head: 'saved-head',
+        nextCursor: null,
+        previousPageHash: '4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945',
         observations: [],
         unresolved: [],
         coverage: {},

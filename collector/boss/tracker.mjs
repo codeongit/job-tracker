@@ -45,7 +45,7 @@ import {
   resumeDetailState,
 } from './persistence/runtime-state.mjs';
 import { historySummary } from './history/change-history.mjs';
-import { collectHistory, settleSaved } from './history/history-phase.mjs';
+import { collectHistory, saveHistoryCapture } from './history/history-phase.mjs';
 import { randomUUID } from 'node:crypto';
 import { accountDataDirectory } from './paths.mjs';
 
@@ -728,14 +728,16 @@ export async function main(
         process.exitCode = 1;
         return;
       }
-      const files = await saveEnvelope(directory, scanned.envelope);
-      await settleSaved(directory, scanned, files);
       runtime = {
         ...runtime,
         cursors: { ...runtime.cursors, resume: scanned.cursor },
         updatedAt: new Date().toISOString(),
       };
-      await saveRuntimeState(directory, runtime);
+      const files = await saveHistoryCapture(directory, {
+        envelope: scanned.envelope,
+        runtime,
+        history: scanned,
+      });
       console.log(
         JSON.stringify(
           {
@@ -945,8 +947,6 @@ export async function main(
         resumeIdentity(activeConnection, identityOptions),
       );
       runtime = sharedRuntime;
-      const files = await saveEnvelope(directory, envelope);
-      await settleSaved(directory, history, files);
       const detailFailed = Boolean(detailCollected.halted || detailCollected.failures.length);
       const partial = history.partial || dom.partial || detailFailed || !finalIdentity.ok;
       const failureScope =
@@ -991,7 +991,7 @@ export async function main(
           cdpReconnects: failureUsage.cdpReconnects,
         },
       });
-      await saveRuntimeState(directory, runtime);
+      const files = await saveHistoryCapture(directory, { envelope, runtime, history });
       runRuntime = runtime;
       runFinalized = true;
       console.log(

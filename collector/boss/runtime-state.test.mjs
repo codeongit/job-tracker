@@ -506,7 +506,7 @@ test('runtime and resume checkpoints are private, atomic and reloadable', async 
     assert.deepEqual(await loadResumeCheckpoint(directory), checkpoint);
     for (const invalid of [
       { ...checkpoint, unknownField: true },
-      { ...checkpoint, version: 7 },
+      { ...checkpoint, version: 8 },
       { ...checkpoint, head: 'message~a' },
       { ...checkpoint, nextConversationKey: 'job~a' },
     ])
@@ -519,6 +519,64 @@ test('runtime and resume checkpoints are private, atomic and reloadable', async 
     assert.equal(await loadResumeCheckpoint(directory), null);
   } finally {
     await rm(directory, { recursive: true });
+  }
+});
+
+test('both history checkpoint paths reject coerced identity values without replacing saved progress', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'boss-checkpoint-identity-types-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const checkpoint = {
+    version: 1,
+    capturedAt: '2026-10-20T02:00:00.000Z',
+    nextConversationKey: 'a'.repeat(64),
+    nextPage: 2,
+    observations: [],
+    unresolved: [],
+    coverage: {},
+    usage: { historyRequests: 2 },
+    partial: false,
+    error: null,
+    completedConversationKey: 'b'.repeat(64),
+    head: '100',
+    targetFingerprint: 'c'.repeat(64),
+  };
+  for (const [save, load] of [
+    [saveResumeCheckpoint, loadResumeCheckpoint],
+    [saveChangeCheckpoint, loadChangeCheckpoint],
+  ]) {
+    const path = await save(directory, checkpoint);
+    const saved = await readFile(path, 'utf8');
+    for (const field of [
+      'nextConversationKey',
+      'completedConversationKey',
+      'head',
+      'targetFingerprint',
+    ]) {
+      for (const value of [[checkpoint[field]], [], {}, 100, true]) {
+        const invalid = { ...checkpoint, [field]: value };
+        await assert.rejects(() => save(directory, invalid), /RESUME_CHECKPOINT_INVALID/);
+        assert.equal(await readFile(path, 'utf8'), saved);
+        await writeFile(path, JSON.stringify(invalid));
+        await assert.rejects(() => load(directory), /RESUME_CHECKPOINT_INVALID/);
+        await save(directory, checkpoint);
+      }
+    }
+    const optional = { ...checkpoint, nextConversationKey: null };
+    delete optional.completedConversationKey;
+    delete optional.head;
+    delete optional.targetFingerprint;
+    await save(directory, optional);
+    assert.deepEqual(await load(directory), optional);
+    const nullable = { ...optional, completedConversationKey: null, head: null };
+    await save(directory, nullable);
+    assert.deepEqual(await load(directory), nullable);
+    for (const invalid of [
+      { ...nullable, nextConversationKey: undefined },
+      { ...nullable, targetFingerprint: null },
+    ]) {
+      await assert.rejects(() => save(directory, invalid), /RESUME_CHECKPOINT_INVALID/);
+      assert.deepEqual(await load(directory), nullable);
+    }
   }
 });
 
@@ -562,7 +620,7 @@ test('v1 语义依据保留 v3 检查点兼容，旧格式拒绝依据且失败�
       const checkpointPath = await save(directory, checkpoint);
       assert.deepEqual(await load(directory), checkpoint);
       for (const invalid of [
-        { ...checkpoint, version: 7 },
+        { ...checkpoint, version: 8 },
         ...[1, 2].map((version) => ({ ...checkpoint, version })),
         { ...checkpoint, observations: [{ ...observation, futureSemanticField: 'synthetic' }] },
         {
@@ -656,7 +714,7 @@ test('v2 语义依据至少需要 v4 检查点，两种恢复链路保持依据�
       assert.equal((await stat(path)).mode & 0o777, 0o600);
       assert.deepEqual(await load(directory), checkpoint);
       for (const invalid of [
-        ...[1, 2, 3, 7].map((version) => ({ ...checkpoint, version })),
+        ...[1, 2, 3, 8].map((version) => ({ ...checkpoint, version })),
         {
           ...checkpoint,
           observations: [
@@ -690,7 +748,7 @@ test('v2 语义依据至少需要 v4 检查点，两种恢复链路保持依据�
       assert.deepEqual(await load(directory), legacy);
       await save(directory, checkpoint);
       assert.deepEqual(await load(directory), checkpoint);
-      for (const version of [5, 6]) {
+      for (const version of [5, 6, 7]) {
         const upgraded = { ...checkpoint, version };
         await save(directory, upgraded);
         assert.deepEqual(await load(directory), upgraded);
@@ -754,8 +812,8 @@ test('v3/v4 动作依据分别需要 v5/v6 检查点，拒绝旧容器且保留�
       assert.equal((await stat(path)).mode & 0o777, 0o600);
       assert.deepEqual(await load(directory), checkpoint);
       for (const [proof, acceptedVersions, rejectedVersions] of [
-        [actionProof, [5, 6], [1, 2, 3, 4, 7]],
-        [opaqueProof, [6], [1, 2, 3, 4, 5, 7]],
+        [actionProof, [5, 6, 7], [1, 2, 3, 4, 8]],
+        [opaqueProof, [6, 7], [1, 2, 3, 4, 5, 8]],
       ]) {
         for (const version of acceptedVersions) {
           const compatible = {
@@ -828,5 +886,47 @@ test('v2 runtime migrates without rewriting its file or losing the backfill curs
     assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), legacy);
   } finally {
     await rm(directory, { recursive: true });
+  }
+});
+
+test('v7 history cursors round-trip privately while old containers and invalid cursors are rejected atomically', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'boss-cursor-checkpoint-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const value = {
+    version: 7,
+    capturedAt: '2026-10-20T02:00:00.000Z',
+    nextConversationKey: 'a'.repeat(64),
+    nextPage: 2,
+    observations: [],
+    unresolved: [],
+    coverage: {},
+    usage: { historyRequests: 2 },
+    partial: false,
+    error: null,
+    head: '100',
+    targetFingerprint: 'b'.repeat(64),
+    nextCursor: '90071992547409931',
+    previousPageHash: 'c'.repeat(64),
+  };
+  for (const [save, load] of [
+    [saveResumeCheckpoint, loadResumeCheckpoint],
+    [saveChangeCheckpoint, loadChangeCheckpoint],
+  ]) {
+    await save(directory, value);
+    assert.deepEqual(await load(directory), value);
+    for (const invalid of [
+      { ...value, version: 6 },
+      { ...value, version: 8 },
+      ...[0, '0', '01', '-1', '1.5', 'raw secret', ''].map((nextCursor) => ({
+        ...value,
+        nextCursor,
+      })),
+      { ...value, previousPageHash: 'raw secret' },
+      { ...value, previousPageHash: ['c'.repeat(64)] },
+      { ...value, futureField: true },
+    ]) {
+      await assert.rejects(save(directory, invalid), /RESUME_CHECKPOINT_INVALID/);
+      assert.deepEqual(await load(directory), value);
+    }
   }
 });

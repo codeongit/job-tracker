@@ -161,6 +161,28 @@ test('未知本机错误不会向网页暴露私有路径或异常正文', async
   assert.doesNotMatch(JSON.stringify(result.value), /\.local|secret\.json|private JSON/);
 });
 
+test('本机消费进度视图只读内存，不执行完整事实或采集快照检查', async () => {
+  const progress = {
+    running: true,
+    phase: 'committing',
+    batchId: BATCH_ID,
+    total: 3,
+    completed: 1,
+  };
+  const bossController = {
+    status: () => ({ lifecycle: 'stopped', inbox: { progress } }),
+    inspectStatus: async () => {
+      throw new Error('must not inspect materials');
+    },
+  };
+  const result = await call('/__local/boss-runtime?view=progress', {
+    bossController,
+    headers: { 'x-job-tracker-session': SECRET, 'x-job-tracker-protocol': '1' },
+  });
+  assert.equal(result.status, 200);
+  assert.deepEqual(result.value.status.inbox.progress, progress);
+});
+
 test('跟踪控制接口与队列共用会话边界，只接受固定动作和同源 JSON', async () => {
   const actions = [];
   const bossController = {

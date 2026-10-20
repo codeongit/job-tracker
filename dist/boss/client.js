@@ -95,6 +95,7 @@ export function bossInboxClient(session, workspaceSourceId, fetcher = fetch) {
     return result;
   }
   return {
+    progress: async () => (await request('./__local/boss-runtime?view=progress', {}, 30000)).status,
     index: () =>
       request(
         `./__local/boss-inbox?workspaceSourceId=${encodeURIComponent(workspaceSourceId)}`,
@@ -259,6 +260,20 @@ export function createBossQueueConsumer({
 
   async function consume() {
     if (!(await connect())) return status;
+    if (serverManaged) {
+      const tracking = await client.progress();
+      if (tracking?.inbox?.progress?.running)
+        return publish({
+          tracking,
+          connected: true,
+          connectionStale: false,
+          refreshFailures: 0,
+          refreshError: '',
+          error: '',
+          inspectionPending: true,
+          revision: undefined,
+        });
+    }
     const index = await client.index(),
       initialState = await readWorkspace();
     publish({
@@ -269,6 +284,7 @@ export function createBossQueueConsumer({
       refreshFailures: 0,
       refreshError: '',
       lastStatusAt: now(),
+      inspectionPending: false,
       applicationCounts: sourceReviewCounts(initialState.data),
       waitingItems: serverManaged
         ? index.recovery?.waitingItems || []
@@ -371,7 +387,7 @@ export function createBossQueueConsumer({
         if (
           serverManaged &&
           status.lastStatusAt &&
-          ['LOCAL_UNAVAILABLE', 'LOCAL_TIMEOUT'].includes(error.code)
+          ['LOCAL_UNAVAILABLE', 'LOCAL_TIMEOUT', 'LOCAL_STATUS_CHANGING'].includes(error.code)
         ) {
           const refreshFailures = (status.refreshFailures || 0) + 1;
           publish({
@@ -397,7 +413,7 @@ export function createBossQueueConsumer({
   }
 
   async function bind(accountNamespace, { restore = false } = {}) {
-    if (serverManaged && status.connectionStale)
+    if (serverManaged && (status.connectionStale || status.inspectionPending))
       throw integrationError('状态尚未更新，请等待刷新成功后再处理绑定。', 'LOCAL_STATUS_STALE');
     if (!status.accounts.some((account) => account.accountNamespace === accountNamespace))
       throw integrationError('队列中没有这个 BOSS 来源账号。', 'SOURCE_INVALID');
@@ -420,7 +436,7 @@ export function createBossQueueConsumer({
   }
 
   async function replay(batchId) {
-    if (serverManaged && status.connectionStale)
+    if (serverManaged && (status.connectionStale || status.inspectionPending))
       throw integrationError('状态尚未更新，请等待刷新成功后再核对重放。', 'LOCAL_STATUS_STALE');
     if (!status.restoreReview?.some((gap) => gap.batchId === batchId))
       throw integrationError('这个批次当前不需要恢复核对。', 'REPLAY_NOT_REQUIRED');

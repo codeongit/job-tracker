@@ -131,6 +131,19 @@ async function collectBackfill({
   platformReference,
 }) {
   const startConversationKey = priorCheckpoint?.nextConversationKey ?? null;
+  // A continuation keeps the list identity captured before its first page.
+  // Older checkpoints cannot prove that identity and must not clear a new task.
+  const targetFingerprints = new Map(
+    fair.targets.map((target) => [
+      target.conversationKey,
+      target.conversationKey === startConversationKey
+        ? priorCheckpoint.version >= 7
+          ? (priorCheckpoint.targetFingerprint ?? null)
+          : null
+        : (runtime.history?.conversations.find((item) => item.key === target.conversationKey)
+            ?.fingerprint ?? null),
+    ]),
+  );
   const scan = await runResumeHistoryRequests({
     targets: fair.targets,
     pages,
@@ -139,23 +152,29 @@ async function collectBackfill({
     requestDelayMs,
     initialObservations: priorCheckpoint?.observations ?? [],
     initialUnresolved: priorCheckpoint?.unresolved ?? [],
+    initialHead: startConversationKey === null ? null : (priorCheckpoint.head ?? null),
+    initialCursor: priorCheckpoint?.version >= 7 ? (priorCheckpoint.nextCursor ?? null) : null,
+    initialPageHash:
+      priorCheckpoint?.version >= 7 ? (priorCheckpoint.previousPageHash ?? null) : null,
     startConversationKey,
     startPage: startConversationKey === null ? 1 : Math.max(1, priorCheckpoint.nextPage),
-    knownMessageIds: [
-      ...envelope.resume.observations.map((item) => ({
-        conversationKey: item.conversationKey,
-        messageId: item.messageId,
-      })),
-      ...(runtime.history?.conversations ?? [])
-        .filter((item) => item.watermark)
-        .map((item) => ({ conversationKey: item.key, messageId: item.watermark })),
-    ],
+    // Resume observations are selected facts, not proof of complete history coverage.
+    knownMessageIds: (runtime.history?.conversations ?? [])
+      .filter((item) => item.watermark)
+      .map((item) => ({ conversationKey: item.key, messageId: item.watermark })),
     execute: async (expression, metadata) => {
       const payload = await evaluate(connection, expression, metadata);
       if (!payload || typeof payload !== 'object') throw new Error('HISTORY_RESPONSE_INVALID');
       return payload;
     },
-    onCheckpoint: (value) => saveResumeCheckpoint(directory, value),
+    onCheckpoint: (value) => {
+      const key = value.nextConversationKey ?? value.completedConversationKey;
+      const targetFingerprint = targetFingerprints.get(key);
+      return saveResumeCheckpoint(directory, {
+        ...value,
+        ...(targetFingerprint ? { targetFingerprint } : {}),
+      });
+    },
   });
   const result = toResumeHistoryResult(scan.payload, envelope);
   const applied = applyResumeHistoryV2(envelope, result);
@@ -168,8 +187,15 @@ async function collectBackfill({
     error: scan.error,
     cursor: scan.cursor ?? runtime.cursors.resume,
     checkpointPending: true,
-    continuation: scan.continuation,
-    completed: scan.completed,
+    continuation:
+      scan.continuation ??
+      (scan.usage.historyRequests === 0 && startConversationKey !== null
+        ? { conversationKey: startConversationKey, page: priorCheckpoint.nextPage }
+        : null),
+    completed: scan.completed.map((item) => ({
+      ...item,
+      targetFingerprint: targetFingerprints.get(item.conversationKey) ?? null,
+    })),
   };
 }
 
@@ -230,6 +256,8 @@ async function collectChanges({
       initialObservations: checkpoint?.observations ?? [],
       initialUnresolved: checkpoint?.unresolved ?? [],
       initialHead: checkpoint?.head ?? task.head,
+      initialCursor: checkpoint?.version >= 7 ? (checkpoint.nextCursor ?? null) : null,
+      initialPageHash: checkpoint?.version >= 7 ? (checkpoint.previousPageHash ?? null) : null,
       knownMessageIds: item.watermark
         ? [{ conversationKey: item.key, messageId: item.watermark }]
         : [],
@@ -263,11 +291,15 @@ async function collectChanges({
       'failedConversations',
     ])
       coverage[key] += committed.coverage[key] ?? 0;
+    partial ||= scan.partial;
     if (scan.error) {
       partial = true;
       error = scan.error;
       break;
     }
+    // This mode has one durable page checkpoint. Keep a healthy continuation
+    // until its next round instead of letting another task overwrite its cursor.
+    if (scan.continuation && !scan.payload.coverage.failedConversations) break;
   }
   return { envelope: history.envelope, state: history.state, counts, coverage, partial, error };
 }
@@ -392,8 +424,17 @@ export async function collectHistory({
             pages,
           });
     if (mode === 'backfill' && listObservedAt !== undefined)
-      for (const item of result.completed ?? [])
-        result.state = recordHistoryWatermark(result.state, item.conversationKey, item.head);
+      for (const item of result.completed ?? []) {
+        const conversation = result.state.conversations.find(
+          (entry) => entry.key === item.conversationKey,
+        );
+        if (
+          conversation &&
+          item.targetFingerprint === conversation.fingerprint &&
+          (!conversation.task || item.targetFingerprint === conversation.task.fingerprint)
+        )
+          result.state = recordHistoryWatermark(result.state, item.conversationKey, item.head);
+      }
     const finalCheck = await reportOperation(() => resumeBrowser(connection, identityOptions));
     return {
       ...result,
@@ -414,6 +455,19 @@ export async function collectHistory({
   }
 }
 
+// Both capture entry points and bounded maintenance use this same durable order.
+// The caller retains the existing authorization, budget and capture locks.
+export async function saveHistoryCapture(
+  directory,
+  { envelope, runtime, history },
+  { saveEvidence = saveEnvelope, saveProgress = saveRuntimeState, settle = settleSaved } = {},
+) {
+  const files = await saveEvidence(directory, envelope);
+  await saveProgress(directory, runtime);
+  await settle(directory, history, files);
+  return files;
+}
+
 // Backfill evidence belongs to the final snapshot; never settle on a failed
 // save or on a JSON-only receipt whose Markdown export has not succeeded.
 export async function settleSaved(directory, result, savedFiles) {
@@ -429,8 +483,14 @@ export async function settleSaved(directory, result, savedFiles) {
     await removeResumeCheckpoint(directory);
     return;
   }
+  const checkpoint = await loadResumeCheckpoint(directory);
+  if (
+    checkpoint?.nextConversationKey !== result.continuation.conversationKey ||
+    checkpoint.nextPage !== result.continuation.page
+  )
+    throw new Error('RESUME_CHECKPOINT_CONTINUATION_MISMATCH');
   await saveResumeCheckpoint(directory, {
-    version: 6,
+    version: 7,
     capturedAt: new Date().toISOString(),
     nextConversationKey: result.continuation.conversationKey,
     nextPage: result.continuation.page,
@@ -440,5 +500,11 @@ export async function settleSaved(directory, result, savedFiles) {
     usage: { historyRequests: 0 },
     partial: false,
     error: null,
+    head: checkpoint.head ?? null,
+    nextCursor: checkpoint.version >= 7 ? (checkpoint.nextCursor ?? null) : null,
+    previousPageHash: checkpoint.version >= 7 ? (checkpoint.previousPageHash ?? null) : null,
+    ...(checkpoint.version >= 7 && checkpoint.targetFingerprint
+      ? { targetFingerprint: checkpoint.targetFingerprint }
+      : {}),
   });
 }

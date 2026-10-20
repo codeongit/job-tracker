@@ -1,4 +1,5 @@
 import { resolveBossJobEvidence } from '../../../dist/boss/rules/job-evidence.js';
+import { compactJobEvidenceHistory } from './job-evidence-history.mjs';
 import {
   BOSS_JOB_ID,
   parseBossJobUrl,
@@ -789,9 +790,10 @@ function setAssociation(envelope, record, capturedAt, source) {
   }
 }
 
-function sortedEnvelope(envelope) {
+function compactAndSortEnvelope(envelope) {
   envelope.state.records.sort((a, b) => a.key.localeCompare(b.key));
   envelope.jobs.associations.sort((a, b) => a.id.localeCompare(b.id));
+  envelope.jobs.evidence = compactJobEvidenceHistory(envelope.jobs.evidence);
   envelope.jobs.evidence.sort((a, b) => a.id.localeCompare(b.id));
   envelope.jobs.candidates.sort((a, b) => a.id.localeCompare(b.id));
   envelope.jobs.confirmations.sort((a, b) => a.id.localeCompare(b.id));
@@ -936,7 +938,7 @@ export function compareLoadedSnapshotsV2(previousEnvelope, inputSnapshot) {
   counts.historicalJobAssociations = envelope.jobs.associations.filter(
     (item) => item.status === 'historical',
   ).length;
-  sortedEnvelope(envelope);
+  compactAndSortEnvelope(envelope);
   const report = {
     mode: baseline ? 'baseline' : 'comparison',
     capturedAt: snapshot.capturedAt,
@@ -1215,7 +1217,7 @@ export function importLegacyV1ToV2(inputEnvelope, { v1Envelope, enrichedJobs, im
   };
   envelope.migration.runs.push(run);
   envelope.updatedAt = importedAt;
-  sortedEnvelope(envelope);
+  compactAndSortEnvelope(envelope);
   return {
     envelope,
     report: {
@@ -1475,7 +1477,7 @@ export function applyDetailEvidenceV2(inputEnvelope, result, appliedAt) {
     counts[envelope.jobs.candidates.length > before ? 'candidateSaved' : 'duplicates'] += 1;
   }
   if (counts.accepted || counts.candidateSaved) envelope.updatedAt = appliedAt;
-  sortedEnvelope(envelope);
+  compactAndSortEnvelope(envelope);
   return {
     envelope,
     report: {

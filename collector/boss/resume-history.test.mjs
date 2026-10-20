@@ -79,7 +79,9 @@ function syntheticHistoryFixture(messages) {
         code: 0,
         zpData: this.url.includes('getGeekFriendList')
           ? { result: [{ uid: 'boss_301', friendSource: '0', securityId: 'synthetic-security' }] }
-          : { messages },
+          : typeof messages === 'function'
+            ? messages(this.url)
+            : { messages },
       });
       queueMicrotask(() => this.onload());
     }
@@ -702,7 +704,7 @@ test('生成的历史表达式按已核实契约接收合成不透明动作，�
   }
 });
 
-test('有界历史读取将契约传入实际生成表达式，v6 检查点不泄露请求私有字段', async () => {
+test('有界历史读取将契约传入实际生成表达式，v7 检查点不泄露请求私有字段', async () => {
   const target = { conversationKey, friendId: '301', friendSource: '0' };
   const fixture = syntheticHistoryFixture([
     syntheticActionNotice('opaque-send', 'synthetic-opaque-action-token'),
@@ -737,7 +739,7 @@ test('有界历史读取将契约传入实际生成表达式，v6 检查点不�
   ]);
   assert.equal(checkpoints.length, 2);
   assert.equal(
-    checkpoints.every((item) => item.version === 6),
+    checkpoints.every((item) => item.version === 7),
     true,
   );
   assert.equal(checkpoints.at(-1).usage.historyRequests, 2);
@@ -752,7 +754,7 @@ test('有界历史读取将契约传入实际生成表达式，v6 检查点不�
     assert.equal(JSON.stringify(checkpoints).includes(privateValue), false);
 });
 
-test('历史执行失败仍计入已发请求，v6 检查点保留失败页而不保存私有错误正文', async () => {
+test('历史执行失败仍计入已发请求，v7 检查点保留失败页而不保存私有错误正文', async () => {
   const target = { conversationKey, friendId: '301', friendSource: '0' };
   const checkpoints = [];
   const result = await runResumeHistoryRequests({
@@ -771,7 +773,7 @@ test('历史执行失败仍计入已发请求，v6 检查点保留失败页而�
   assert.equal(result.partial, true);
   assert.equal(result.error, 'HISTORY_SCAN_FAILED');
   assert.deepEqual(result.continuation, { conversationKey, page: 1 });
-  assert.equal(checkpoints.at(-1).version, 6);
+  assert.equal(checkpoints.at(-1).version, 7);
   assert.equal(checkpoints.at(-1).usage.historyRequests, 2);
   assert.equal(checkpoints.at(-1).nextPage, 1);
   assert.equal(JSON.stringify(checkpoints).includes('synthetic-private-error'), false);
@@ -865,7 +867,8 @@ test('bounded history runner checkpoints every request and reports actual covera
         url: 'https://www.zhipin.com/web/geek/chat',
         page: metadata.page,
         exhausted: metadata.page === 2 || metadata.conversationKey === 'd'.repeat(64),
-        messageIds: [],
+        messageIds: [String(100 - metadata.page)],
+        nextCursor: String(100 - metadata.page),
         observations: [],
         unresolved: [],
       };
@@ -885,7 +888,7 @@ test('bounded history runner checkpoints every request and reports actual covera
   });
   assert.equal(checkpoints.length, 5);
   assert.equal(
-    checkpoints.every((item) => item.version === 6),
+    checkpoints.every((item) => item.version === 7),
     true,
   );
   assert.equal(waits.length, 4);
@@ -977,6 +980,7 @@ test('history runner resumes the durable page and retains it until the conversat
     requestDelayMs: 0,
     startConversationKey: conversationKey,
     startPage: 3,
+    initialCursor: '100',
     onCheckpoint: async (value) => checkpoints.push(value),
     execute: async (_expression, metadata) => {
       calls.push(metadata);
@@ -990,7 +994,8 @@ test('history runner resumes the durable page and retains it until the conversat
         ok: true,
         url: 'https://www.zhipin.com/web/geek/chat',
         exhausted: false,
-        messageIds: [],
+        messageIds: [String(100 - metadata.page)],
+        nextCursor: String(100 - metadata.page),
         observations: [],
         unresolved: [],
       };
@@ -1472,4 +1477,123 @@ test('history conversion accepts tilde job IDs without relaxing other observatio
       () => createResumePageExpression({ ...invalid, page: 1 }),
       /RESUME_SCAN_INPUT_INVALID/,
     );
+});
+
+test('real page expressions and compatibility reads advance maxMsgId and use the 19-message boundary', async () => {
+  const target = { conversationKey, friendId: '301', friendSource: '0' };
+  const fixture = syntheticHistoryFixture((url) => {
+    const tail = new URL(url).searchParams.get('maxMsgId') === '82';
+    return {
+      messages: Array.from({ length: tail ? 11 : 19 }, (_, index) => ({
+        mid: String((tail ? 81 : 100) - index),
+        type: 1,
+        time: 1790000000,
+      })),
+      minMsgId: tail ? 71 : 82,
+      hasMore: false,
+    };
+  });
+  const first = await vm.runInNewContext(
+    createResumePageExpression({
+      target,
+      identity: { bossId: 'boss_301', securityId: 'synthetic-security' },
+      page: 1,
+    }),
+    fixture.context,
+  );
+  assert.equal(first.exhausted, false);
+  assert.equal(first.nextCursor, '82');
+  const result = await vm.runInNewContext(
+    createResumeHistoryExpression({ targets: [target], pages: 2 }),
+    fixture.context,
+  );
+  assert.equal(result.ok, true);
+  assert.deepEqual(Array.from(result.unresolved), []);
+  const pages = fixture.requests.filter((item) => item.url.includes('historyMsg'));
+  assert.deepEqual(
+    pages.map((item) => new URL(item.url).searchParams.get('maxMsgId')),
+    ['0', '0', '82'],
+  );
+});
+
+test('page cursors preserve decimal precision, reject unsafe response numbers and validate inputs', async () => {
+  const target = { conversationKey, friendId: '301', friendSource: '0' };
+  const options = {
+    target,
+    identity: { bossId: 'boss_301', securityId: 'synthetic-security' },
+    page: 2,
+  };
+  for (const cursor of [1, '01', '-1', '1.5', 'raw secret', '', '0'.repeat(129)])
+    assert.throws(
+      () => createResumePageExpression({ ...options, maxMsgId: cursor }),
+      /RESUME_SCAN_INPUT_INVALID/,
+    );
+  const fixture = syntheticHistoryFixture(() => ({
+    messages: [{ mid: '90071992547409931', type: 1 }],
+    hasMore: true,
+  }));
+  const result = await vm.runInNewContext(
+    createResumePageExpression({ ...options, maxMsgId: '90071992547409932' }),
+    fixture.context,
+  );
+  assert.equal(result.nextCursor, '90071992547409931');
+  const unsafe = syntheticHistoryFixture(() => ({
+    messages: [{ mid: 90071992547409930, type: 1 }],
+    minMsgId: 90071992547409930,
+    hasMore: true,
+  }));
+  const rejected = await vm.runInNewContext(createResumePageExpression(options), unsafe.context);
+  assert.equal(rejected.nextCursor, null);
+});
+
+test('runner rejects a page hash array before issuing requests', async () => {
+  await assert.rejects(
+    runResumeHistoryRequests({
+      targets: [{ conversationKey, friendId: '301', friendSource: '0' }],
+      maxRequests: 1,
+      initialPageHash: ['a'.repeat(64)],
+      execute: async () => assert.fail('invalid recovery input must not issue a request'),
+    }),
+    /RESUME_SCAN_INPUT_INVALID/,
+  );
+});
+
+test('history rejects repeated page sets and nonadvancing cursors instead of reporting truncation', async (t) => {
+  for (const scenario of ['repeated', 'stalled', 'missing']) {
+    await t.test(scenario, async () => {
+      const checkpoints = [];
+      const result = await runResumeHistoryRequests({
+        targets: [{ conversationKey, friendId: '301', friendSource: '0' }],
+        maxRequests: 3,
+        pages: 2,
+        requestDelayMs: 0,
+        onCheckpoint: async (value) => checkpoints.push(value),
+        execute: async (_expression, metadata) =>
+          metadata.kind === 'friend'
+            ? { ok: true, identity: { bossId: 'boss_301', securityId: 'synthetic-security' } }
+            : {
+                ok: true,
+                observations: [],
+                unresolved: [],
+                exhausted: false,
+                messageIds: [scenario === 'repeated' || metadata.page === 1 ? '100' : '80'],
+                nextCursor:
+                  scenario === 'missing'
+                    ? null
+                    : metadata.page === 1 || scenario === 'stalled'
+                      ? '81'
+                      : '70',
+              },
+      });
+      const reason =
+        scenario === 'repeated' ? 'HISTORY_PAGE_REPEATED' : 'HISTORY_CURSOR_NOT_ADVANCING';
+      assert.equal(result.partial, true);
+      assert.equal(result.payload.coverage.failedConversations, 1);
+      assert.equal(result.payload.coverage.truncatedConversations, 0);
+      assert.deepEqual(result.completed, []);
+      assert.equal(result.payload.unresolved.at(-1).reason, reason);
+      assert.equal(checkpoints.at(-1).unresolved.at(-1).reason, reason);
+      assert.equal(result.usage.historyRequests, scenario === 'missing' ? 2 : 3);
+    });
+  }
 });

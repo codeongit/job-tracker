@@ -32,16 +32,18 @@ export async function handleBossControllerApi(req, res, { controller }) {
   try {
     if (req.method === 'GET') {
       const view = new URL(req.url, 'http://127.0.0.1').searchParams.get('view');
-      if (view && view !== 'doctor') throw new BossRuntimeError('BOSS_RUNTIME_ARGUMENT_INVALID');
+      if (view && !['doctor', 'progress'].includes(view))
+        throw new BossRuntimeError('BOSS_RUNTIME_ARGUMENT_INVALID');
       send(
         200,
         view === 'doctor'
           ? { protocolVersion: 1, doctor: await controller.doctor() }
           : {
               protocolVersion: 1,
-              status: controller.inspectStatus
-                ? await controller.inspectStatus()
-                : controller.status(),
+              status:
+                view !== 'progress' && controller.inspectStatus
+                  ? await controller.inspectStatus()
+                  : controller.status(),
             },
       );
       return true;

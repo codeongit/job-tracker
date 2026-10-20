@@ -122,7 +122,9 @@ test('both history checkpoint paths carry action evidence from v5, with private 
       assert.deepEqual(await load(directory), checkpoint);
       assert.deepEqual(await load(directory), checkpoint);
       await save(directory, { ...checkpoint, version: 6 });
-      for (const version of [3, 4, 7])
+      await save(directory, { ...checkpoint, version: 7 });
+      assert.deepEqual(await load(directory), { ...checkpoint, version: 7 });
+      for (const version of [3, 4, 8])
         await assert.rejects(
           save(directory, { ...checkpoint, version }),
           /RESUME_CHECKPOINT_INVALID/,
@@ -204,7 +206,9 @@ test('opaque checkpoint evidence needs v6 and never stores its source string', a
     ]) {
       await save(directory, checkpoint);
       assert.deepEqual(await load(directory), checkpoint);
-      for (const version of [3, 4, 5, 7])
+      await save(directory, { ...checkpoint, version: 7 });
+      assert.deepEqual(await load(directory), { ...checkpoint, version: 7 });
+      for (const version of [3, 4, 5, 8])
         await assert.rejects(
           save(directory, { ...checkpoint, version }),
           /RESUME_CHECKPOINT_INVALID/,

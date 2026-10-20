@@ -1,9 +1,18 @@
 import { recordCollectorDiagnostics } from '../../../scripts/boss/shared/diagnostics.mjs';
+import { BOSS_SNAPSHOT_MAX_BYTES } from '../../../dist/boss/contracts/snapshot-format.js';
+import { compactSnapshotJobEvidenceHistory } from '../materials/job-evidence-history.mjs';
 import { mkdir, readdir, readFile, open, rename, unlink, rmdir, lstat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
 const pattern = /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z_[a-f0-9-]{36}\.json$/;
+
+function snapshotTooLarge() {
+  return Object.assign(new Error('BOSS_SNAPSHOT_TOO_LARGE'), {
+    code: 'BOSS_SNAPSHOT_TOO_LARGE',
+  });
+}
+
 export async function latest(directory) {
   let names;
   try {
@@ -15,7 +24,9 @@ export async function latest(directory) {
   }
   if (!names.length) return null;
   const path = join(directory, names.at(-1));
-  if (!(await lstat(path)).isFile()) throw new Error('SNAPSHOT_FILE_INVALID');
+  const info = await lstat(path);
+  if (!info.isFile()) throw new Error('SNAPSHOT_FILE_INVALID');
+  if (info.size > BOSS_SNAPSHOT_MAX_BYTES) throw snapshotTooLarge();
   let envelope;
   try {
     envelope = JSON.parse(await readFile(path, 'utf8'));
@@ -175,11 +186,14 @@ export async function lock(directory) {
 
 // One immutable file commits the snapshot, diff, and next state together.
 export async function commit(directory, envelope) {
-  await recordCollectorDiagnostics(directory, envelope.resume?.observations, {
-    accountNamespace: envelope.accountNamespace,
-    associations: envelope.jobs?.associations,
-    records: envelope.snapshot?.records,
-    unresolved: envelope.resume?.lastUnresolved,
+  const current = compactSnapshotJobEvidenceHistory(envelope);
+  const text = JSON.stringify(current) + '\n';
+  if (Buffer.byteLength(text, 'utf8') > BOSS_SNAPSHOT_MAX_BYTES) throw snapshotTooLarge();
+  await recordCollectorDiagnostics(directory, current.resume?.observations, {
+    accountNamespace: current.accountNamespace,
+    associations: current.jobs?.associations,
+    records: current.snapshot?.records,
+    unresolved: current.resume?.lastUnresolved,
   });
   const suffix = randomUUID();
   const name = new Date().toISOString().replace(/[:.]/g, '-') + '_' + suffix + '.json';
@@ -188,7 +202,7 @@ export async function commit(directory, envelope) {
   let handle;
   try {
     handle = await open(temporary, 'wx', 0o600);
-    await handle.writeFile(JSON.stringify(envelope, null, 2) + '\n');
+    await handle.writeFile(text);
     await handle.sync();
     await handle.close();
     handle = null;

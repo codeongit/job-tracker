@@ -27,6 +27,24 @@ function bossStats(entries) {
   return items ? `<div class="integration-stats">${items}</div>` : '';
 }
 
+function bossImportProgressView(progress) {
+  if (!progress?.running) return '';
+  const phase =
+    {
+      idle: '等待本机处理',
+      reading: '读取已保存批次',
+      assessing: '核对材料与应用条件',
+      checking: '核对来源事实与回执',
+      committing: '保存正式记录',
+      acknowledging: '保存批次处理回执',
+      recording: '保存本轮处理摘要',
+      completed: '等待下一轮本机检查',
+      failed: '等待下一轮本机检查',
+    }[progress.phase] || '处理已保存材料';
+  const count = (value) => (Number.isSafeInteger(value) && value >= 0 ? value : 0);
+  return `<section class="settings-waiting" role="status"><h3>正在处理本机材料</h3><p>${phase}${count(progress.total) ? ` · 已检查 ${count(progress.completed)} / ${count(progress.total)} 个批次` : ''}。</p><p>本轮完成处理 ${count(progress.processed)} 个批次${count(progress.waiting) ? `，${count(progress.waiting)} 个批次仍有等待项` : ''}${count(progress.isolated) ? `，${count(progress.isolated)} 个批次保留故障材料` : ''}。</p><small>仅处理已保存在本机的材料；待核对清单将在处理结束后刷新，当前不可确认或忽略。检查进度不是新增岗位或消息数量。${progress.rescanPending ? '新入队材料将在当前检查后继续处理。' : ''}</small></section>`;
+}
+
 function bossBudgetView(budget, lifecycle) {
   const available = [
     [budget.historyRequests, '读取聊天历史资料', '查询联系人或读取一页消息，各计 1 次。'],
@@ -144,12 +162,20 @@ export function bossIntegrationView(
     accounts = status.accounts || [],
     restoreReview = status.restoreReview || [],
     server = status.server || {},
+    importProgress = tracking.inbox?.progress,
+    importFailed = importProgress?.phase === 'failed',
+    importIsolated =
+      Number.isSafeInteger(importProgress?.isolated) && importProgress.isolated > 0
+        ? importProgress.isolated
+        : 0,
+    importIncomplete = importFailed || (!importProgress?.running && importIsolated > 0),
     detail = tracking.detailEnrichment,
     history = tracking.history,
     needsBinding = accounts.filter((account) => !account.bound || account.restoreRequired),
     review = Math.max(Number(counts.review || 0), Number(attribution.conflict || 0)),
     needsAttention = Boolean(
       status.error ||
+      importIncomplete ||
       status.blocked ||
       restoreReview.length ||
       needsBinding.length ||
@@ -169,7 +195,13 @@ export function bossIntegrationView(
         : status.running
           ? '队列处理中'
           : '本机队列已连接',
-    badge = needsAttention ? '需要处理' : status.connectionStale ? '状态待更新' : trackingLabel;
+    badge = needsAttention
+      ? '需要处理'
+      : status.connectionStale
+        ? '状态待更新'
+        : importProgress?.running
+          ? '本机录入中'
+          : trackingLabel;
   const date = tracking.lastSuccessAt ? new Date(tracking.lastSuccessAt) : null;
   const lastSuccess =
     date && !Number.isNaN(date.getTime())
@@ -188,12 +220,24 @@ export function bossIntegrationView(
       : '此页面只消费本机队列。';
   const mutableDisabled =
     status.connectionStale ||
+    status.inspectionPending ||
     offline ||
     busy ||
     !status.serverManaged ||
     !Number.isSafeInteger(status.revision);
   const refreshAction = '<button class="secondary" data-boss-refresh="true">刷新本机状态</button>';
   const alerts = [
+    importIncomplete
+      ? issueCard({
+          title: '本机录入未完成',
+          problem: importFailed
+            ? '最近一次本机处理异常结束。'
+            : `${importIsolated} 个批次保留故障材料，尚未完成录入。`,
+          impact: '已保存的材料和正式记录保留，本轮尚不能确认全部处理完成。',
+          next: '刷新本机状态并核对运行详情；若仍失败，查看本机服务故障记录。',
+          actions: refreshAction,
+        })
+      : '',
     status.connectionStale || status.error
       ? issueCard({
           title: '本机状态暂时无法更新',
@@ -327,6 +371,7 @@ export function bossIntegrationView(
     ignoreDisabled =
       !status.serverManaged ||
       status.connectionStale ||
+      status.inspectionPending ||
       Boolean(status.error) ||
       offline ||
       pendingConflict ||
@@ -341,15 +386,17 @@ export function bossIntegrationView(
     ? '本机服务尚未连接，恢复后才能确认。'
     : busy
       ? '正在保存，请稍候。'
-      : pendingConflict
-        ? '请先处理同步冲突；可以先勾选，冲突处理后再确认。'
-        : status.connectionStale || status.error
-          ? '状态尚未更新，可以先勾选；刷新成功后才能确认忽略。'
-          : !status.serverManaged
-            ? '忽略观察需要连接本机服务。'
-            : !Number.isSafeInteger(status.revision)
-              ? '等待本机状态加载完成，可以先勾选。'
-              : '';
+      : status.inspectionPending
+        ? '本机材料正在处理，可以先勾选；清单刷新后才能确认。'
+        : pendingConflict
+          ? '请先处理同步冲突；可以先勾选，冲突处理后再确认。'
+          : status.connectionStale || status.error
+            ? '状态尚未更新，可以先勾选；刷新成功后才能确认忽略。'
+            : !status.serverManaged
+              ? '忽略观察需要连接本机服务。'
+              : !Number.isSafeInteger(status.revision)
+                ? '等待本机状态加载完成，可以先勾选。'
+                : '';
   const groups = [
     {
       title: '需要核对',
@@ -507,7 +554,7 @@ export function bossIntegrationView(
       Number(history?.waitingRetry || 0) +
       Number(history?.pending || 0) >
     0;
-  return `<section class="panel" id="boss-collection"><div class="panel-header"><h2 id="boss-card-title" tabindex="-1">BOSS 采集</h2><span class="badge ${needsAttention || status.connectionStale ? 'warn' : 'blue'}">${badge}</span></div><div class="panel-body"><p>${status.connectionStale ? '上次状态：' : ''}${trackingLabel} · ${status.serverManaged ? lastSuccess : status.available && !status.connectionStale ? '本机队列已连接' : '队列状态待确认'}</p><p>${description}</p>${review > 0 && !messageGroups.some((group) => group.status === 'review') ? `<p class="warning">存在 ${review} 项归属或资料矛盾，需核对相关岗位；这些材料尚未用于更新岗位。</p>` : ''}${result ? `<p class="settings-result" role="status">${esc(result)}</p>` : ''}${alerts}${observations ? `<details class="settings-problems" data-settings-details="boss-observations"><summary id="boss-observations-toggle">${waitingSummary ? esc(waitingSummary) : '查看待核对原因'}</summary>${waitingText}${ignoreAction}${observations}</details>` : waitingText ? waitingText : !needsAttention && !status.connectionStale ? '<p class="settings-healthy">暂无需要处理的问题。</p>' : ''}${
+  return `<section class="panel" id="boss-collection"><div class="panel-header"><h2 id="boss-card-title" tabindex="-1">BOSS 采集</h2><span class="badge ${needsAttention || status.connectionStale ? 'warn' : 'blue'}">${badge}</span></div><div class="panel-body"><p>${status.connectionStale ? '上次状态：' : ''}${trackingLabel} · ${status.serverManaged ? lastSuccess : status.available && !status.connectionStale ? '本机队列已连接' : '队列状态待确认'}</p><p>${description}</p>${bossImportProgressView(importProgress)}${review > 0 && !messageGroups.some((group) => group.status === 'review') ? `<p class="warning">存在 ${review} 项归属或资料矛盾，需核对相关岗位；这些材料尚未用于更新岗位。</p>` : ''}${result ? `<p class="settings-result" role="status">${esc(result)}</p>` : ''}${alerts}${observations ? `<details class="settings-problems" data-settings-details="boss-observations"><summary id="boss-observations-toggle">${waitingSummary ? esc(waitingSummary) : '查看待核对原因'}</summary>${waitingText}${ignoreAction}${observations}</details>` : waitingText ? waitingText : !needsAttention && !status.connectionStale && !importProgress?.running ? '<p class="settings-healthy">暂无需要处理的问题。</p>' : ''}${
     systemWaiting
       ? `<section class="settings-waiting"><h3>系统等待</h3>${bossStats([
           [detail?.pending, '个岗位待补详情'],
@@ -517,7 +564,7 @@ export function bossIntegrationView(
           [history?.paginating, '个会话分页未完成'],
         ])}${detail?.nextRetryAt ? `<p>下次详情重试时间：${esc(new Date(detail.nextRetryAt).toLocaleString('zh-CN'))}</p>` : ''}<p>${tracking.lifecycle === 'running' ? '已授权跟踪会按预算及退避继续，只使用允许的采集范围。' : '跟踪未运行，尚未采到的资料不会自动继续取得；需要采集时请明确开始或恢复跟踪。'}</p></section>`
       : ''
-  }<details data-settings-details="boss-start"><summary>如何开始或恢复采集</summary><p>在本机终端明确执行采集命令；打开此页面和重启服务不会开始跟踪。</p><p><code>pnpm boss start</code> 开始跟踪；<code>pnpm boss stop</code> 停止。</p><p>已有材料的录入和检查由本机服务处理，无需反复补录或重启。</p></details><details class="section-gap" data-settings-details="boss-status"><summary id="boss-status-toggle">运行详情</summary>${diagnostics}${receipts}${historyProgress}${detailStats}${detail?.lastError ? `<p>详情错误码：${esc(detail.lastError)}</p>` : ''}${
+  }<details data-settings-details="boss-start"><summary>如何开始或恢复采集</summary><p>在本机终端明确执行采集命令；打开此页面和重启服务不会开始跟踪。</p><p><code>pnpm boss start</code> 开始跟踪；<code>pnpm boss stop</code> 停止。</p><p>已有材料的录入和检查由本机服务处理，无需反复补录或重启。</p></details><details class="section-gap" data-settings-details="boss-status"><summary id="boss-status-toggle">运行详情</summary>${importProgress?.running && importProgress.batchId ? `<p>当前本机批次：<code>${esc(importProgress.batchId)}</code></p>` : ''}${diagnostics}${receipts}${historyProgress}${detailStats}${detail?.lastError ? `<p>详情错误码：${esc(detail.lastError)}</p>` : ''}${
     budget ? bossBudgetView(budget, tracking.lifecycle) : ''
   }${accounts
     .filter((account) => account.bound && !account.restoreRequired)

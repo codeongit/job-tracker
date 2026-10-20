@@ -7,6 +7,7 @@ const TITLE_PATTERNS = [
   /^(?<name>.+)招聘工资_(?<company>.*\D)\d{4}年\k<name>工资待遇-BOSS直聘$/,
   /^(?<name>.+)就业前景_(?<company>.*\D)\d{4}年\k<name>招聘工资-BOSS直聘$/,
   /^(?<name>.+)工作内容_(?<company>.*\D)\d{4}年\k<name>工作要求-BOSS直聘$/,
+  /^(?<name>.+)是什么职位_(?<company>.*\D)\d{4}年\k<name>前景待遇-BOSS直聘$/,
   /^「什么是(?<name>.+)」(?<company>.*\D)\d{4}年\k<name>岗位职责-BOSS直聘$/,
 ];
 

@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { lstat, readFile, readdir } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import { BOSS_JOB_ID } from '../../../dist/boss/contracts/job-url.js';
+import { BOSS_SNAPSHOT_MAX_BYTES } from '../../../dist/boss/contracts/snapshot-format.js';
 import { validateAttributionEvidence } from '../../../dist/boss/rules/attribution.js';
 import {
   RESUME_KINDS,
@@ -15,7 +16,6 @@ import { integrationFail } from './integration-error.mjs';
 
 export const SNAPSHOT_FILE = /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z_[a-f0-9-]{36}\.json$/;
 const ACCOUNT_NAMESPACE = /^boss-geek:[a-f0-9]{64}$/;
-const MAX_SNAPSHOT_BYTES = 25_000_000;
 
 function plain(value, code = 'BOSS_SNAPSHOT_STRUCTURE_INVALID') {
   if (!value || typeof value !== 'object' || Array.isArray(value))
@@ -55,7 +55,7 @@ function bytesHash(bytes) {
   return createHash('sha256').update(bytes).digest('hex');
 }
 
-async function regularFile(path, { maxBytes = MAX_SNAPSHOT_BYTES } = {}) {
+async function regularFile(path, { maxBytes = BOSS_SNAPSHOT_MAX_BYTES } = {}) {
   let info;
   try {
     info = await lstat(path);

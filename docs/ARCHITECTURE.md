@@ -1,6 +1,6 @@
 # 当前系统架构
 
-本文描述当前实现：运行结构、模块职责、数据所有者与关键流程。本次职责核对日期为 2026-10-13，应用为 0.10.23、BOSS 规则为 v17；当前格式版本以[数据与恢复](DATA_AND_RECOVERY.md#版本与两种存储模式)为准。历史决定及替代关系保留在 [ADR 索引](adr/README.md)，本次完成范围见[架构重构记录](ARCHITECTURE_REFACTOR_PLAN.md)。
+本文描述当前实现：运行结构、模块职责、数据所有者与关键流程。核对日期为 2026-10-20，应用为 0.10.27、BOSS 规则为 v17；当前格式版本以[数据与恢复](DATA_AND_RECOVERY.md#版本与两种存储模式)为准。历史决定及替代关系保留在 [ADR 索引](adr/README.md)，0.10.23 的职责调整见[架构重构记录](ARCHITECTURE_REFACTOR_PLAN.md)。
 
 ## 阅读入口
 
@@ -59,18 +59,18 @@ flowchart LR
 
 ### 规则与适配的实际位置
 
-| 事项               | 唯一规则或主要实现                                                                          | 调用者与保留条件                                                     |
-| ------------------ | ------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
-| 岗位查询与行动建议 | `jobs.js`、`today.js`、`daily.js`、`planning.js`                                            | 页面与详情共用纯查询；日期查询展示当前岗位信息，不推断历史阶段       |
-| 简历语义与状态转换 | `boss/rules/resume-rules.js`；联动规则在 `model.js`                                         | 采集、转换、应用与展示共用；识别结果不授予归属或人工字段所有权       |
-| 岗位资料证据       | `boss/rules/job-evidence.js`、`boss/contracts/detail-title.js`、`boss/contracts/job-url.js` | 采集展示、详情交付和旧身份映射共用；三种用途的兼容语义分别保留       |
-| 普通资料应用判断   | `boss/application/job-materials.js`                                                         | 完整与缺标题观察、当前重评及恢复共用纯判断；原始观察不改写           |
-| 归属判断           | `boss/rules/attribution.js`                                                                 | 对各完整观察独立核对；上下文按当前材料构建，候选不等于已确认归属     |
-| 批次与来源身份     | `boss/contracts/batch-format.js`、`boss/rules/batch.js`、`source-identity.js`               | 校验与稳定 ID 共用；旧事件身份不随规则升级改写                       |
-| 应用与人工决定     | `boss/application/integration.js`、`boss/application/observations.js`、`source-ledger.js`   | 正式消费和固定人工命令执行规则；事实与应用决定分别保存               |
-| 本机命令交付       | `local-workspace.js`                                                                        | 普通编辑与固定操作共用串行、revision、精确重试及缓存更新             |
-| 历史阶段与提交     | `collector/boss/history/history-phase.mjs`、`history-commit.mjs`                            | 共用历史读取与恢复；变化任务逐条提交，公平补录在快照与导出成功后结算 |
-| 服务启动与身份     | `service-control.mjs`、`service-runtime.mjs`、`serve.mjs`                                   | 共用健康检查；`doctor.mjs` 读取已验证结果，不另行猜测身份            |
+| 事项               | 唯一规则或主要实现                                                                          | 调用者与保留条件                                                                 |
+| ------------------ | ------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| 岗位查询与行动建议 | `jobs.js`、`today.js`、`daily.js`、`planning.js`                                            | 页面与详情共用纯查询；日期查询展示当前岗位信息，不推断历史阶段                   |
+| 简历语义与状态转换 | `boss/rules/resume-rules.js`；联动规则在 `model.js`                                         | 采集、转换、应用与展示共用；识别结果不授予归属或人工字段所有权                   |
+| 岗位资料证据       | `boss/rules/job-evidence.js`、`boss/contracts/detail-title.js`、`boss/contracts/job-url.js` | 采集展示、详情交付和旧身份映射共用；三种用途的兼容语义分别保留                   |
+| 普通资料应用判断   | `boss/application/job-materials.js`                                                         | 完整与缺标题观察、当前重评及恢复共用纯判断；原始观察不改写                       |
+| 归属判断           | `boss/rules/attribution.js`                                                                 | 对各完整观察独立核对；上下文按当前材料构建，候选不等于已确认归属                 |
+| 批次与来源身份     | `boss/contracts/batch-format.js`、`boss/rules/batch.js`、`source-identity.js`               | 校验与稳定 ID 共用；旧事件身份不随规则升级改写                                   |
+| 应用与人工决定     | `boss/application/integration.js`、`boss/application/observations.js`、`source-ledger.js`   | 正式消费和固定人工命令执行规则；事实与应用决定分别保存                           |
+| 本机命令交付       | `local-workspace.js`                                                                        | 普通编辑与固定操作共用串行、revision、精确重试及缓存更新                         |
+| 历史阶段与提交     | `collector/boss/history/history-phase.mjs`、`history-commit.mjs`                            | 共用带平台游标的历史读取与恢复；变化任务逐条提交，公平补录在快照与导出成功后结算 |
+| 服务启动与身份     | `service-control.mjs`、`service-runtime.mjs`、`serve.mjs`                                   | 共用健康检查；`doctor.mjs` 读取已验证结果，不另行猜测身份                        |
 
 BOSS 的目录边界如下：
 
@@ -158,6 +158,10 @@ flowchart LR
 ```
 
 已有材料可以只在本机补交和消费；服务重启不恢复 BOSS 跟踪，GitHub 继续由用户手动同步。正常/恢复分支、采集范围、日期与业务准入见 [BOSS 完整流程](boss/DESIGN.md#完整流程)，模块与交接见[实现说明](boss/IMPLEMENTATION.md#模块与调用顺序)，使用及恢复见[操作说明](boss/OPERATIONS.md)。
+
+正常采集和独立历史补录的最终保存共用 `history-phase.saveHistoryCapture`，将材料、运行进度与检查点结算顺序保留在一处。定点维护复用既有授权、预算、锁和交付实现，入口见[维护复用表](boss/IMPLEMENTATION.md#定点维护复用入口)；排障先核对已有平台契约与本机材料，避免另写请求和保存协议。
+
+消费在途进度只保存在进程内，通过现有 BOSS 状态入口读取，不形成持久索引或业务事实；页面忙时读取该内存视图，完成后刷新完整正式状态。显式消费请求等待本轮之后的一次合并扫描，后台定时扫描不持续追加；只读队列检查在 revision 稳定时才返回，恢复仍核对当前事实及人工决定。
 
 ### 3. GitHub 手动同步
 

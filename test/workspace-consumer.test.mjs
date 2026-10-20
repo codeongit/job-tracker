@@ -240,6 +240,129 @@ test('无需网页的队列消费在正式提交后回执，重复执行不重�
   assert.equal((await store.read()).revision, 2);
 });
 
+function gate() {
+  let resolve;
+  const promise = new Promise((accept) => (resolve = accept));
+  return { promise, resolve };
+}
+
+test('忙时新入队材料请求合并一次后续扫描，不返回旧轮完成', async (t) => {
+  const { store, inbox } = await fixture(t);
+  const consumer = createWorkspaceInboxConsumer({ workspaceStore: store, inbox, now: () => STAMP });
+  const entered = gate(),
+    release = gate();
+  const read = inbox.read.bind(inbox);
+  let reads = 0,
+    passes = 0;
+  const record = store.recordImportDiagnostic.bind(store);
+  store.recordImportDiagnostic = async (...args) => {
+    passes++;
+    return record(...args);
+  };
+  inbox.read = async (...args) => {
+    if (++reads === 1) {
+      entered.resolve();
+      await release.promise;
+    }
+    return read(...args);
+  };
+  const first = consumer.run();
+  await entered.promise;
+  await inbox.enqueue(batch({ jobId: 'second-job', messageId: 'message-2', sequence: 2 }));
+  const second = consumer.run();
+  const sameScan = consumer.run();
+  const timer = consumer.run({ rescanIfRunning: false });
+  assert.equal(second, sameScan);
+  assert.equal(second, timer);
+  release.resolve();
+  assert.equal((await first).processed, 1);
+  assert.equal((await second).processed, 1);
+  assert.equal(passes, 2);
+  assert.equal((await store.read()).workspace.data.opportunities.length, 2);
+  assert.equal(consumer.status().progress.running, false);
+});
+
+test('后台轮询不追加扫描，失败后后续显式扫描仍可完成', async (t) => {
+  const { store, inbox } = await fixture(t);
+  const consumer = createWorkspaceInboxConsumer({ workspaceStore: store, inbox, now: () => STAMP });
+  const entered = gate(),
+    release = gate();
+  let passes = 0;
+  const record = store.recordImportDiagnostic.bind(store);
+  store.recordImportDiagnostic = async (...args) => {
+    if (++passes > 1) return record(...args);
+    entered.resolve();
+    await release.promise;
+    throw new Error('synthetic diagnostic failure');
+  };
+  const first = consumer.run();
+  await entered.promise;
+  for (let i = 0; i < 5; i++) assert.equal(consumer.run({ rescanIfRunning: false }), first);
+  const next = consumer.run();
+  release.resolve();
+  await assert.rejects(first, /synthetic diagnostic failure/);
+  assert.equal((await next).processed, 0);
+  assert.equal(passes, 2);
+  assert.equal(consumer.status().progress.phase, 'completed');
+});
+
+test('消费提交中仍可只读检查，并显示尚未完成的批次', async (t) => {
+  const { store, inbox, input } = await fixture(t);
+  const consumer = createWorkspaceInboxConsumer({ workspaceStore: store, inbox, now: () => STAMP });
+  const entered = gate(),
+    release = gate();
+  const execute = store.execute.bind(store);
+  store.execute = async (...args) => {
+    entered.resolve();
+    await release.promise;
+    return execute(...args);
+  };
+  const running = consumer.run();
+  await entered.promise;
+  const progress = consumer.status().progress;
+  assert.equal(progress.running, true);
+  assert.equal(progress.phase, 'committing');
+  assert.equal(progress.batchId, input.batchId);
+  assert.equal(progress.completed, 0);
+  assert.equal(progress.total, 1);
+  const inspected = await Promise.race([
+    consumer.inspect(),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('inspection blocked')), 1000)),
+  ]).finally(() => release.resolve());
+  assert.equal(inspected.revision, 1);
+  assert.deepEqual(inspected.restoreReview, []);
+  release.resolve();
+  await running;
+  assert.equal(consumer.status().progress.completed, 1);
+  assert.equal(consumer.status().progress.processed, 1);
+});
+
+test('只读检查跨过正式提交时重查，不把新回执误报恢复缺口', async (t) => {
+  const { store, inbox } = await fixture(t);
+  const consumer = createWorkspaceInboxConsumer({ workspaceStore: store, inbox, now: () => STAMP });
+  const list = inbox.list.bind(inbox);
+  let lists = 0;
+  inbox.list = async (...args) => {
+    if (++lists === 1) await consumer.run();
+    return list(...args);
+  };
+  const inspected = await consumer.inspect();
+  assert.equal(lists, 2);
+  assert.equal(inspected.revision, 2);
+  assert.deepEqual(inspected.restoreReview, []);
+});
+
+test('只读检查连续跨过更新时明确未就绪，不返回混合版本结果', async (t) => {
+  const { store, inbox } = await fixture(t);
+  const consumer = createWorkspaceInboxConsumer({ workspaceStore: store, inbox, now: () => STAMP });
+  const read = store.read.bind(store);
+  let reads = 0;
+  store.read = async () => ({ ...(await read()), revision: ++reads });
+  await assert.rejects(consumer.inspect(), { code: 'LOCAL_STATUS_CHANGING' });
+  assert.equal(reads, 4);
+  assert.equal((await read()).revision, 1);
+});
+
 test('普通资料旧review及processed回执在本机重评，恢复后同材料消费保持稳定', async (t) => {
   for (const bound of [true, false]) {
     for (const complete of [true, false]) {

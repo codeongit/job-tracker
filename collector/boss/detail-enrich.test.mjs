@@ -117,6 +117,31 @@ test('creates one task-owned tab, reads stable titles serially and closes it', a
   assert.deepEqual(calls.at(-1), ['close', url('bbb')]);
 });
 
+test('stable what-position SEO titles produce independently timed detail evidence', async () => {
+  const title = '示例平台工程师是什么职位_示例科技2026年示例平台工程师前景待遇-BOSS直聘';
+  const { adapter, calls } = adapterFixture([
+    { url: url('seo-job'), title },
+    { url: url('seo-job'), title },
+  ]);
+  const result = await collectDetailTitleEvidence({
+    ...runOptions(adapter),
+    candidates: [candidate('conversation-seo', 'seo-job', '示例科技')],
+  });
+  assert.equal(result.failures.length, 0);
+  assert.equal(result.observations.length, 1);
+  assert.deepEqual(result.observations[0].evidence, {
+    jobId: 'seo-job',
+    detailUrl: url('seo-job'),
+    name: '示例平台工程师',
+    observedCompany: '示例科技',
+    title,
+    observedAt: '2026-09-18T13:00:00.000Z',
+    source: 'detail_page_title',
+  });
+  assert.equal(calls.filter((call) => call[0] === 'read').length, 2);
+  assert.deepEqual(result.cleanup, { status: 'closed' });
+});
+
 test('new URL with the previous document title cannot supply detail evidence', async () => {
   const previousTitle = '「旧岗位招聘」_示例公司招聘-BOSS直聘';
   const nextTitle = '「新岗位招聘」_示例公司招聘-BOSS直聘';

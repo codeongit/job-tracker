@@ -14,6 +14,43 @@ import {
 } from '../dist/settings-guidance.js';
 import { bossApplicationId } from '../dist/source-identity.js';
 
+test('本机消费异常结束后保留失败提示，不显示全部正常', () => {
+  const html = bossIntegrationView({
+    available: true,
+    serverManaged: true,
+    tracking: {
+      lifecycle: 'stopped',
+      inbox: { progress: { running: false, phase: 'failed', total: 3, completed: 2 } },
+    },
+  });
+  assert.match(html, /本机录入未完成/);
+  assert.match(html, /badge warn/);
+  assert.match(html, /data-boss-refresh="true"/);
+  assert.doesNotMatch(html, /暂无需要处理的问题/);
+  const recovered = bossIntegrationView({
+    available: true,
+    serverManaged: true,
+    tracking: { lifecycle: 'stopped', inbox: { progress: { running: false, phase: 'completed' } } },
+  });
+  assert.doesNotMatch(recovered, /本机录入未完成/);
+  assert.match(recovered, /暂无需要处理的问题/);
+});
+
+test('本机扫描完成但批次隔离时仍提示未完成，不把处理结束当作全部录入', () => {
+  const html = bossIntegrationView({
+    available: true,
+    serverManaged: true,
+    tracking: {
+      lifecycle: 'stopped',
+      inbox: { progress: { running: false, phase: 'completed', isolated: 2 } },
+    },
+  });
+  assert.match(html, /本机录入未完成/);
+  assert.match(html, /2 个批次/);
+  assert.match(html, /badge warn/);
+  assert.doesNotMatch(html, /暂无需要处理的问题/);
+});
+
 test('详情技术隔离独立显示，不混入人工判断', () => {
   const html = bossIntegrationView({
     available: true,
@@ -94,6 +131,38 @@ test('聊天列表未就绪时说明实际读取失败及恢复前提', () => {
   assert.match(primary, /确认登录和验证已完成、聊天列表正常显示/);
   assert.match(html, /pnpm boss resume/);
   assert.doesNotMatch(primary, /LOADED_LIST_NOT_READY|查看本机诊断定位原因/);
+});
+
+test('本机消费进度与跟踪授权分开显示，旧清单不宣称已刷新', () => {
+  const html = bossIntegrationView({
+    available: true,
+    serverManaged: true,
+    inspectionPending: true,
+    revision: undefined,
+    tracking: {
+      lifecycle: 'stopped',
+      inbox: {
+        progress: {
+          running: true,
+          phase: 'committing',
+          batchId: '<synthetic-batch>',
+          completed: 1,
+          total: 3,
+          processed: 1,
+          waiting: 0,
+          isolated: 0,
+          rescanPending: true,
+        },
+      },
+    },
+  });
+  assert.match(html, /本机录入中/);
+  assert.match(html, /跟踪已停止/);
+  assert.match(html, /保存正式记录 · 已检查 1 \/ 3 个批次/);
+  assert.match(html, /待核对清单将在处理结束后刷新/);
+  assert.match(html, /新入队材料将在当前检查后继续处理/);
+  assert.match(html, /&lt;synthetic-batch&gt;/);
+  assert.doesNotMatch(html, /暂无需要处理的问题|<synthetic-batch>/);
 });
 
 test('岗位清单导出失败说明快照保留，不误报登录或资料缺失', () => {

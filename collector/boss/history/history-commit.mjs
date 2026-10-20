@@ -44,13 +44,18 @@ export function createHistoryCommit({
   let currentState = state;
   let prior = null;
 
-  const persist = async (nextEnvelope, nextState) => {
+  const persist = async (nextEnvelope, nextState, continuation = null) => {
     await saveEvidence(nextEnvelope);
     await saveProgress(nextState);
-    await checkpoints.remove(directory);
+    if (continuation && prior?.nextConversationKey === continuation.conversationKey) {
+      prior = { ...prior, observations: [], unresolved: [], usage: { historyRequests: 0 } };
+      await checkpoints.save(directory, prior);
+    } else {
+      await checkpoints.remove(directory);
+      prior = null;
+    }
     currentEnvelope = nextEnvelope;
     currentState = nextState;
-    prior = null;
   };
 
   return {
@@ -80,6 +85,24 @@ export function createHistoryCommit({
         await checkpoints.remove(directory);
         prior = null;
       }
+      if (
+        prior?.completedConversationKey &&
+        !(
+          prior.version === 7 &&
+          typeof prior.previousPageHash === 'string' &&
+          /^[a-f0-9]{64}$/.test(prior.previousPageHash)
+        )
+      ) {
+        // Legacy completion used page-count heuristics without a verified message
+        // cursor. Preserve its material, then establish coverage from page one.
+        if (prior.observations.length || prior.unresolved?.length) {
+          const recovered = replayEvidence(currentEnvelope, prior);
+          await saveEvidence(recovered);
+          currentEnvelope = recovered;
+        }
+        await checkpoints.remove(directory);
+        prior = null;
+      }
       if (prior && !pending.some((item) => item.key === checkpointKey(prior))) {
         // Progress was committed before a crash during checkpoint removal.
         await checkpoints.remove(directory);
@@ -93,7 +116,9 @@ export function createHistoryCommit({
       return prior;
     },
     async checkpointPage(value, fingerprint) {
-      await checkpoints.save(directory, { ...value, targetFingerprint: fingerprint });
+      const checkpoint = { ...value, targetFingerprint: fingerprint };
+      await checkpoints.save(directory, checkpoint);
+      prior = checkpoint;
     },
     async completeFromCheckpoint(item) {
       const nextEnvelope = replayEvidence(currentEnvelope, prior);
@@ -125,9 +150,9 @@ export function createHistoryCommit({
           head,
         });
       else if (scan.payload.coverage.failedConversations && !scan.error) {
-        const reason = scan.payload.unresolved.find(
-          (entry) => entry.conversationKey === item.key,
-        )?.reason;
+        const reason =
+          scan.failures?.find((entry) => entry.conversationKey === item.key)?.reason ??
+          scan.payload.unresolved.find((entry) => entry.conversationKey === item.key)?.reason;
         nextState = failHistoryTask(
           currentState,
           item.key,
@@ -146,7 +171,11 @@ export function createHistoryCommit({
           head,
           truncated: true,
         });
-      await persist(applied.envelope, nextState);
+      await persist(
+        applied.envelope,
+        nextState,
+        scan.payload.coverage.failedConversations ? null : scan.continuation,
+      );
       return { counts: applied.report.counts, coverage: result.coverage };
     },
   };

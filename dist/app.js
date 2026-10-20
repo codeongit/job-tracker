@@ -1086,6 +1086,7 @@ async function showBossDetailsConfirmation(applicationIds, trigger) {
     bossIgnoreBusy ||
     storageStatus().offline ||
     bossStatus.connectionStale ||
+    bossStatus.inspectionPending ||
     bossStatus.error ||
     !bossStatus.serverManaged ||
     state.pending ||
@@ -1116,6 +1117,7 @@ async function showBossDetailsConfirmation(applicationIds, trigger) {
     if (
       storageStatus().offline ||
       bossStatus.connectionStale ||
+      bossStatus.inspectionPending ||
       bossStatus.error ||
       state.pending
     ) {
@@ -1325,6 +1327,7 @@ document.addEventListener('click', async (e) => {
         bossIgnoreBusy ||
         storageStatus().offline ||
         bossStatus.connectionStale ||
+        bossStatus.inspectionPending ||
         bossStatus.error ||
         !bossStatus.serverManaged ||
         state.pending
@@ -1627,7 +1630,7 @@ async function startWorkspace() {
       render(true);
     },
     onStatus: (next) => {
-      if (next.waitingItems && !next.connectionStale) {
+      if (next.waitingItems && !next.connectionStale && !next.inspectionPending) {
         const retained = reconcileBossIgnoreSelection(bossIgnoreSelected, next.waitingItems);
         bossIgnoreSelected.clear();
         for (const id of retained) bossIgnoreSelected.add(id);

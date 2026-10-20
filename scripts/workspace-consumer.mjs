@@ -127,7 +127,24 @@ export function createWorkspaceInboxConsumer({
   now = () => new Date().toISOString(),
   onError = () => {},
 }) {
-  let running = null;
+  const runs = [];
+  let runSequence = 0;
+  let progress = {
+    running: false,
+    phase: 'idle',
+    runId: 0,
+    batchId: '',
+    total: 0,
+    completed: 0,
+    processed: 0,
+    waiting: 0,
+    isolated: 0,
+    startedAt: '',
+    updatedAt: '',
+  };
+  const report = (patch) => {
+    progress = { ...progress, ...patch, updatedAt: now() };
+  };
   let tail = Promise.resolve();
   const serial = (operation) => {
     const job = tail.then(operation);
@@ -390,20 +407,34 @@ export function createWorkspaceInboxConsumer({
   }
 
   async function drain() {
+    report({
+      running: true,
+      phase: 'reading',
+      runId: ++runSequence,
+      batchId: '',
+      total: 0,
+      completed: 0,
+      processed: 0,
+      waiting: 0,
+      isolated: 0,
+      startedAt: now(),
+    });
     const initial = await workspaceStore.read();
     const summary = { processed: 0, waiting: 0, isolated: [], restoreReview: [], lastRunAt: now() };
     if (!initial.workspace || !inbox) return (last = summary);
     const batches = await readBatches(summary);
+    report({ phase: 'assessing', total: batches.length, isolated: summary.isolated.length });
     const pool = await attributionPool(initial, batches);
     const blockedAccounts = new Set();
     // Unknown corrupt files cannot establish an account/dependency identity. Keep evidence
     // isolated, and do not interpret or repair their contents in the consumer.
     for (const batch of batches) {
-      if (blockedAccounts.has(batch.accountNamespace)) {
-        summary.waiting++;
-        continue;
-      }
+      report({ phase: 'checking', batchId: batch.batchId });
       try {
+        if (blockedAccounts.has(batch.accountNamespace)) {
+          summary.waiting++;
+          continue;
+        }
         if (pool.failures.has(batch.batchId)) throw pool.failures.get(batch.batchId);
         const current = await workspaceStore.read();
         if (!accountBound(current, batch)) {
@@ -446,6 +477,7 @@ export function createWorkspaceInboxConsumer({
         let result = saved?.result;
         if (!saved) {
           const stamp = now();
+          report({ phase: 'assessing' });
           const { applied, next } = await prepareBatch(current, batch, pool, stamp);
           if (replaying && equal(applied.data, current.workspace.data)) {
             summary.waiting++;
@@ -467,6 +499,7 @@ export function createWorkspaceInboxConsumer({
             else if (!applicationId) applicationStates.waiting++;
           }
           result = { counts: applied.counts, applicationStates, processedAt: stamp };
+          report({ phase: 'committing' });
           await workspaceStore.execute(
             {
               commandId,
@@ -479,7 +512,8 @@ export function createWorkspaceInboxConsumer({
           pool.processedBatchIds.add(batch.batchId);
         }
         if (saved) await saveDiagnostics(current, batch, pool, scope.opportunityIds);
-        if (!replaying)
+        if (!replaying) {
+          report({ phase: 'acknowledging' });
           await inbox.acknowledge(batch.batchId, {
             format: 'job-tracker-boss-receipt',
             version: 2,
@@ -490,6 +524,7 @@ export function createWorkspaceInboxConsumer({
             counts: result.counts,
             errorCode: '',
           });
+        }
         summary.processed++;
         if (result.applicationStates?.waiting || result.applicationStates?.review)
           summary.waiting++;
@@ -502,13 +537,20 @@ export function createWorkspaceInboxConsumer({
         });
         // Preserve ordering when a verified batch fails. Other accounts remain independent.
         blockedAccounts.add(batch.accountNamespace);
+      } finally {
+        report({
+          completed: progress.completed + 1,
+          processed: summary.processed,
+          waiting: summary.waiting,
+          isolated: summary.isolated.length,
+        });
       }
     }
+    report({ phase: 'recording', batchId: '' });
     await workspaceStore.recordImportDiagnostic(summary);
     return (last = summary);
   }
-  async function inspect() {
-    const current = await workspaceStore.read();
+  async function inspectCurrent(current) {
     const restoreReview = [];
     if (current.workspace && inbox) {
       await inbox.initialize();
@@ -537,6 +579,23 @@ export function createWorkspaceInboxConsumer({
           }
         : { waiting: 0, review: 0 },
     };
+  }
+  async function inspect() {
+    // A read-only status request must not wait behind a long import. Recheck
+    // the immutable revision after reading receipts so a concurrent commit
+    // cannot turn its newer receipt into a false restoration gap.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const current = await workspaceStore.read();
+      const result = await inspectCurrent(current);
+      const after = await workspaceStore.read();
+      if (after.revision === current.revision && after.workspaceId === current.workspaceId)
+        return result;
+    }
+    throw new WorkspaceStoreError(
+      'LOCAL_STATUS_CHANGING',
+      '正式记录正在更新，请稍后刷新本机状态。',
+      409,
+    );
   }
   async function replay(batchId, expectedRevision) {
     if (
@@ -582,13 +641,33 @@ export function createWorkspaceInboxConsumer({
     return { ...result, revision: committed.revision, replayed: false };
   }
   return {
-    run() {
-      return (running ??= serial(drain).finally(() => {
-        running = null;
-      }));
+    run({ rescanIfRunning = true } = {}) {
+      const latest = runs.at(-1);
+      if (latest && (!latest.started || !rescanIfRunning)) return latest.promise;
+      const request = { started: false, promise: null };
+      runs.push(request);
+      request.promise = serial(async () => {
+        request.started = true;
+        try {
+          const result = await drain();
+          report({ phase: 'completed', batchId: '' });
+          return result;
+        } catch (error) {
+          report({ phase: 'failed' });
+          throw error;
+        }
+      }).finally(() => {
+        runs.splice(runs.indexOf(request), 1);
+        report({ running: runs.length > 0 });
+      });
+      return request.promise;
     },
-    inspect: () => serial(inspect),
+    inspect,
     replay: (batchId, expectedRevision) => serial(() => replay(batchId, expectedRevision)),
-    status: () => structuredClone(last),
+    status: () =>
+      structuredClone({
+        ...last,
+        progress: { ...progress, running: runs.length > 0, rescanPending: runs.length > 1 },
+      }),
   };
 }

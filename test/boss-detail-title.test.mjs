@@ -43,6 +43,41 @@ test('SEO title repetition, year boundary and full suffix must match without gue
     assert.equal(parseBossDetailTitle(title), null, title);
 });
 
+test('complete what-position SEO titles retain their repeated role and employer', () => {
+  assert.deepEqual(
+    parseBossDetailTitle(
+      '示例 平台工程师是什么职位_示例科技2026年示例 平台工程师前景待遇-BOSS直聘',
+    ),
+    { name: '示例 平台工程师', company: '示例科技' },
+  );
+  assert.deepEqual(
+    parseBossDetailTitle('示例研发负责人是什么职位_示例企业2031年示例研发负责人前景待遇-BOSS直聘'),
+    { name: '示例研发负责人', company: '示例企业' },
+  );
+});
+
+test('what-position SEO titles reject inconsistent roles, ambiguous years and incomplete boundaries', () => {
+  for (const title of [
+    '示例岗位是什么职位_示例科技2026年另一岗位前景待遇-BOSS直聘',
+    '示例 岗位是什么职位_示例科技2026年示例岗位前景待遇-BOSS直聘',
+    '示例岗位是什么职位_示例科技026年示例岗位前景待遇-BOSS直聘',
+    '示例岗位是什么职位_示例科技20260年示例岗位前景待遇-BOSS直聘',
+    '示例岗位是什么职位_示例科技２０２６年示例岗位前景待遇-BOSS直聘',
+    '示例岗位是什么职位_2026年示例岗位前景待遇-BOSS直聘',
+    '示例岗位是什么职位_   2026年示例岗位前景待遇-BOSS直聘',
+    '是什么职位_示例科技2026年前景待遇-BOSS直聘',
+    '示例岗位是什么职位_示例科技2026年示例岗位前景待遇',
+    '示例岗位是什么职位_示例科技2026年示例岗位前景怎么样-BOSS直聘',
+    '示例岗位是什么职位_示例科技2026年示例岗位前景待遇-其他网站',
+    '示例岗位是什么职位_示例科技2026年示例岗位前景待遇-BOSS直聘附加文字',
+    '「示例岗位是什么职位_示例科技2026年示例岗位前景待遇-BOSS直聘」',
+    '示例\n岗位是什么职位_示例科技2026年示例\n岗位前景待遇-BOSS直聘',
+    `${'x'.repeat(301)}是什么职位_示例科技2026年${'x'.repeat(301)}前景待遇-BOSS直聘`,
+    `示例岗位是什么职位_${'x'.repeat(301)}2026年示例岗位前景待遇-BOSS直聘`,
+  ])
+    assert.equal(parseBossDetailTitle(title), null, title);
+});
+
 test('partial, generic, verification and malformed titles remain unknown', () => {
   for (const title of [
     null,

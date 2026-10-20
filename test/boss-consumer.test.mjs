@@ -930,7 +930,7 @@ test('本机只读状态偶发刷新失败标注旧状态，持续失败才报�
   assert.equal(recovered.connectionStale, false);
   assert.equal(recovered.refreshFailures, 0);
   assert.equal(recovered.error, '');
-  assert.equal(calls, 4);
+  assert.equal(calls, 6);
   timeout = true;
   const timedOut = await consumer.run();
   assert.equal(timedOut.error, '');
@@ -942,6 +942,69 @@ test('本机只读状态偶发刷新失败标注旧状态，持续失败才报�
     consumer.replay('synthetic'),
     (error) => error.code === 'LOCAL_STATUS_STALE',
   );
+});
+
+test('消费进行中只刷新内存进度并保留核对清单，完成后恢复完整读取', async () => {
+  let busy = false,
+    indexes = 0;
+  const waitingItems = [{ applicationId: 'synthetic-waiting', status: 'waiting' }];
+  const restoreReview = [{ batchId: `boss-batch-${'a'.repeat(64)}`, missing: 1 }];
+  const consumer = createBossQueueConsumer({
+    fetcher: async (path) => {
+      if (path === './__local/session')
+        return Response.json({
+          bossIntegrationEnabled: true,
+          localWorkspaceEnabled: true,
+          workspaceId: SOURCE_ID,
+          session: 'f'.repeat(64),
+        });
+      if (path === './__local/boss-runtime?view=progress')
+        return Response.json({
+          protocolVersion: 1,
+          status: {
+            lifecycle: 'stopped',
+            inbox: { progress: { running: busy, phase: busy ? 'committing' : 'completed' } },
+          },
+        });
+      if (path.startsWith('./__local/boss-inbox?')) {
+        indexes++;
+        return Response.json({
+          status: {},
+          batches: [],
+          tracking: { lifecycle: 'stopped' },
+          recovery: { revision: indexes, waitingItems, restoreReview },
+        });
+      }
+      throw new Error('unexpected request');
+    },
+    storage: { getItem: () => SOURCE_ID, setItem: () => {} },
+    readWorkspace: async () => ({ data: boundData(), pending: null }),
+    editWorkspace: async () => {
+      throw new Error('must not write');
+    },
+    lockManager: { request: async (_name, _options, callback) => callback({}) },
+    hostname: '127.0.0.1',
+    now: () => STAMP,
+  });
+  const initial = await consumer.run();
+  assert.equal(initial.revision, 1);
+  busy = true;
+  for (let i = 0; i < 2; i++) {
+    const progress = await consumer.run();
+    assert.equal(progress.inspectionPending, true);
+    assert.equal(progress.revision, undefined);
+    assert.equal(progress.tracking.inbox.progress.phase, 'committing');
+    assert.deepEqual(progress.waitingItems, waitingItems);
+    assert.deepEqual(progress.restoreReview, restoreReview);
+    assert.equal(indexes, 1);
+  }
+  await assert.rejects(consumer.bind(ACCOUNT), { code: 'LOCAL_STATUS_STALE' });
+  await assert.rejects(consumer.replay(restoreReview[0].batchId), { code: 'LOCAL_STATUS_STALE' });
+  busy = false;
+  const complete = await consumer.run();
+  assert.equal(complete.inspectionPending, false);
+  assert.equal(complete.revision, 2);
+  assert.equal(indexes, 2);
 });
 
 test('首次状态读取失败立即提示，未取得状态时不使用短时失败容忍', async () => {
@@ -1160,6 +1223,8 @@ test('本机正式服务拥有消费职责时网页只观察，静态页面不�
           workspaceId: SOURCE_ID,
           session: 'f'.repeat(64),
         });
+      if (path === './__local/boss-runtime?view=progress')
+        return Response.json({ protocolVersion: 1, status: { lifecycle: 'stopped' } });
       if (path.startsWith('./__local/boss-inbox?'))
         return Response.json({
           batches: [
@@ -1253,6 +1318,8 @@ test('本机恢复缺口由服务显式重放，页面不执行业务变换', as
           workspaceId: SOURCE_ID,
           session: 'f'.repeat(64),
         });
+      if (path === './__local/boss-runtime?view=progress')
+        return Response.json({ protocolVersion: 1, status: { lifecycle: 'stopped' } });
       if (path.startsWith('./__local/boss-inbox?'))
         return Response.json({
           batches: [

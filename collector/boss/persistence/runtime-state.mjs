@@ -482,6 +482,8 @@ function normalizeCheckpoint(value) {
     'head',
     'truncated',
     'targetFingerprint',
+    'nextCursor',
+    'previousPageHash',
   ];
   const observationFields = [
     'conversationKey',
@@ -497,15 +499,21 @@ function normalizeCheckpoint(value) {
     'attribution',
     'resumeEvidence',
   ];
-  if (value && Object.keys(value).some((key) => !keys.includes(key)))
+  if (
+    value &&
+    (Object.keys(value).some((key) => !keys.includes(key)) ||
+      (value.version < 7 &&
+        ['nextCursor', 'previousPageHash'].some((key) => Object.hasOwn(value, key))))
+  )
     throw new Error('RESUME_CHECKPOINT_INVALID');
 
   if (
     !value ||
-    ![1, 2, 3, 4, 5, 6].includes(value.version) ||
+    ![1, 2, 3, 4, 5, 6, 7].includes(value.version) ||
     !iso(value.capturedAt) ||
     (value.nextConversationKey !== null &&
-      !/^[a-f0-9]{64}$/.test(value.nextConversationKey ?? '')) ||
+      (typeof value.nextConversationKey !== 'string' ||
+        !/^[a-f0-9]{64}$/.test(value.nextConversationKey))) ||
     !Number.isSafeInteger(value.nextPage) ||
     value.nextPage < 0 ||
     value.nextPage > 21 ||
@@ -518,12 +526,22 @@ function normalizeCheckpoint(value) {
     (value.error !== null && !code(value.error)) ||
     (value.completedConversationKey !== undefined &&
       value.completedConversationKey !== null &&
-      !/^[a-f0-9]{64}$/.test(value.completedConversationKey)) ||
+      (typeof value.completedConversationKey !== 'string' ||
+        !/^[a-f0-9]{64}$/.test(value.completedConversationKey))) ||
     (value.head !== undefined &&
       value.head !== null &&
-      !/^[A-Za-z0-9_-]{1,128}$/.test(value.head)) ||
+      (typeof value.head !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(value.head))) ||
     (value.truncated !== undefined && typeof value.truncated !== 'boolean') ||
-    (value.targetFingerprint !== undefined && !/^[a-f0-9]{64}$/.test(value.targetFingerprint))
+    (value.targetFingerprint !== undefined &&
+      (typeof value.targetFingerprint !== 'string' ||
+        !/^[a-f0-9]{64}$/.test(value.targetFingerprint))) ||
+    (value.nextCursor !== undefined &&
+      value.nextCursor !== null &&
+      (typeof value.nextCursor !== 'string' || !/^[1-9][0-9]{0,127}$/.test(value.nextCursor))) ||
+    (value.previousPageHash !== undefined &&
+      value.previousPageHash !== null &&
+      (typeof value.previousPageHash !== 'string' ||
+        !/^[a-f0-9]{64}$/.test(value.previousPageHash)))
   ) {
     throw new Error('RESUME_CHECKPOINT_INVALID');
   }

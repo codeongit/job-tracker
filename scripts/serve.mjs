@@ -337,7 +337,9 @@ export async function startLocalService({
       void shutdown();
     });
     const drain = () =>
-      void inboxConsumer.run().catch(() => process.stderr.write('WORKSPACE_INBOX_DRAIN_FAILED\n'));
+      void inboxConsumer
+        .run({ rescanIfRunning: false })
+        .catch(() => process.stderr.write('WORKSPACE_INBOX_DRAIN_FAILED\n'));
     drain();
     drainTimer = setInterval(drain, 30000);
     return { server, shutdown, instanceId, port, workspaceId: workspaceStore.workspaceId };

@@ -193,9 +193,12 @@ export function createResumePageExpression({
   page,
   timeoutMs = 15_000,
   platformContract = null,
+  maxMsgId = '0',
 }) {
   const safeTarget = normalizeTarget(target);
   const safeContract = normalizePlatformContract(platformContract);
+  if (typeof maxMsgId !== 'string' || !/^(0|[1-9][0-9]{0,127})$/.test(maxMsgId))
+    throw new TypeError('RESUME_SCAN_INPUT_INVALID');
   const bossId = clean(identity?.bossId, 128),
     securityId = clean(identity?.securityId, 500);
   if (
@@ -237,7 +240,7 @@ export function createResumePageExpression({
       message, ${JSON.stringify(RESUME_RULES)}, (${classifyResumeText.toString()}),
       {platformContract:${JSON.stringify(safeContract)}});
     const endpoint='https://www.zhipin.com/wapi/zpchat/geek/historyMsg?bossId='+encodeURIComponent(identity.bossId)+
-      '&securityId='+encodeURIComponent(identity.securityId)+'&page='+page+'&c=20&src='+encodeURIComponent(target.friendSource);
+      '&securityId='+encodeURIComponent(identity.securityId)+'&page='+page+'&c=20&maxMsgId='+${JSON.stringify(maxMsgId)}+'&src='+encodeURIComponent(target.friendSource);
     const response=await request('GET',endpoint);
     const messages=response.ok && response.value?.code===0?
       (response.value?.zpData?.messages ?? response.value?.zpData?.historyMsgList):null;
@@ -272,8 +275,18 @@ export function createResumePageExpression({
         kind:direction==='outbound'?'sent_candidate':'resume_card_other',resumeEvidence:{version:1,messageType:4,field:'none',text:''},platformTime,
         externalJobId:jobId(message),attribution:attribution(message),source:${JSON.stringify(SOURCE)}});
     }
-    return {ok:true,url,target,page,messageCount:messages.length,exhausted:messages.length<20,
-      messageIds:[...new Set(messageIds)],observations,unresolved};
+    const normalizeCursor = value => {
+      if (typeof value === 'number' && (!Number.isSafeInteger(value) || value < 1)) return null;
+      if (!['number','string'].includes(typeof value)) return null;
+      return /^[1-9][0-9]{0,127}$/.test(String(value)) ? String(value) : null;
+    };
+    const data = response.value.zpData;
+    const numericIds = messages.map(message => normalizeCursor(message.mid ?? message.msgId ?? message.messageId ?? message.id ??
+      message.body?.mid ?? message.body?.msgId)).filter(Boolean);
+    const fallbackCursor = numericIds.sort((a,b) => a.length-b.length || a.localeCompare(b))[0] ?? null;
+    const nextCursor = data.minMsgId ? normalizeCursor(data.minMsgId) : fallbackCursor;
+    return {ok:true,url,target,page,messageCount:messages.length,exhausted:!(data.hasMore || messages.length>=19),
+      nextCursor,messageIds:[...new Set(messageIds)],observations,unresolved};
   })()`;
 }
 
@@ -294,6 +307,8 @@ export async function runResumeHistoryRequests({
   initialObservations = [],
   initialUnresolved = [],
   initialHead = null,
+  initialCursor = null,
+  initialPageHash = null,
   startConversationKey = null,
   startPage = 1,
   knownMessageIds = [],
@@ -331,6 +346,13 @@ export async function runResumeHistoryRequests({
   ) {
     throw new TypeError('RESUME_SCAN_INPUT_INVALID');
   }
+  if (
+    (initialCursor !== null &&
+      (typeof initialCursor !== 'string' || !/^[1-9][0-9]{0,127}$/.test(initialCursor))) ||
+    (initialPageHash !== null &&
+      (typeof initialPageHash !== 'string' || !/^[a-f0-9]{64}$/.test(initialPageHash)))
+  )
+    throw new TypeError('RESUME_SCAN_INPUT_INVALID');
   const safeContract = normalizePlatformContract(platformContract);
   let safeTargets = targets.map(normalizeTarget);
   if (startConversationKey !== null) {
@@ -384,11 +406,19 @@ export async function runResumeHistoryRequests({
     budgetExhausted = false,
     continuation = null;
   const completedConversations = [];
+  const failures = [];
+  const pageCursors = new Map(),
+    pageHashes = new Map();
+  if (initialCursor && startConversationKey) pageCursors.set(startConversationKey, initialCursor);
+  if (initialPageHash && startConversationKey)
+    pageHashes.set(startConversationKey, initialPageHash);
   const heads = new Map();
   if (initialHead && startConversationKey) heads.set(startConversationKey, initialHead);
+  // Friend lookups and failed pages retain this target's head, never another
+  // conversation's head from an earlier completed target in the same scan.
   const checkpoint = async (nextConversationKey, nextPage, metadata = {}) =>
     onCheckpoint({
-      version: 6,
+      version: 7,
       capturedAt: now(),
       nextConversationKey,
       nextPage,
@@ -398,6 +428,10 @@ export async function runResumeHistoryRequests({
       usage: { historyRequests },
       partial,
       error,
+      head: heads.get(nextConversationKey ?? metadata.completedConversationKey) ?? null,
+      nextCursor: pageCursors.get(nextConversationKey ?? metadata.completedConversationKey) ?? null,
+      previousPageHash:
+        pageHashes.get(nextConversationKey ?? metadata.completedConversationKey) ?? null,
       ...metadata,
     });
   const request = async (expression, metadata) => {
@@ -420,7 +454,12 @@ export async function runResumeHistoryRequests({
       budgetExhausted = true;
       break;
     }
-    const firstPage = target.conversationKey === startConversationKey ? startPage : 1;
+    const firstPage =
+      target.conversationKey === startConversationKey && initialCursor ? startPage : 1;
+    if (firstPage === 1) {
+      pageCursors.delete(target.conversationKey);
+      pageHashes.delete(target.conversationKey);
+    }
     const friend = await request(createResumeFriendExpression({ target }), {
       kind: 'friend',
       conversationKey: target.conversationKey,
@@ -438,6 +477,7 @@ export async function runResumeHistoryRequests({
     if (!friend.payload?.ok) {
       const reason = scanError({ message: friend.payload?.reason }, 'FRIEND_INFO_UNAVAILABLE');
       addUnresolved({ conversationKey: target.conversationKey, reason });
+      failures.push({ conversationKey: target.conversationKey, reason });
       coverage.failedConversations += 1;
       cursor = target.conversationKey;
       await checkpoint(null, 0);
@@ -445,6 +485,10 @@ export async function runResumeHistoryRequests({
     }
     if (!friend.payload.identity) {
       addUnresolved({
+        conversationKey: target.conversationKey,
+        reason: friend.payload.reason ?? 'HISTORY_IDENTITY_MISSING',
+      });
+      failures.push({
         conversationKey: target.conversationKey,
         reason: friend.payload.reason ?? 'HISTORY_IDENTITY_MISSING',
       });
@@ -468,9 +512,15 @@ export async function runResumeHistoryRequests({
           target,
           identity: friend.payload.identity,
           page,
+          maxMsgId: pageCursors.get(target.conversationKey) ?? '0',
           platformContract: safeContract,
         }),
-        { kind: 'history_page', conversationKey: target.conversationKey, page },
+        {
+          kind: 'history_page',
+          conversationKey: target.conversationKey,
+          page,
+          maxMsgId: pageCursors.get(target.conversationKey) ?? '0',
+        },
       );
       if (!pageResult.budget) {
         budgetExhausted = true;
@@ -492,6 +542,7 @@ export async function runResumeHistoryRequests({
       ) {
         const reason = scanError({ message: pageResult.payload?.reason }, 'HISTORY_UNAVAILABLE');
         addUnresolved({ conversationKey: target.conversationKey, reason });
+        failures.push({ conversationKey: target.conversationKey, reason });
         completed = false;
         coverage.failedConversations += 1;
         continuation = { conversationKey: target.conversationKey, page };
@@ -512,9 +563,14 @@ export async function runResumeHistoryRequests({
         pageResult.payload.unresolved.some((item) =>
           /IDENTITY_INCOMPLETE/.test(item?.reason ?? ''),
         ) ||
-        (!pageResult.payload.messageIds.length && pageResult.payload.unresolved.length)
+        (!pageResult.payload.messageIds.length &&
+          (pageResult.payload.unresolved.length || pageResult.payload.messageCount > 0))
       ) {
         addUnresolved({
+          conversationKey: target.conversationKey,
+          reason: 'HISTORY_MESSAGE_ID_MISSING',
+        });
+        failures.push({
           conversationKey: target.conversationKey,
           reason: 'HISTORY_MESSAGE_ID_MISSING',
         });
@@ -531,6 +587,29 @@ export async function runResumeHistoryRequests({
       knownBoundary = pageResult.payload.messageIds.some(
         (id) => MESSAGE_ID.test(id) && known.has(id),
       );
+      const pageHash = digest([...new Set(pageResult.payload.messageIds)].sort());
+      const nextCursor = pageResult.payload.nextCursor;
+      const validCursor = typeof nextCursor === 'string' && /^[1-9][0-9]{0,127}$/.test(nextCursor);
+      const priorCursor = pageCursors.get(target.conversationKey);
+      const repeated = pageHashes.get(target.conversationKey) === pageHash;
+      const stalled =
+        !validCursor ||
+        (priorCursor &&
+          (nextCursor.length > priorCursor.length ||
+            (nextCursor.length === priorCursor.length && nextCursor >= priorCursor)));
+      if (repeated || (!knownBoundary && !exhausted && stalled)) {
+        const reason = repeated ? 'HISTORY_PAGE_REPEATED' : 'HISTORY_CURSOR_NOT_ADVANCING';
+        addUnresolved({ conversationKey: target.conversationKey, reason });
+        failures.push({ conversationKey: target.conversationKey, reason });
+        completed = false;
+        coverage.failedConversations += 1;
+        partial = true;
+        continuation = { conversationKey: target.conversationKey, page };
+        await checkpoint(target.conversationKey, page);
+        break;
+      }
+      if (validCursor) pageCursors.set(target.conversationKey, nextCursor);
+      pageHashes.set(target.conversationKey, pageHash);
       if (exhausted || knownBoundary || page === 20) {
         continuation = null;
         await checkpoint(null, 0, {
@@ -582,6 +661,7 @@ export async function runResumeHistoryRequests({
     budgetExhausted,
     continuation,
     completed: completedConversations,
+    failures,
     heads: [...heads].map(([conversationKey, head]) => ({ conversationKey, head })),
   };
 }
@@ -605,19 +685,29 @@ export function createResumeHistoryExpression({ targets, pages = 2, platformCont
         target,
         identity: { bossId: 'runtime_boss', securityId: 'runtime_security' },
         page: offset + 1,
+        maxMsgId: '0',
         platformContract: safeContract,
       });
-      return `async () => ${expression.replace(JSON.stringify({ bossId: 'runtime_boss', securityId: 'runtime_security', responseFriendId: null, responseFriendSource: null }), 'friend.identity')}`;
+      return `async () => ${expression.replace(JSON.stringify({ bossId: 'runtime_boss', securityId: 'runtime_security', responseFriendId: null, responseFriendSource: null }), 'friend.identity').replace('+\'&c=20&maxMsgId=\'+"0"', "+'&c=20&maxMsgId='+cursor")}`;
     });
     return `async () => {
       const friend = await read(async () => ${createResumeFriendExpression({ target })});
       if (!friend.ok || !friend.identity) { unresolved.push({conversationKey:${JSON.stringify(target.conversationKey)},reason:friend.reason || 'HISTORY_IDENTITY_MISSING'});return; }
-      resolved += 1;
+      resolved += 1; let cursor='0', previousIds=null;
       for (const page of [${reads.join(',')}]) {
         const result = await read(page);
         if (!result.ok) { unresolved.push({conversationKey:${JSON.stringify(target.conversationKey)},reason:result.reason || 'HISTORY_UNAVAILABLE'});break; }
         observations.push(...result.observations);unresolved.push(...result.unresolved);
+        const ids=JSON.stringify([...result.messageIds].sort());
+        if (previousIds===ids) {
+          unresolved.push({conversationKey:${JSON.stringify(target.conversationKey)},reason:'HISTORY_PAGE_REPEATED'});break;
+        }
         if (result.exhausted) break;
+        if (!result.nextCursor || (cursor!=='0' && (result.nextCursor.length>cursor.length ||
+          (result.nextCursor.length===cursor.length && result.nextCursor>=cursor)))) {
+          unresolved.push({conversationKey:${JSON.stringify(target.conversationKey)},reason:'HISTORY_CURSOR_NOT_ADVANCING'});break;
+        }
+        cursor=result.nextCursor;previousIds=ids;
       }
     }`;
   });
