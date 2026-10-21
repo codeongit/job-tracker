@@ -1,44 +1,40 @@
 ---
 name: retro
-description: "Conduct a retrospective on a coding session."
+description: '复盘编码会话，提出有证据支持的代理环境改进建议。'
 disable-model-invocation: true
 ---
 
-The user has asked for a **retrospective**. You are suggesting improvements to the coding agent's **environment** to improve future runs.
+从编码会话中识别环境缺口，改善后续执行。默认提出改进建议；用户已要求实施时，按请求范围和仓库变更流程落实，无需重复确认已授权事项。
 
-## Steps
+## 工作流程
 
-1. Call the Skill tool with `writing-for-agents` for the writing style guide.
+1. 确定会话范围并读取原始材料。默认复盘当前会话；用户指定其他会话时，定位该会话的记录。核对用户要求、代理操作、工具结果和后续纠正，仅提取相关证据，遵循项目的隐私边界。材料缺失时说明范围和限制。
 
-2. Read the primary sources for the session the user specifies. This may mean searching through session logs on this machine. If the user doesn't specify a session, default to the current one.
+2. 按下方适用条件选择复盘视角，核对已有文档、规则、工具和检查入口。区分会话中实际发生的问题、已有防护的缺口，以及尚待验证的推测。视角用于发现候选，不要求每类都产出建议。涉及指令、文档或技能组织的建议时，读取并遵循 [writing-for-agents](../writing-for-agents/SKILL.md)。
 
-3. Look for candidates for improvement in these categories.
+3. 为候选建立依据：说明现有机制为何没能避免问题，以及最小改进如何降低复发可能。区分已确认原因和待验证假设；复用或修正已有机制，评估新增规则、工具和文档的维护成本。
 
-- **Navigation**: how easy was it for the agent to find the right files? Are there hidden dependencies between files? Would a **navigation pointer** make it easier? _Use when_ the session took a long time to find a piece of information.
-- **Automated checks**: are there automated checks that could catch errors the agent made? Linting, typing, tests, filesystem linters? Read the repo's own check command first (its `package.json`/build-tool `lint`/`check` scripts, its CI workflow), so a check that already exists but sits unwired or silently broken is the finding, not a reinvention. A repo with no **guardrail** (no pre-commit hook and no CI job running its lint/typecheck/test command) is itself a finding: an un-linted repo is a standing missed opportunity, not a neutral default. _Use when_ the agent made a mistake an automated check could have caught, or the repo has no guardrail at all.
-- **Coding standards**: should the **reviewer agent** be given a new rule to enforce? Should an existing rule be removed or clarified? Classify the violation first: a **mechanical** one (a fixed syntactic pattern, a banned API, an import shape, a file-location rule) gets a deterministic check, full stop: a custom rule in the repo's own linter, a new pre-commit hook, or a new CI job, whichever the repo's language and existing guardrail make cheapest. Default to building the check over writing the rule. Reserve `CODING_STANDARDS.md` for genuine **judgement calls** (cross-file consistency, "matches the surrounding style," anything no guardrail could ever substitute for). _Use when_ the reviewer agent failed to catch a mistake.
-- **Global AGENTS.md**: are there any steering instructions that should be moved to coding standards (or automated checks) instead? _Use when_ the AGENTS.md file is particularly large - in the repo OR the user's global scope.
-- **Tool economy**: did the agent make expensive tool calls that could be streamlined? Is there any custom tooling (CLI's, MCP's) that is particularly token-inefficient? _Use when_ the agent made an expensive tool call.
-- **No-ops**: look for instructions in steering files that don't modify the agent's behavior. _Use when_ the steering files are large and unwieldy.
-- **Information access**: look for opportunities to increase the agent's access to information. Teeing dev server logs, readonly access to third-party services. _Use when_ a crucial piece of information was not available to the agent.
+4. 按影响严重程度排列建议，结合复发可能和证据强度说明优先级。每项包含：**观察与来源 → 原因或假设 → 最小改进及落点 → 验证方式**。验证方式应说明改进后能观察到什么变化。没有足够依据时可以不建议修改，并说明尚未核实的内容。
 
-4. Present these candidates to the user, in order of severity.
+## 复盘视角
 
-## Reference
+- **导航**：查找信息耗时或反复走错入口时，检查文件间的隐含依赖、文档入口和任务路由。优先补充带触发条件的导航指针，让代理知道何时读取哪份材料。
+- **自动检查**：出现可被自动检查捕获的错误，或项目缺少自动检查入口时，先读 `package.json` 或对应构建工具的检查命令、提交钩子和 CI 配置。区分检查不存在、未接入、覆盖不足和执行失效，优先修复已有机制。既无提交钩子也无 CI 执行相关检查，可作为防护缺口；单独缺少其中一种不等于没有防护。实际运行检查遵循项目测试分工和权限。
+- **编码规范**：审查漏掉问题或规则含混时，先分类。固定语法模式、禁用 API、导入形式和文件位置等机械规则，优先提出确定性检查方案，复用现有工具并考虑误报和维护成本；跨文件一致性、是否符合上下文等判断问题，才补充或澄清评审规范。
+- **全局或项目级 AGENTS.md**：指令过长、职责混杂或难以定位规则时，按下方文件职责检查组织方式。篇幅是检查信号，迁移详细规则时保留必要的事前加载入口。
+- **工具成本**：工具调用重复、输出庞大或耗时明显时，依据实际调用记录判断能否缩小查询范围、复用结果或改进 CLI/MCP 接口，同时保留判断所需的证据。
+- **无效指令**：指令文档冗长时，检查重复、过时和疑似不改变行为的内容。对重复和过时内容，核对文本、权威来源及引用关系；对疑似不改变行为的指令，要求实际执行或对照验证依据，仅凭“模型本来就知道”不足以建议删除。证据不足时标为待验证候选。
+- **信息获取**：关键信息不可用且确实阻碍判断时，检查现有访问入口、日志和只读信息源，提出满足任务所需的最小补充。新增访问范围或权限单独说明，复盘本身不授予外部访问权限。
 
-### Implementation vs Review
+## 职责与规则的加载时机
 
-Remember that all work goes through two stages: implementation and review. The implementation agent has the most **context pressure**. They are responsible for exploration, writing code, and debugging failures.
+复盘职责或规则组织的问题时，依据仓库的[变更流程](../../../docs/agents/change-workflow.md)核对：实施所需约束是否在行动前加载，审查是否独立核对原始需求、现有机制和修改结果。具体分工以该流程为准。
 
-The review agent has the least context pressure - it receives a diff, so no exploration needed. It often does not need to write code or debug.
+## 文件职责
 
-This means that the review agent should be responsible for imposing coding standards, not the implementation agent.
+先发现并复用仓库已有入口，按规则何时需要生效决定放置位置。
 
-### Files
-
-You have access to several files in the repo:
-
-- `CLAUDE.md`/`AGENTS.md`: these files are pushed to the context window of any agent working in this repo. They should be used incredibly sparingly, usually only for **navigation pointers** to other files.
-- `CODING_STANDARDS.md`: this file is read during review, not implementation. Add **navigation pointers** to docs folders if the standards file gets more than 1,000 lines long.
-- Docs: use docs as references files, pointed to by other files. Look for existing docs before writing new ones.
-- Skills: use skills for docs (since their description goes into the agent's context window), or for user-invoked commands. Follow the advice in the `writing-for-agents` skill.
+- **`AGENTS.md`**：保留任务路由、团队红线和文档索引。任务路由说明遇到什么任务先读什么；团队红线明确行动前必须知道的边界；文档索引指向详细规则，并说明读取条件。
+- **编码规范文档**：使用仓库实际采用的入口，例如 `CODING_STANDARDS.md`。承载需要上下文判断的约定；影响实施决策的部分在相关行动前读取，其余由审查重点核验。
+- **专题文档**：承载详细机制、契约和操作流程，通过具体导航指针按需读取。同一规则保留一个权威来源，避免复制多份正文。
+- **技能**：承载可复用的任务流程或共享指导。发现方式、描述和正文组织遵循 `writing-for-agents`；按实际用途组织材料，不为缩短入口而新增无必要的文件。
