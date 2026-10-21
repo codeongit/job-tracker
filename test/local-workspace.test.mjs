@@ -36,32 +36,24 @@ function fixture({
     hash: workspace ? 'a'.repeat(64) : '',
     workspace: copy(workspace),
   });
+  const publish = (next) => {
+    workspace = copy(next.workspace);
+    revision = next.revision;
+    return envelope();
+  };
   const fetcher = async (path, options = {}) => {
     const call = { path, ...options, parsed: options.body ? JSON.parse(options.body) : undefined };
     calls.push(call);
+    if (call.method === 'POST') assert.equal(options.headers['X-Job-Tracker-Protocol'], '1');
     if (custom) {
-      const result = await custom(call, { envelope, calls });
+      const result = await custom(call, { envelope, publish, calls });
       if (result !== undefined) return result;
     }
     if (path === './__local/session')
       return response({ localWorkspaceEnabled: true, session: 'f'.repeat(64) });
     if (path === './__local/workspace') return response(envelope());
     if (path === './__local/workspace/commands') {
-      assert.equal(options.headers['X-Job-Tracker-Protocol'], '1');
-      assert.equal(call.parsed.expectedRevision, revision);
-      if (call.parsed.type === 'import_workspace') workspace = copy(call.parsed.payload.workspace);
-      else if (call.parsed.type === 'edit_data') {
-        for (const change of call.parsed.payload.changes) {
-          const rows = workspace.data[change.group],
-            index = rows.findIndex((row) => row.id === change.record.id);
-          if (index >= 0) rows[index] = copy(change.record);
-          else rows.push(copy(change.record));
-        }
-        workspace.generation++;
-        if (workspace.pending) workspace.pending.generation = workspace.generation;
-      } else throw new Error(`Unexpected synthetic command: ${call.parsed.type}`);
-      revision++;
-      return response(envelope());
+      assert.fail(`No synthetic response configured for command: ${call.parsed.type}`);
     }
     throw new Error('Unexpected synthetic endpoint');
   };
@@ -113,7 +105,16 @@ function populatedWorkspace() {
 }
 
 test('客户端接受存储版本2，读写继续使用协议1并缓存正式结果', async () => {
-  const value = fixture({ storageVersion: 2 });
+  const committed = initialWorkspace();
+  committed.generation = 1;
+  committed.data.opportunities = [
+    { id: 'catalog-job', company: '合成目录公司', role: '合成目录岗位', stage: '已触达' },
+  ];
+  const value = fixture({
+    storageVersion: 2,
+    custom: (call, { publish }) =>
+      call.method === 'POST' ? response(publish({ workspace: committed, revision: 2 })) : undefined,
+  });
   assert.deepEqual(await value.client.read(), initialWorkspace());
   const saved = await value.client.editData((data) => {
     data.opportunities.push({
@@ -124,17 +125,26 @@ test('客户端接受存储版本2，读写继续使用协议1并缓存正式结
     });
     return data;
   });
-  assert.equal(saved.data.opportunities[0].id, 'catalog-job');
-  assert.deepEqual(value.cache, saved);
+  assert.deepEqual(saved, committed);
+  assert.deepEqual(value.cache, committed);
   assert.equal(value.envelope().storageVersion, 2);
   assert.equal(value.envelope().revision, 2);
   const command = value.calls.find((call) => call.method === 'POST');
   assert.equal(command.headers['X-Job-Tracker-Protocol'], '1');
   assert.equal(command.parsed.expectedRevision, 1);
+  assert.deepEqual(command.parsed.payload.changes, [
+    { group: 'opportunities', record: committed.data.opportunities[0] },
+  ]);
 });
 
 test('首次迁移需要显式操作，重复初始化只读取服务且不覆盖正式数据', async () => {
-  const value = fixture({ initial: null, cached: populatedWorkspace() });
+  const committed = populatedWorkspace();
+  const value = fixture({
+    initial: null,
+    cached: populatedWorkspace(),
+    custom: (call, { publish }) =>
+      call.method === 'POST' ? response(publish({ workspace: committed, revision: 1 })) : undefined,
+  });
   await assert.rejects(value.client.read(), { code: 'LOCAL_WORKSPACE_IMPORT_REQUIRED' });
   assert.equal(value.calls.filter((call) => call.method === 'POST').length, 0);
   assert.equal(value.metadata.size, 0);
@@ -149,6 +159,11 @@ test('首次迁移需要显式操作，重复初始化只读取服务且不覆�
   await value.client.importCurrent(prepared, []);
   await value.client.importCurrent();
   assert.equal(value.calls.filter((call) => call.method === 'POST').length, 1);
+  const command = value.calls.find((call) => call.method === 'POST').parsed;
+  assert.equal(command.expectedRevision, 0);
+  assert.equal(command.type, 'import_workspace');
+  assert.deepEqual(command.payload.workspace, committed);
+  assert.deepEqual(value.cache, committed);
   assert.equal(
     value.metadata.get('job-tracker-local-authority-v1'),
     JSON.stringify({ workspaceId: '00000000-0000-4000-8000-000000000001' }),
@@ -249,17 +264,36 @@ test('错误或空浏览器不能创建正式工作区，备份后的记录和�
 
 test('迁移预检的内部原件不受调用方修改，提交仍使用备份时的原工作区', async () => {
   const original = populatedWorkspace(),
-    value = fixture({ initial: null, cached: original }),
+    value = fixture({
+      initial: null,
+      cached: original,
+      custom: (call, { publish }) =>
+        call.method === 'POST'
+          ? response(publish({ workspace: original, revision: 1 }))
+          : undefined,
+    }),
     prepared = await value.client.prepareImport([]);
   prepared.backup.workspace.data.opportunities[0].company = '伪造公司';
   prepared.summary.formalRecords = 999;
   await value.client.importCurrent(prepared, []);
   const command = value.calls.find((call) => call.method === 'POST').parsed;
+  assert.equal(command.expectedRevision, 0);
+  assert.equal(command.type, 'import_workspace');
   assert.equal(command.payload.workspace.data.opportunities[0].company, '合成迁移公司');
+  assert.deepEqual(command.payload.workspace, original);
+  assert.deepEqual(value.cache, original);
 });
 
 test('每次修改从服务最新版本计算，提交后仅将已确认结果缓存', async () => {
-  const value = fixture();
+  const committed = initialWorkspace();
+  committed.generation = 1;
+  committed.data.opportunities = [
+    { id: 'job-1', company: '合成公司', role: '合成岗位', stage: '已触达' },
+  ];
+  const value = fixture({
+    custom: (call, { publish }) =>
+      call.method === 'POST' ? response(publish({ workspace: committed, revision: 2 })) : undefined,
+  });
   const saved = await value.client.editData((data) => {
     data.opportunities.push({
       id: 'job-1',
@@ -269,15 +303,15 @@ test('每次修改从服务最新版本计算，提交后仅将已确认结果�
     });
     return data;
   });
-  assert.equal(saved.generation, 1);
-  assert.deepEqual(value.cache, saved);
+  assert.deepEqual(saved, committed);
+  assert.deepEqual(value.cache, committed);
   const command = value.calls.find((call) => call.method === 'POST').parsed;
   assert.equal(command.type, 'edit_data');
+  assert.equal(command.expectedRevision, 1);
   assert.equal(Object.hasOwn(command.payload, 'workspace'), false);
-  assert.deepEqual(
-    command.payload.changes.map((change) => change.group),
-    ['opportunities'],
-  );
+  assert.deepEqual(command.payload.changes, [
+    { group: 'opportunities', record: committed.data.opportunities[0] },
+  ]);
   assert.equal((await value.client.read()).generation, 1);
 });
 
@@ -325,7 +359,7 @@ test('本机客户端拒绝通用整库覆盖及通过业务编辑伪造来源�
   assert.equal(value.calls.filter((call) => call.method === 'POST').length, 0);
 });
 
-test('本机客户端把冲突期间的业务编辑交给权威服务按岗位隔离', async () => {
+test('冲突期间仍提交独立岗位编辑命令，并采用服务返回结果', async () => {
   const workspace = initialWorkspace(),
     conflicted = {
       id: 'conflicted-job',
@@ -359,13 +393,29 @@ test('本机客户端把冲突期间的业务编辑交给权威服务按岗位�
     ],
     generation: 0,
   };
-  const value = fixture({ initial: workspace, cached: workspace });
+  const committed = copy(workspace);
+  committed.data.opportunities[1].notes = '独立编辑';
+  committed.generation = 1;
+  committed.pending.generation = 1;
+  const value = fixture({
+    initial: workspace,
+    cached: workspace,
+    custom: (call, { publish }) =>
+      call.method === 'POST' ? response(publish({ workspace: committed, revision: 2 })) : undefined,
+  });
   const saved = await value.client.editData((data) => {
     data.opportunities.find((row) => row.id === independent.id).notes = '独立编辑';
     return data;
   });
-  assert.equal(saved.data.opportunities.find((row) => row.id === independent.id).notes, '独立编辑');
+  assert.deepEqual(saved, committed);
+  assert.deepEqual(value.cache, committed);
   assert.equal(value.calls.filter((call) => call.method === 'POST').length, 1);
+  const command = value.calls.find((call) => call.method === 'POST').parsed;
+  assert.equal(command.expectedRevision, 1);
+  assert.equal(command.type, 'edit_data');
+  assert.deepEqual(command.payload.changes, [
+    { group: 'opportunities', record: { ...independent, notes: '独立编辑' } },
+  ]);
 });
 
 test('本机同步命令只提交服务签发的事务标识，不回传整库或云端数据', async () => {
@@ -431,7 +481,16 @@ test('本机服务中断只读验证缓存，正式写入不降级到IndexedDB',
 });
 
 test('服务提交成功后的浏览器缓存失败不伪装成提交失败', async () => {
-  const value = fixture({ brokenCache: true });
+  const committed = initialWorkspace();
+  committed.generation = 1;
+  committed.data.opportunities = [
+    { id: 'job-1', company: '合成公司', role: '合成岗位', stage: '已触达' },
+  ];
+  const value = fixture({
+    brokenCache: true,
+    custom: (call, { publish }) =>
+      call.method === 'POST' ? response(publish({ workspace: committed, revision: 2 })) : undefined,
+  });
   const saved = await value.client.editData((data) => {
     data.opportunities.push({
       id: 'job-1',
@@ -441,7 +500,13 @@ test('服务提交成功后的浏览器缓存失败不伪装成提交失败', as
     });
     return data;
   });
-  assert.equal(saved.generation, 1);
+  assert.deepEqual(saved, committed);
+  const command = value.calls.find((call) => call.method === 'POST').parsed;
+  assert.equal(command.expectedRevision, 1);
+  assert.equal(command.type, 'edit_data');
+  assert.deepEqual(command.payload.changes, [
+    { group: 'opportunities', record: committed.data.opportunities[0] },
+  ]);
   assert.ok(value.cacheFailures > 0);
 });
 
@@ -574,7 +639,15 @@ test('核对快照只读取一次正式状态，资料与版本来自同一响�
 });
 
 test('核对快照串行等待已有修改完成，再返回最新正式版本', async () => {
-  const f = fixture();
+  const committed = initialWorkspace();
+  committed.generation = 1;
+  committed.data.opportunities = [
+    { id: 'before-review', company: '合成公司', role: '合成岗位', stage: '已触达' },
+  ];
+  const f = fixture({
+    custom: (call, { publish }) =>
+      call.method === 'POST' ? response(publish({ workspace: committed, revision: 2 })) : undefined,
+  });
   const saving = f.client.editData((data) => {
     data.opportunities.push({
       id: 'before-review',
@@ -588,8 +661,14 @@ test('核对快照串行等待已有修改完成，再返回最新正式版本',
   await saving;
   const reviewed = await reviewing;
   assert.equal(reviewed.revision, 2);
-  assert.equal(reviewed.state.data.opportunities[0].id, 'before-review');
-  assert.deepEqual(reviewed.state, f.cache);
+  assert.deepEqual(reviewed.state, committed);
+  assert.deepEqual(f.cache, committed);
+  const command = f.calls.find((call) => call.method === 'POST').parsed;
+  assert.equal(command.expectedRevision, 1);
+  assert.equal(command.type, 'edit_data');
+  assert.deepEqual(command.payload.changes, [
+    { group: 'opportunities', record: committed.data.opportunities[0] },
+  ]);
 });
 
 test('核对快照拒绝离线缓存及静态模式，不把旧状态作为可提交依据', async () => {
@@ -649,32 +728,49 @@ test('普通编辑无变化不生成命令，随后固定操作仍可正常保�
 test('固定操作和普通编辑共用串行顺序，编辑读取前一操作后的正式状态', async () => {
   const entered = Promise.withResolvers(),
     release = Promise.withResolvers();
-  let formal = initialWorkspace(),
-    revision = 1,
-    transformations = 0;
+  const original = initialWorkspace();
+  original.data.opportunities = [
+    {
+      id: 'existing-job',
+      company: '合成公司',
+      role: '已有岗位',
+      stage: '已触达',
+      notes: '操作前的正式内容',
+    },
+  ];
+  const afterFixed = copy(original);
+  afterFixed.generation = 1;
+  afterFixed.data.opportunities[0].notes = '前一操作确认后的正式内容';
+  const afterEdit = copy(afterFixed);
+  afterEdit.generation = 2;
+  afterEdit.data.opportunities.push({
+    id: 'after-fixed-command',
+    company: '合成串行公司',
+    role: '合成串行岗位',
+    stage: '已触达',
+  });
+  let transformations = 0;
   const f = fixture({
-    custom: async (call, { envelope }) => {
-      const current = () => ({ ...envelope(), workspace: copy(formal), revision });
-      if (call.path === './__local/workspace') return response(current());
+    initial: original,
+    cached: original,
+    custom: async (call, { publish }) => {
       if (call.method !== 'POST') return;
-      assert.equal(call.parsed.expectedRevision, revision);
       if (call.parsed.type === 'ignore_boss_observations') {
+        assert.equal(call.parsed.expectedRevision, 1);
         entered.resolve();
         await release.promise;
-      } else {
-        assert.equal(call.parsed.type, 'edit_data');
-        formal.data.opportunities = call.parsed.payload.changes.map((change) => change.record);
+        return response(publish({ workspace: afterFixed, revision: 2 }));
       }
-      formal.generation++;
-      revision++;
-      return response(current());
+      assert.equal(call.parsed.type, 'edit_data');
+      assert.equal(call.parsed.expectedRevision, 2);
+      return response(publish({ workspace: afterEdit, revision: 3 }));
     },
   });
   await f.client.active();
   const fixed = f.client.ignoreBossObservations(['synthetic-application'], 1);
   const editing = f.client.editData((data) => {
     transformations++;
-    assert.equal(formal.generation, 1);
+    assert.deepEqual(data.opportunities, afterFixed.data.opportunities);
     data.opportunities.push({
       id: 'after-fixed-command',
       company: '合成串行公司',
@@ -683,15 +779,21 @@ test('固定操作和普通编辑共用串行顺序，编辑读取前一操作�
     });
     return data;
   });
-  await entered.promise;
-  assert.equal(transformations, 0);
-  assert.equal(f.calls.filter((call) => call.method === 'POST').length, 1);
-  release.resolve();
-  await fixed;
-  const saved = await editing;
-  assert.equal(saved.generation, 2);
-  assert.equal(saved.data.opportunities[0].id, 'after-fixed-command');
-  assert.deepEqual(f.cache, saved);
+  try {
+    await Promise.race([entered.promise, fixed]);
+    assert.equal(transformations, 0);
+    assert.equal(f.calls.filter((call) => call.method === 'POST').length, 1);
+  } finally {
+    release.resolve();
+    await Promise.allSettled([fixed, editing]);
+  }
+  assert.deepEqual(await fixed, afterFixed);
+  assert.deepEqual(await editing, afterEdit);
+  assert.deepEqual(f.cache, afterEdit);
+  const command = f.calls.find((call) => call.parsed?.type === 'edit_data').parsed;
+  assert.deepEqual(command.payload.changes, [
+    { group: 'opportunities', record: afterEdit.data.opportunities[1] },
+  ]);
   assert.deepEqual(
     f.calls.filter((call) => call.method === 'POST').map((call) => call.parsed.expectedRevision),
     [1, 2],

@@ -22,7 +22,7 @@ pnpm service status
 
 系统结构与模块职责见[当前架构](ARCHITECTURE.md)。BOSS 变更按[文档影响与维护](agents/change-workflow.md#文档影响与维护)选择设计、实现或操作正文，在同次变更中更新受影响内容，或说明无需更新的核对依据；本次 BOSS 职责重构及保留条件见[重构记录](ARCHITECTURE_REFACTOR_PLAN.md)。
 
-代理改动按[现状理解与目标核对](agents/change-workflow.md)执行，检查范围随影响调整；该页统一维护修改前核对、独立测试预期及审查步骤。
+代理改动按[现状理解与目标核对](agents/change-workflow.md)执行，检查范围随影响调整；该页统一维护修改前核对、独立测试预期、覆盖核对、审查及交付记录。
 
 ```sh
 pnpm format
@@ -31,7 +31,11 @@ pnpm check
 pnpm format:check
 ```
 
-小改动可按影响范围运行定向非浏览器测试；发布前运行完整 `pnpm test`。`pnpm check` 递归检查 dist、scripts、test 和 collector 的 JavaScript 语法，检查公开资源、版本号，以及项目文档的本地链接、标题锚点和 ADR 编号/索引对应；文档范围为根目录 Markdown、docs、collector 和 `.github`，排除私有目录、依赖、第三方技能和测试材料，不访问外链。`pnpm format:check` 检查格式。纯文档改动核对格式、链接与差异；修改检查器本身还须运行其合成测试。
+小改动可按影响范围运行定向非浏览器测试；发布前运行完整 `pnpm test`。非浏览器测试放在 `test/` 或 `collector/boss/`，以 `*.test.mjs` 命名，两个目录的子目录也会被收集；fixture/helper 使用普通 `.mjs` 后缀。收集范围以 `package.json` 为准，通配符由 Node 解析，不依赖 shell 展开或 Git 忽略规则；私有运行材料仍放在 `.local/`。浏览器回归保持独立入口。
+
+`pnpm check` 递归检查 dist、scripts、test 和 collector 的 JavaScript 语法，检查公开资源、版本号，以及项目文档的本地链接、标题锚点和 ADR 编号/索引对应；文档范围为根目录 Markdown、docs、collector 和 `.github`，排除私有目录、依赖、第三方技能和测试材料，不访问外链。`pnpm format:check` 检查格式。纯文档改动核对格式、链接与差异；修改检查器本身还须运行其合成测试。
+
+本机工作区客户端与服务接口的联动回归可运行 `node --test test/local-workspace-http.test.mjs`：真实客户端经回环 HTTP 调用真实服务，读写临时目录中的 `WorkspaceStore`，使用合成数据；客户端缓存和本机模式身份标记（authority）使用内存替身。它不启动浏览器，不访问真实平台或用户的 `.local`，已由文件命名自动纳入 `pnpm test` 及 CI 的非浏览器步骤。真实浏览器存储和页面交互仍按 [D017](adr/0017-manual-browser-testing.md) 由人工验收。
 
 BOSS 检查点、分页、恢复或消息依据格式变化时，先运行 `pnpm test:boss-contracts`。此命令固定选择已有的运行状态、历史读取/阶段/提交、实际采集入口和动作依据测试，包含跨轮与旧版本门槛，不启动浏览器、不读取真实工作区；新增格式影响其他调用者时相应扩充集合。它用于尽早发现契约联动问题，发布仍运行完整测试和其余检查。定点排障先按[已有材料核对](boss/OPERATIONS.md#定点排障先核对已有材料)，复用[维护入口](boss/IMPLEMENTATION.md#定点维护复用入口)，避免另写预算、锁与保存协议。
 

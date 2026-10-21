@@ -63,39 +63,63 @@ test('action confirmation updates existing automatic state once and preserves ma
   assert.equal(applied.opportunities.length, original.opportunities.length);
   assert.equal(applied.opportunities[0].resumeState, '已发送');
   assert.equal(applied.opportunities[0].stage, '沟通中');
+  assert.equal(applied.opportunities[0].readState, '已读');
+  assert.equal(applied.sourceApplications.at(-1).status, 'applied');
+  assert.equal(applied.sourceApplications.at(-1).reason, 'resume_status_advanced');
   assert.deepEqual(applyBossBatch(applied, batch(), options).data, applied);
   const manual = structuredClone(original);
   manual.opportunities[0].resumeState = '被索要';
   markManualFields(manual, manual.opportunities[0].id, ['resumeState']);
-  assert.equal(
-    applyBossBatch(manual, batch(), options).data.opportunities[0].resumeState,
-    '被索要',
-  );
+  const manualBefore = structuredClone(manual),
+    protectedManual = applyBossBatch(manual, batch(), options).data;
+  assert.deepEqual(protectedManual.opportunities, manualBefore.opportunities);
+  assert.deepEqual(protectedManual.sourceBindings, manualBefore.sourceBindings);
+  assert.equal(protectedManual.sourceApplications.at(-1).status, 'protected');
+  assert.equal(protectedManual.sourceApplications.at(-1).reason, 'manual_resume_state');
   const deleted = structuredClone(original);
   deleted.opportunities[0].deletedAt = CORRECTION_STAMP;
-  assert.equal(
-    applyBossBatch(deleted, batch(), options).data.opportunities[0].deletedAt,
-    CORRECTION_STAMP,
-  );
+  const deletedBefore = structuredClone(deleted),
+    protectedDeleted = applyBossBatch(deleted, batch(), options).data;
+  assert.deepEqual(protectedDeleted.opportunities, deletedBefore.opportunities);
+  assert.deepEqual(protectedDeleted.sourceBindings, deletedBefore.sourceBindings);
+  assert.equal(protectedDeleted.sourceApplications.at(-1).status, 'protected');
+  assert.equal(protectedDeleted.sourceApplications.at(-1).reason, 'opportunity_deleted');
 });
 
 test('action semantics do not bypass participants, cross-job checks or portfolio exclusion', () => {
-  const original = seed();
-  for (const overrides of [
-    { attribution: { ...batch().events[0].attribution, recipientId: 'another-self' } },
-    { resumeEvidence: { ...proof, annexType: 1 } },
+  const original = seed(),
+    before = structuredClone(original);
+  for (const [overrides, status, reason] of [
+    [
+      { attribution: { ...batch().events[0].attribution, recipientId: 'another-self' } },
+      'review',
+      'attribution_participant_conflict',
+    ],
+    [{ resumeEvidence: { ...proof, annexType: 1 } }, 'waiting', 'resume_semantics_missing'],
   ]) {
-    const result = applyBossBatch(original, batch(7, overrides), options).data;
-    assert.equal(result.opportunities[0].resumeState, '未知');
+    const input = batch(7, overrides),
+      result = applyBossBatch(original, input, options).data;
+    assert.deepEqual(result.opportunities, before.opportunities);
+    assert.deepEqual(result.sourceBindings, before.sourceBindings);
+    assert.equal(result.sourceApplications.at(-1).status, status);
+    assert.equal(result.sourceApplications.at(-1).reason, reason);
+    assert.equal(result.sourceApplications.at(-1).opportunityId, '');
+    assert.equal(result.sourceEvents.length, before.sourceEvents.length + 1);
+    assert.equal(result.sourceEvents.at(-1).id, input.events[0].eventId);
+    assert.equal(result.sourceEvents.at(-1).summary, 'resume_request_sent');
   }
   const conflict = applyBossBatch(
     original,
     correctionBatch(1, { ordinary: true, messageId: batch().events[0].messageId }),
     options,
   ).data;
-  const result = applyBossBatch(conflict, batch(), options).data;
-  assert.equal(result.opportunities[0].resumeState, '未知');
+  const conflictBefore = structuredClone(conflict),
+    result = applyBossBatch(conflict, batch(), options).data;
+  assert.deepEqual(result.opportunities, conflictBefore.opportunities);
+  assert.deepEqual(result.sourceBindings, conflictBefore.sourceBindings);
+  assert.equal(result.sourceApplications.at(-1).status, 'review');
   assert.equal(result.sourceApplications.at(-1).reason, 'attribution_message_multiple_jobs');
+  assert.equal(result.sourceApplications.at(-1).opportunityId, '');
 });
 
 test('both history checkpoint paths carry action evidence from v5, with private permissions', async () => {

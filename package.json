@@ -7,7 +7,7 @@
     "start": "node scripts/serve.mjs",
     "service": "node scripts/service-control.mjs",
     "boss": "node scripts/boss-control.mjs",
-    "test": "node --test test/*.test.mjs collector/boss/*.test.mjs",
+    "test": "node --test \"test/**/*.test.mjs\" \"collector/boss/**/*.test.mjs\"",
     "test:boss-contracts": "node --test collector/boss/runtime-state.test.mjs collector/boss/resume-history.test.mjs collector/boss/history-phase.test.mjs collector/boss/history-commit.test.mjs collector/boss/tracker.test.mjs test/boss-action-evidence.test.mjs",
     "check": "node scripts/check.mjs",
     "test:browser": "node --test test/browser-regression.mjs",

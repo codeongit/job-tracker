@@ -370,6 +370,7 @@ test('纯简历平台观察仅存档，不关联候选岗位或修改人工简�
   opportunity.stage = '面试中';
   opportunity.resumeState = '已索要';
   opportunity.readState = '未读';
+  const before = structuredClone(created.data);
   const observed = applyBossBatch(created.data, verifiedResumeBatch([resumeEvent()]), {
     workspaceSourceId: SOURCE_ID,
     stamp: '2026-09-20T08:02:00.000Z',
@@ -385,6 +386,11 @@ test('纯简历平台观察仅存档，不关联候选岗位或修改人工简�
   assert.equal(observed.data.opportunities[0].stage, '面试中');
   assert.equal(observed.data.opportunities[0].resumeState, '已索要');
   assert.equal(observed.data.opportunities[0].readState, '未读');
+  assert.deepEqual(observed.data.opportunities, before.opportunities);
+  assert.deepEqual(observed.data.sourceBindings, before.sourceBindings);
+  assert.equal(observed.data.sourceApplications.at(-1).status, 'no_effect');
+  assert.equal(observed.data.sourceApplications.at(-1).reason, 'observation_only');
+  assert.equal(observed.data.sourceApplications.at(-1).opportunityId, '');
   assert.equal(observed.data.sourceEvents.at(-1).eventType, 'resume_observed');
   assert.equal(
     latestPlatformObservation(observed.data, opportunity.id).eventType,
@@ -681,11 +687,19 @@ test('同一平台事实重复采到时详情只计一条观察', () => {
     sourceSequence: 2,
     observedAt: '2026-09-18T13:00:00.000Z',
   });
+  const before = structuredClone(first.data);
   const after = applyBossBatch(first.data, batch([repeated]), {
     workspaceSourceId: SOURCE_ID,
     stamp: '2026-09-18T13:01:00.000Z',
   });
   assert.equal(after.data.sourceEvents.length, 2);
+  assert.equal(after.data.sourceFacts.length, 1);
+  assert.equal(after.data.sourceApplications.length, 1);
+  assert.equal(after.data.sourceFacts[0].id, before.sourceFacts[0].id);
+  assert.equal(after.data.sourceApplications[0].id, before.sourceApplications[0].id);
+  assert.equal(after.data.sourceApplications[0].factId, before.sourceFacts[0].id);
+  for (const observation of after.data.sourceEvents)
+    assert.equal(observation.factId, before.sourceFacts[0].id);
   const opportunity = after.data.opportunities[0];
   const views = createViews(
     () => ({ state: { data: after.data }, selected: opportunity.id }),
@@ -720,6 +734,7 @@ test('岗位 ID 与现有 BOSS 链接冲突时不自动关联，跨账号不复�
     stamp: STAMP,
   });
   const withOther = bindBossAccount(first.data, OTHER_ACCOUNT, SOURCE_ID, STAMP);
+  const before = structuredClone(withOther);
   const differentAccount = applyBossBatch(
     withOther,
     batch([event({ account: OTHER_ACCOUNT })], { account: OTHER_ACCOUNT }),
@@ -727,6 +742,23 @@ test('岗位 ID 与现有 BOSS 链接冲突时不自动关联，跨账号不复�
   );
   assert.equal(differentAccount.counts.reviewed, 1);
   assert.equal(differentAccount.counts.added, 0);
+  assert.deepEqual(differentAccount.data.opportunities, before.opportunities);
+  assert.deepEqual(differentAccount.data.sourceBindings, before.sourceBindings);
+  assert.equal(differentAccount.data.sourceFacts.length, 2);
+  assert.equal(differentAccount.data.sourceApplications.length, 2);
+  assert.deepEqual(differentAccount.data.sourceFacts[0], before.sourceFacts[0]);
+  assert.deepEqual(differentAccount.data.sourceApplications[0], before.sourceApplications[0]);
+  const otherFact = differentAccount.data.sourceFacts[1],
+    otherApplication = differentAccount.data.sourceApplications[1];
+  assert.equal(otherFact.accountNamespace, OTHER_ACCOUNT);
+  assert.notEqual(otherFact.id, before.sourceFacts[0].id);
+  assert.notEqual(otherApplication.id, before.sourceApplications[0].id);
+  assert.equal(otherApplication.factId, otherFact.id);
+  assert.equal(differentAccount.data.sourceEvents.at(-1).factId, otherFact.id);
+  assert.equal(otherApplication.status, 'review');
+  assert.equal(otherApplication.reason, 'identity_conflict');
+  // Review retains the conflicting candidate without granting the other account a binding.
+  assert.equal(otherApplication.opportunityId, before.opportunities[0].id);
 });
 
 test('人工清空自动字段受到保护，旧批次不覆盖更新观察；删除岗位不会复活', () => {
