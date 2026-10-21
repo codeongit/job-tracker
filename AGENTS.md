@@ -1,45 +1,65 @@
-# Project boundaries
+# 代理工作约定
 
-- Read the [ADR index](docs/adr/README.md) and relevant [ADRs](docs/adr/) first for accepted decisions, rationale, and review triggers. Read [CONTEXT.md](CONTEXT.md) for domain terms. When changing a key decision, add the next numbered ADR with its source and supersession links; retain the old ADR and update the index. New user instructions take precedence over older decisions.
-- Code changes: follow [change workflow](docs/agents/change-workflow.md) before implementation and during review to verify the current mechanism and intended behavior separately; scale evidence to the affected scope.
+## 任务路由
 
-- Recruitment automation must follow [docs/AUTOMATION_POLICY.md](docs/AUTOMATION_POLICY.md): serial operation, recruitment-platform reads only, no replies/applications or unplanned actions, deterministic scripts, and minimal private incident evidence. [BOSS tracking](docs/boss/DESIGN.md#目标与范围) runs only after explicit tracking start; starting/restarting the local service does not authorize BOSS access or resume a previous tracking session. Never install login autostart or enable automatic GitHub sync as a side effect.
+- 开始任务前，读取 [ADR 索引](docs/adr/README.md)、相关 [ADR](docs/adr/) 和 [CONTEXT.md](CONTEXT.md)，核对已接受的决定、理由、重新评估条件及领域术语。当前系统行为从下方文档索引中的架构、数据与恢复、维护手册进入。
+- 代码改动前及审查时，遵循[变更流程](docs/agents/change-workflow.md)，分别核对现有机制与目标行为，证据范围随影响调整。实施决策前及 Standards 审查时读取相关[编码规范](CODING_STANDARDS.md)，详细契约与流程沿文档指针查阅。
+- 用户的新指示优先于旧决定。改变关键决定时，新增下一编号的 ADR，写明来源并附替代关系链接，保留旧 ADR 并更新索引。
+- BOSS 变更按文档索引中的触发条件读取设计、实现或操作说明；同次更新受影响文档，或说明现有描述仍准确的依据。结论按[文档维护流程](docs/agents/change-workflow.md#文档影响与维护)接受独立审查。
 
-- This repository contains publicly shareable interface code. Never add real job records, resume files, private repository content, or credentials to tracked files or `dist/`.
-- Local-mode authoritative data lives in ignored `.local/workspace/` immutable commits with an atomic HEAD and one service writer. IndexedDB is its read cache; service failure must not silently fall back to independent browser writes. Public/mobile static mode retains its independent IndexedDB and manual private GitHub sync. Local source configuration belongs in ignored `.local/config.json`.
-- Keep GitHub writes limited to the configured JSON path. Verify the repository is private and the branch exists before first-time initialization.
-- Never replace unknown/invalid remote data with empty data. Preserve pending local edits, deletion markers, and upload-time conflicts.
-- Keep tokens in page memory only. Do not persist them, include them in exports, log them, or inject them at build time.
-- Local SSH sync must use a fixed server-side target, a separate ignored bare cache, loopback binding, Host/Origin checks, and random session authorization. Never read or expose private key material, operate on the user's Obsidian checkout, or force-push. Verify the commit changes only the configured JSON path.
-- Real-browser testing is owned by the user/manual tester (D017), including Playwright/headless browsers and browser-control tools. Unless the user explicitly delegates it later, agents must not launch or control browsers, install browser dependencies, or request browser-testing permissions. Agents run relevant non-browser tests, `pnpm check`, and `pnpm format:check`; before release, run the full `pnpm test` suite. Hand off a concise manual checklist and report browser acceptance as pending until the user confirms it.
-- Do not run `pnpm verify` locally as an agent: it includes `pnpm test:browser`. Existing browser scripts and CI remain available and unchanged; CI results do not replace manual acceptance. Browser regression uses temporary profiles, a dist-only static server, and mocked external APIs; never point it at the user's running workspace or private GitHub data.
-- Deploy only `dist/`. Publishing a source repository and publishing personal records are separate actions.
+## 团队红线
 
-- Start with docs/ARCHITECTURE.md, docs/DATA_AND_RECOVERY.md, and docs/MAINTENANCE.md for module boundaries, migrations, recovery semantics, and release steps.
-- BOSS changes: read [DESIGN](docs/boss/DESIGN.md) before changing behavior, attribution, business rules or budgets; read [IMPLEMENTATION](docs/boss/IMPLEMENTATION.md) before changing modules, fields, delivery or recovery contracts; read [OPERATIONS](docs/boss/OPERATIONS.md) before changing commands, status explanations or troubleshooting. Update affected documentation in the same change, or explain why the described behavior and contracts remain accurate; use the [change workflow](docs/agents/change-workflow.md#文档影响与维护) and independent review to verify that conclusion.
-- Update package.json and dist/version.js together and record behavior changes in CHANGELOG.md. Use Node24 and the pinned pnpm/lockfile.
-- Unknown data fields or future versions must stop writes, never silently disappear. Migrate data/base/pending together and preserve the old workspace in the same transaction.
-- Local mutations use the versioned service command API, expected revision and durable idempotency key. A response retry reuses the exact command; revision conflicts require fresh user review, not blind replay. Keep source facts separate from application decisions; preserve legacy event IDs, account isolation, deletion markers and manual field ownership.
-- Scope background-import conflicts to affected opportunities and their dependencies. Rebase independent changes into the pending candidate while preserving both conflict sides; newly introduced merge conflicts abort that batch. A disk queue receipt is not proof that restored workspace data still contains its facts.
-- Restore is a new local edit: keep the current baseline and tombstone omitted records. Pending backups must preserve both sides; do not treat missing backup content as empty data.
-- Snapshot creation failure must abort the paired edit. Emergency raw export must remain available even when validation fails or data exceeds the sync limit.
-- Check final serialized UTF-8 bytes before all remote writes. Read SSH stdout as bytes, then decode strictly. Never log raw private Git output.
-- Use pnpm format and format:check; dist contains authored source, not generated build output. Keep view rendering, persistence, and pure data rules in their corresponding modules.
+### 平台访问与隐私
 
-- Drafts contain only explicitly allowed job/task/activity fields. Never auto-submit drafts or persist settings/PATs. Resume with a fresh ID; clear only the submitted immutable revision. A draft-cleanup failure must not turn a committed record into a failed save.
-- Prepare and preflight all imported drafts before restoring the workspace; roll back prepared copies on failure. Keep both data and conflict state in full backups.
-- Disk backups stay in ignored `.local/backups/`, independent of SSH and browser clearing. Keep daily first snapshots and atomic latest replacement; test only with temporary directories and synthetic data.
+- 招聘自动化遵循[自动化规约](docs/AUTOMATION_POLICY.md)：串行操作、招聘平台只读、使用确定性脚本；不回复、不投递、不执行计划外动作，故障证据只保留必要的最小私有材料。
+- [BOSS 跟踪](docs/boss/DESIGN.md#目标与范围)必须由用户显式开始。启动或重启本机服务不授权平台访问，也不恢复上次跟踪。不得顺带安装登录自启或启用 GitHub 自动同步。
+- 本仓库保存可公开分享的界面代码。真实求职记录、简历文件、私有仓库内容及凭据不得进入受版本控制的文件或 `dist/`。
+- 令牌只保存在页面内存；不得持久化、放入导出、写入日志或在构建时注入。
 
-## Agent skills
+### 本机数据与写入
 
-### Issue tracker
+- 本机模式的权威数据位于忽略的 `.local/workspace/`，采用不可变提交、原子 HEAD 和唯一服务写入者。IndexedDB 只是读缓存；服务失败时不得静默退回独立浏览器写入。公开网页和移动端的静态模式保留独立 IndexedDB 与手动私有 GitHub 同步。本机来源配置放在忽略的 `.local/config.json`。
+- 遇到未知字段或未来版本时停止写入，不得静默丢弃。迁移须同时处理 `data`、`base`、`pending`，并在同一事务中保留旧工作区。
+- 本机修改使用版本化服务命令 API、预期 revision 和持久幂等键。响应重试复用完全相同的命令；revision 冲突须由用户重新审阅，不得盲目重放。
+- 来源事实与应用决定分开；保留旧事件 ID、账号隔离、删除标记和人工字段所有权。
 
-Issues and specs are tracked in GitHub Issues for `codeongit/job-tracker`. See `docs/agents/issue-tracker.md`.
+### 同步与冲突
 
-### Triage labels
+- GitHub 写入仅限配置的 JSON 路径；首次初始化前验证仓库为私有且分支已存在。不得用空数据覆盖未知或无效远端内容，须保留待提交本机编辑、删除标记及上传期间的冲突。
+- 本机 SSH 同步使用固定服务端目标、独立且被忽略的裸仓库缓存、环回地址绑定、Host/Origin 校验和随机会话授权。不得读取或暴露私钥、操作用户的 Obsidian 工作副本或强制推送；验证提交只修改配置的 JSON 路径。
+- 所有远端写入前，检查最终序列化后的 UTF-8 字节大小。SSH 标准输出先按字节读取，再严格解码；不得记录原始私有 Git 输出。
+- 后台导入冲突仅阻塞相关岗位机会及其依赖。独立变更重基到 `pending` 候选，并保留冲突双方；新引入的合并冲突须中止该批次。
+- 磁盘队列回执不能证明恢复后的工作区仍包含对应事实。
 
-The five triage state roles use their default label names. See `docs/agents/triage-labels.md`.
+### 恢复、草稿与备份
 
-### Domain docs
+- 恢复视为一次新的本机编辑：保留当前基线，为被省略的记录建立删除标记。含 `pending` 的备份须保留双方；缺失的备份内容不能当成空数据。
+- 快照创建失败须中止配套编辑。验证失败或数据超过同步限制时，仍须保留紧急原始导出能力。
+- 草稿只包含明确允许的岗位、任务和活动字段，不自动提交，不保存设置或 PAT。恢复草稿使用新 ID，只清理本次已提交的不可变修订；草稿清理失败不能把已提交记录判为保存失败。
+- 恢复工作区前，准备并预检全部导入草稿；失败时回滚已准备的副本。完整备份同时保留数据与冲突状态。
+- 磁盘备份放在忽略的 `.local/backups/`，独立于 SSH 和浏览器清理。保留每日首份快照，原子替换 latest；测试只使用临时目录和合成数据。
 
-Single-context layout: `CONTEXT.md` at the repo root and ADRs in `docs/adr/`. See `docs/agents/domain.md`.
+### 测试与发布
+
+- 真实浏览器测试由用户或人工测试者负责（[D017](docs/adr/0017-manual-browser-testing.md)），包括 Playwright 和 headless 浏览器。除非用户后续明确委托，代理不得启动或控制浏览器、安装浏览器依赖或申请浏览器测试权限。
+- 代理运行相关非浏览器测试、`pnpm check` 和 `pnpm format:check`，使用 `pnpm format` 格式化；发布前运行完整 `pnpm test`。交付简短人工验收清单，用户确认前标明浏览器验收待完成。
+- 代理本地不运行 `pnpm verify`，因为它包含 `pnpm test:browser`。既有浏览器脚本和 CI 保持可用且不改动，CI 结果不能替代人工验收。浏览器回归使用临时 profile、仅服务 `dist/` 的静态服务器及模拟外部 API，不得指向用户正在运行的工作区或私有 GitHub 数据。
+- 使用 Node 24、固定版本的 pnpm 和锁文件。`package.json` 与 `dist/version.js` 同步更新，行为变化记录在 `CHANGELOG.md`。
+- `dist/` 是直接维护的源码，不是生成的构建产物；仅部署 `dist/`。发布源码与发布个人记录是两项独立操作。
+
+## 文档索引
+
+| 要处理的内容                     | 先读资料                                |
+| -------------------------------- | --------------------------------------- |
+| 当前架构、模块职责与依赖         | [架构说明](docs/ARCHITECTURE.md)        |
+| 数据所有者、格式迁移、同步与恢复 | [数据与恢复](docs/DATA_AND_RECOVERY.md) |
+| 开发检查、发布、回退与通用排障   | [维护手册](docs/MAINTENANCE.md)         |
+| BOSS 行为、归属、业务规则或额度  | [设计说明](docs/boss/DESIGN.md)         |
+| BOSS 模块、字段、交付或恢复契约  | [实现说明](docs/boss/IMPLEMENTATION.md) |
+| BOSS 命令、状态解释或排障        | [操作说明](docs/boss/OPERATIONS.md)     |
+
+### 代理技能索引（Agent skills）
+
+- 议题与规格保存在 `codeongit/job-tracker` 的 GitHub Issues；处理前读取[议题跟踪约定](docs/agents/issue-tracker.md)。
+- 五种分流状态使用默认标签名；设置或调整标签前读取[标签映射](docs/agents/triage-labels.md)。
+- 领域文档采用单上下文布局：根目录 `CONTEXT.md` 与 `docs/adr/`；维护时读取[领域文档约定](docs/agents/domain.md)。
