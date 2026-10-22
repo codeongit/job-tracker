@@ -1,6 +1,6 @@
 ---
 name: setup-matt-pocock-skills
-description: "Configure this repo for the engineering skills: set up its issue tracker, triage label vocabulary, and domain doc layout. Run once before first use of the other engineering skills."
+description: 'Configure this repo for the engineering skills: set up its issue tracker, triage label vocabulary, and domain doc layout. Run once before first use of the other engineering skills.'
 disable-model-invocation: true
 ---
 
@@ -60,12 +60,14 @@ The defaults are the five canonical roles, each label string equal to its name: 
 
 Offer **multi-context** (a root `CONTEXT-MAP.md` pointing to per-context `CONTEXT.md` files) only when exploration found monorepo signals. Then confirm which layout they want.
 
+Reuse the repository's existing domain-documentation entry point. When the layout and the roles of the glossary, decision history, and current-behaviour docs already live in the agent instructions, maintain them there. Otherwise add a short entry there using the example below. Keep one authoritative entry instead of creating a separate domain-routing document with the same rules.
+
 ### 3. Confirm and edit
 
 Show the user a draft of:
 
-- The `## Agent skills` block to add to whichever of `CLAUDE.md` / `AGENTS.md` is being edited (see step 4 for selection rules)
-- The contents of `docs/agents/issue-tracker.md`, `docs/agents/domain.md`, and `docs/agents/triage-labels.md` (the last only when `triage` is installed)
+- The changes to whichever of `CLAUDE.md` / `AGENTS.md` is being edited, including the existing domain-documentation entry or a new short entry (see step 4 for selection rules)
+- The contents of `docs/agents/issue-tracker.md` and `docs/agents/triage-labels.md` (the latter only when `triage` is installed)
 
 Let them edit before writing.
 
@@ -80,6 +82,8 @@ Let them edit before writing.
 Never create `AGENTS.md` when `CLAUDE.md` already exists (or vice versa); always edit the one that's already there.
 
 If an `## Agent skills` block already exists in the chosen file, update its contents in-place rather than appending a duplicate. Don't overwrite user edits to the surrounding sections.
+
+If an existing task-routing rule already covers domain documentation, update that rule and omit the `### Domain docs` sub-block below.
 
 The block:
 
@@ -96,7 +100,7 @@ The block:
 
 ### Domain docs
 
-[one-line summary of layout: "single-context" or "multi-context"]. See `docs/agents/domain.md`.
+[short summary of the layout, where domain terms and decision history live, and where to read current behaviour; link to the repository's authoritative entries].
 ```
 
 Include the `### Triage labels` sub-block, and write `docs/agents/triage-labels.md`, only when `triage` is installed and Section B ran. When it isn't, both are omitted.
@@ -107,7 +111,8 @@ Then write the docs files using the seed templates in this skill folder as a sta
 - [issue-tracker-gitlab.md](./issue-tracker-gitlab.md): GitLab issue tracker
 - [issue-tracker-local.md](./issue-tracker-local.md): local-markdown issue tracker
 - [triage-labels.md](./triage-labels.md): label mapping (only if `triage` is installed)
-- [domain.md](./domain.md): domain doc consumer rules + layout
+
+Use [domain.md](./domain.md) as reference material for the domain-documentation entry in the chosen agent-instructions file. Adapt only the relevant guidance to existing repository conventions; this template is not an additional output document.
 
 For "other" issue trackers, write `docs/agents/issue-tracker.md` from scratch using the user's description.
 
