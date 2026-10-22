@@ -1,60 +1,30 @@
-# CONTEXT.md Format
+# CONTEXT.md 格式
 
-## Structure
-
-```md
-# {Context Name}
-
-{One or two sentence description of what this context is and why it exists.}
-
-## Language
-
-**Order**:
-{A one or two sentence description of the term}
-_Avoid_: Purchase, transaction
-
-**Invoice**:
-A request for payment sent to a customer after delivery.
-_Avoid_: Bill, payment request
-
-**Customer**:
-A person or organization that places orders.
-_Avoid_: Client, buyer, account
-```
-
-## Rules
-
-- **Be opinionated.** When multiple words exist for the same concept, pick the best one and list the others under `_Avoid_`.
-- **Keep definitions tight.** One or two sentences max. Define what it IS, not what it does.
-- **Only include terms specific to this project's context.** General programming concepts (timeouts, error types, utility patterns) don't belong even if the project uses them extensively. Before adding a term, ask: is this a concept unique to this context, or a general programming concept? Only the former belongs.
-- **Group terms under subheadings** when natural clusters emerge. If all terms belong to a single cohesive area, a flat list is fine.
-
-## Single vs multi-context repos
-
-**Single context (most repos):** One `CONTEXT.md` at the repo root.
-
-**Multiple contexts:** A `CONTEXT-MAP.md` at the repo root lists the contexts, where they live, and how they relate to each other:
+沿用仓库现有词汇表的结构和语言。以下格式用于没有既有格式的项目，示例只展示概念定义与区别。
 
 ```md
-# Context Map
+# 求职跟踪领域
 
-## Contexts
+记录个人对具体岗位的跟进、已发生的交流和待完成的行动。
 
-- [Ordering](./src/ordering/CONTEXT.md): receives and tracks customer orders
-- [Billing](./src/billing/CONTEXT.md): generates invoices and processes payments
-- [Fulfillment](./src/fulfillment/CONTEXT.md): manages warehouse picking and shipping
+## 语言
 
-## Relationships
+**岗位机会**：一个正在或曾经跟进的具体岗位。同一公司的不同岗位是不同机会。
+_避免_：把公司或单条会话当作岗位机会。
 
-- **Ordering → Fulfillment**: Ordering emits `OrderPlaced` events; Fulfillment consumes them to start picking
-- **Fulfillment → Billing**: Fulfillment emits `ShipmentDispatched` events; Billing consumes them to generate invoices
-- **Ordering ↔ Billing**: Shared types for `CustomerId` and `Money`
+**沟通记录**：围绕岗位机会已发生的一次交流或进展记录。
+_区别_：下一步行动记录计划、完成或取消的待办。
 ```
 
-The skill infers which structure applies:
+## 编写规则
 
-- If `CONTEXT-MAP.md` exists, read it to find contexts
-- If only a root `CONTEXT.md` exists, single context
-- If neither exists, create a root `CONTEXT.md` lazily when the first term is resolved
+- **统一同一概念的用词。** 选择一个规范名称；必要时注明容易混用的称呼或相近概念。外部平台用语和历史标识的映射另行说明，命名统一本身不授权改写协议或历史数据。
+- **定义简短。** 通常一到两句话，说明它是什么，以及区分相近概念所需的关系或边界。详细流程、状态转换和实现方案放入对应文档。
+- **收录有领域含义的概念。** 词语本身可以常见，关键是其在当前业务中的含义需要明确。通用编程知识不作为领域术语收录。
+- **按自然主题分组。** 术语形成清晰分组时使用小标题；同属一个主题时保留平铺列表。
 
-When multiple contexts exist, infer which one the current topic relates to. If unclear, ask.
+## 文件位置
+
+优先沿用仓库已确定的上下文边界。本仓库的单上下文布局由 [AGENTS.md](../../../AGENTS.md#任务路由) 规定。
+
+其他项目没有布局约定时：已有 `CONTEXT-MAP.md` 就按其指向定位相关上下文；只有根目录 `CONTEXT.md` 时使用该词汇表；两者都没有时，在第一个术语明确且任务需要写入时创建根目录词汇表。多上下文中先根据主题和已有边界定位，仍有会影响结论的歧义时再询问用户。

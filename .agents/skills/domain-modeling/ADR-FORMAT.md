@@ -1,47 +1,30 @@
-# ADR Format
+# ADR 格式与维护
 
-ADRs live in `docs/adr/` and use sequential numbering: `0001-slug.md`, `0002-slug.md`, etc.
+## 优先遵循仓库约定
 
-Create the `docs/adr/` directory lazily: only when the first ADR is needed.
+创建或调整决定记录前，先读取仓库的 ADR 索引、相关决定及替代关系。本仓库使用 [ADR 维护约定](../../../docs/adr/README.md#如何维护) 和[新决策模板](../../../docs/adr/README.md#新决策模板)，编号、标题、来源、重新评估条件及索引更新均以该入口为准。
 
-## Template
+用户的新明确要求优先于旧决定。改变关键决定时，按 [R003](../../../AGENTS.md#任务路由) 新增 ADR、注明来源与替代关系、保留旧记录并更新索引；不能因决定容易逆转而跳过。已有任务授权包含记录时直接完成，无需为创建 ADR 重复索取确认。
+
+## 没有既有约定时的缺省规则
+
+以下规则仅用于没有 ADR 制度的项目。用户明确要求记录时按要求处理；否则，仅当三个条件都成立时建议新增 ADR：
+
+1. **改变代价明显**：后续改变决定需要承担有意义的成本。
+2. **缺少背景容易误解**：未来维护者需要知道为什么这样选择。
+3. **存在真实取舍**：确实比较过可行方案，并有选择依据。
+
+例如，数据所有权边界、跨上下文协作方式或迁移成本明显的技术选择可能值得记录。日常修复和内部整理通常只需任务说明。
+
+默认使用 `docs/adr/NNNN-topic.md`，从现有最大编号加一；首次需要记录时再创建目录。记录可以简短，重点是保留来源、决定与理由：
 
 ```md
-# {Short title of the decision}
+# NNNN：决定名称
 
-{1-3 sentences: what's the context, what did we decide, and why.}
+- 状态与来源：决定是否已接受，由谁提出或根据什么契约形成。
+- 问题与决定：需要解决的问题、采用的方案及适用范围。
+- 原因与取舍：实际比较过的方案、选择依据及接受的代价。
+- 重新评估条件：哪些变化会使决定需要重新考虑。
 ```
 
-That's it. An ADR can be a single paragraph. The value is in recording *that* a decision was made and *why*, not in filling out sections.
-
-## Optional sections
-
-Only include these when they add genuine value. Most ADRs won't need them.
-
-- **Status** frontmatter (`proposed | accepted | deprecated | superseded by ADR-NNNN`): useful when decisions are revisited
-- **Considered Options**: only when the rejected alternatives are worth remembering
-- **Consequences**: only when non-obvious downstream effects need to be called out
-
-## Numbering
-
-Scan `docs/adr/` for the highest existing number and increment by one.
-
-## When to offer an ADR
-
-All three of these must be true:
-
-1. **Hard to reverse**: the cost of changing your mind later is meaningful
-2. **Surprising without context**: a future reader will look at the code and wonder "why on earth did they do it this way?"
-3. **The result of a real trade-off**: there were genuine alternatives and you picked one for specific reasons
-
-If a decision is easy to reverse, skip it: you'll just reverse it. If it's not surprising, nobody will wonder why. If there was no real alternative, there's nothing to record beyond "we did the obvious thing."
-
-### What qualifies
-
-- **Architectural shape.** "We're using a monorepo." "The write model is event-sourced, the read model is projected into Postgres."
-- **Integration patterns between contexts.** "Ordering and Billing communicate via domain events, not synchronous HTTP."
-- **Technology choices that carry lock-in.** Database, message bus, auth provider, deployment target. Not every library: just the ones that would take a quarter to swap out.
-- **Boundary and scope decisions.** "Customer data is owned by the Customer context; other contexts reference it by ID only." The explicit no-s are as valuable as the yes-s.
-- **Deliberate deviations from the obvious path.** "We're using manual SQL instead of an ORM because X." Anything where a reasonable reader would assume the opposite. These stop the next engineer from "fixing" something that was deliberate.
-- **Constraints not visible in the code.** "We can't use AWS because of compliance requirements." "Response times must be under 200ms because of the partner API contract."
-- **Rejected alternatives when the rejection is non-obvious.** If you considered GraphQL and picked REST for subtle reasons, record it; otherwise someone will suggest GraphQL again in six months.
+按需要补充约束、后果或替代关系。区分实际讨论与事后比较，接受决定与完成实施、验收分别记录。替代旧决定时保留其理由，并通过替代链接及已有索引标明关系。

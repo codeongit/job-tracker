@@ -1,74 +1,49 @@
 ---
 name: domain-modeling
-description: Build and sharpen a project's domain model. Use when discussing codebase terminology, writing or editing a CONTEXT.md, or recording or editing an ADR.
+description: 澄清或调整领域概念、关系和业务边界，维护 CONTEXT.md 术语表或记录关键决定时使用。
 ---
 
-# Domain Modeling
+# 领域建模
 
-Actively build and sharpen the project's domain model as you design. This is the *active* discipline: challenging terms, inventing edge-case scenarios, and writing the glossary and decisions down the moment they crystallise. (Merely *reading* `CONTEXT.md` for vocabulary is not this skill: that's a one-line habit any skill can do. This skill is for when you're changing the model, not just consuming it.)
+在设计过程中主动检验概念：澄清术语，用具体场景检查边界，并及时保存有依据的共识。仅读取或解释已有术语时，沿用词汇表即可。
 
-## File structure
+## 先定位已有约定
 
-Most repos have a single context:
+先按仓库约定读取当前主题的术语、相关决定及行为说明。本仓库的读取入口与单上下文布局见 [AGENTS.md](../../../AGENTS.md#任务路由)；术语、当前行为和决策历史分别在各自的权威文档中维护。
 
-```
-/
-├── CONTEXT.md
-├── docs/
-│   └── adr/
-│       ├── 0001-event-sourced-orders.md
-│       └── 0002-postgres-for-write-model.md
-└── src/
-```
+仓库已有的文档布局、格式和决策维护规则优先于本技能的缺省格式。只有需要记录内容且缺少对应文件时才创建文件。
 
-If a `CONTEXT-MAP.md` exists at the root, the repo has multiple contexts. The map points to where each one lives:
+## 澄清概念与依据
 
-```
-/
-├── CONTEXT-MAP.md
-├── docs/
-│   └── adr/                          ← system-wide decisions
-├── src/
-│   ├── ordering/
-│   │   ├── CONTEXT.md
-│   │   └── docs/adr/                 ← context-specific decisions
-│   └── billing/
-│       ├── CONTEXT.md
-│       └── docs/adr/
-```
+发现同词异义、概念混用或与词汇表不一致时，指出差异，并提出能体现业务含义的名称。先用现有上下文和材料消除歧义；只有差异会影响业务判断、且现有依据不足时才向用户提问。
 
-Create files lazily: only when you have something to write. If no `CONTEXT.md` exists, create one when the first term is resolved. If no `docs/adr/` exists, create it when the first ADR is needed.
+核对用户描述与相关代码、测试和文档，区分三类依据：
 
-## During the session
+- **当前行为**：代码及运行证据说明系统现在如何工作，可能包含缺陷。
+- **目标行为**：用户明确要求、已确认业务规则及外部契约说明应该如何工作；新要求按仓库规则处理与旧决定的关系。
+- **待验证假设**：尚缺证据的解释或推测，保持未确认状态。
 
-### Challenge against the glossary
+发现不一致时，说明差异及其影响，再判断需要修正实现、更新说明还是补充证据。用户已经明确提出目标变化时，按该目标推进。
 
-When the user uses a term that conflicts with the existing language in `CONTEXT.md`, call it out immediately. "Your glossary defines 'cancellation' as X, but you seem to mean Y. Which is it?"
+## 用场景检验边界
 
-### Sharpen fuzzy language
+围绕当前讨论构造具体场景，检查相近概念的区别、关系和适用条件。选择能改变判断的边界情况，明确哪些是合成场景、哪些已有真实依据。
 
-When the user uses vague or overloaded terms, propose a precise canonical term. "You're saying 'account': do you mean the Customer or the User? Those are different things."
+例如，“平台职位关闭，但求职者仍在跟进”可以检验平台可用状态与个人跟进状态是否分开；“来源事实存在，但尚未形成来源应用”可以检验观察与应用决定是否分开。场景结论必须有业务依据，不能只根据名称或当前实现推导。
 
-### Discuss concrete scenarios
+## 记录已经明确的结论
 
-When domain relationships are being discussed, stress-test them with specific scenarios. Invent scenarios that probe edge cases and force the user to be precise about the boundaries between concepts.
+任务包含领域文档维护时，将用户明确要求或已确认契约支持的术语及时写入 `CONTEXT.md`；仅做分析时交付建议，写入范围遵循当前任务授权。候选解释保留为待验证项，不直接写成正式定义。
 
-### Cross-reference with code
+术语表只说明概念含义及必要区别，格式见 [CONTEXT-FORMAT.md](CONTEXT-FORMAT.md)。详细业务规则与场景结论进入已有设计或行为说明；实现细节进入相应技术文档。沿用权威正文，其他位置按需引用。
 
-When the user states how something works, check whether the code agrees. If you find a contradiction, surface it: "Your code cancels entire Orders, but you just said partial cancellation is possible. Which is right?"
+涉及关键决定时，按 [ADR-FORMAT.md](ADR-FORMAT.md) 定位仓库的维护约定与模板。仓库要求记录的决定按其规则处理；缺省筛选条件仅用于没有既有约定的项目。
 
-### Update CONTEXT.md inline
+## 完成条件
 
-When a term is resolved, update `CONTEXT.md` right there. Don't batch these up: capture them as they happen. Use the format in [CONTEXT-FORMAT.md](./CONTEXT-FORMAT.md).
+按本次讨论范围核对：
 
-`CONTEXT.md` should be totally devoid of implementation details. Do not treat `CONTEXT.md` as a spec, a scratch pad, or a repository for implementation decisions. It is a glossary and nothing else.
-
-### Offer ADRs sparingly
-
-Only offer to create an ADR when all three are true:
-
-1. **Hard to reverse**: the cost of changing your mind later is meaningful
-2. **Surprising without context**: a future reader will wonder "why did they do it this way?"
-3. **The result of a real trade-off**: there were genuine alternatives and you picked one for specific reasons
-
-If any of the three is missing, skip the ADR. Use the format in [ADR-FORMAT.md](./ADR-FORMAT.md).
+- 已明确的概念定义一致，相近概念能用具体场景区分。
+- 当前行为、目标行为和未决问题已分清；会改变结论的缺口说明所需证据或用户决定。
+- 需要保存的术语、业务规则和关键决定已进入对应文档；仅分析时给出建议落点。
+- 未决问题保留为未决，实际实施与验收状态有依据。
