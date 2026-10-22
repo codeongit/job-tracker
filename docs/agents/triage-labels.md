@@ -1,15 +1,13 @@
-# Triage Labels
+# 议题分流标签
 
-The skills speak in terms of five canonical triage roles. This file maps those roles to the actual label strings used in this repo's issue tracker.
+本项目约定使用以下五种默认分流状态。技能提到某种状态时，使用表中对应的 GitHub 标签名称；名称保留英文标识，含义如下。
 
-| Label in mattpocock/skills | Label in our tracker | Meaning                                  |
-| -------------------------- | -------------------- | ---------------------------------------- |
-| `needs-triage`             | `needs-triage`       | Maintainer needs to evaluate this issue  |
-| `needs-info`               | `needs-info`         | Waiting on reporter for more information |
-| `ready-for-agent`          | `ready-for-agent`    | Fully specified, ready for an AFK agent  |
-| `ready-for-human`          | `ready-for-human`    | Requires human implementation            |
-| `wontfix`                  | `wontfix`            | Will not be actioned                     |
+| 分流状态     | GitHub 标签       | 含义                         |
+| ------------ | ----------------- | ---------------------------- |
+| 待分流       | `needs-triage`    | 需要维护者评估议题           |
+| 待补充信息   | `needs-info`      | 等待报告者提供更多信息       |
+| 可交代理实施 | `ready-for-agent` | 规格完整，可交给代理独立实施 |
+| 需人工实施   | `ready-for-human` | 需要人工实施                 |
+| 不予处理     | `wontfix`         | 已决定不实施                 |
 
-When a skill mentions a role (e.g. "apply the AFK-ready triage label"), use the corresponding label string from this table.
-
-Edit the right-hand column to match whatever vocabulary you actually use.
+本表记录项目约定，不代表远端已经创建或正确使用了这些标签。操作前按[议题跟踪约定](issue-tracker.md#分流与标签)核对实际标签；变更约定时同步更新本表和受影响的使用说明。

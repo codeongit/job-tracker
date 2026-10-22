@@ -1,14 +1,9 @@
-# Domain docs
+# 领域文档约定
 
-This is a single-context repository. `CONTEXT.md` at the repo root defines domain terms. `docs/adr/` holds the full numbered decision history; [its README](../adr/README.md) is the sole index.
+本仓库采用单上下文布局，各类信息分别维护：
 
-## Before exploring
+- 根目录 [CONTEXT.md](../../CONTEXT.md) 定义领域术语。议题、方案和代码中的概念沿用这些名称。
+- [docs/adr/](../adr/) 保存完整的编号决策历史，[ADR 索引](../adr/README.md) 是唯一索引。实施选择及其理由写入 ADR，维护方式见[ADR 维护约定](../adr/README.md#如何维护)。
+- 当前行为与操作说明按 [AGENTS 文档索引](../../AGENTS.md#文档索引)进入对应正文；词汇表只解释概念。
 
-- Read the [ADR index](../adr/README.md) and relevant ADRs for accepted decisions, rationale, supersession, and review triggers.
-- Read `CONTEXT.md` for the relevant domain language.
-- Read relevant parts of `docs/ARCHITECTURE.md`, `docs/DATA_AND_RECOVERY.md`, and `docs/MAINTENANCE.md` for current behavior.
-- For BOSS behavior, modules/contracts, or commands/troubleshooting, read [DESIGN](../boss/DESIGN.md), [IMPLEMENTATION](../boss/IMPLEMENTATION.md), or [OPERATIONS](../boss/OPERATIONS.md) respectively. Follow the [documentation maintenance workflow](change-workflow.md#文档影响与维护).
-
-When a key decision changes, add the next numbered ADR with its source and supersession links, retain the old ADR, and update the index. Do not rewrite the old rationale. New user instructions take precedence over older decisions.
-
-Use terms defined in `CONTEXT.md` when naming concepts in issues, proposals, and code. Keep implementation choices in ADRs and current behavior in the operational docs, not in the glossary. Surface conflicts with existing decisions explicitly.
+任务开始时的读取要求和用户新指示的优先级见 [AGENTS 任务路由](../../AGENTS.md#任务路由)。维护时明确指出与既有决定的冲突，并按[文档影响与维护流程](change-workflow.md#文档影响与维护)同步正文和引用。

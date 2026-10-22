@@ -4,10 +4,11 @@
 
 ## 任务路由
 
-- **R001** 开始任务前，读取 [ADR 索引](docs/adr/README.md)、相关 [ADR](docs/adr/) 和 [CONTEXT.md](CONTEXT.md)，核对已接受的决定、理由、重新评估条件及领域术语。当前系统行为从下方文档索引中的架构、数据与恢复、维护手册进入。
+- **R001** 开始任务前，读取 [ADR 索引](docs/adr/README.md)、相关 [ADR](docs/adr/) 和 [CONTEXT.md](CONTEXT.md)，核对已接受的决定、理由、重新评估条件及领域术语。当前系统行为从下方文档索引中的架构、数据与恢复、维护手册进入。维护领域文档时，遵循单上下文的[领域文档约定](docs/agents/domain.md)。
 - **R002** 代码改动前及审查时，遵循[变更流程](docs/agents/change-workflow.md)，分别核对现有机制与目标行为，证据范围随影响调整。实施决策前及 Standards 审查时读取相关[编码规范](CODING_STANDARDS.md)，详细契约与流程沿文档指针查阅。
 - **R003** 用户的新指示优先于旧决定。改变关键决定时，新增下一编号的 ADR，写明来源并附替代关系链接，保留旧 ADR 并更新索引。
 - **R004** BOSS 变更按文档索引中的触发条件读取设计、实现或操作说明；同次更新受影响文档，或说明现有描述仍准确的依据。结论按[文档维护流程](docs/agents/change-workflow.md#文档影响与维护)接受独立审查。
+- **R028** 处理 GitHub Issue 时，按[议题跟踪约定](docs/agents/issue-tracker.md)读取正文及相关评论，核对最新需求；本项目议题仓库为 `codeongit/job-tracker`。
 
 ## 团队红线
 
@@ -59,9 +60,3 @@
 | BOSS 行为、归属、业务规则或额度  | [设计说明](docs/boss/DESIGN.md)         |
 | BOSS 模块、字段、交付或恢复契约  | [实现说明](docs/boss/IMPLEMENTATION.md) |
 | BOSS 命令、状态解释或排障        | [操作说明](docs/boss/OPERATIONS.md)     |
-
-### 代理技能索引（Agent skills）
-
-- **R028** 议题与规格保存在 `codeongit/job-tracker` 的 GitHub Issues；处理前读取[议题跟踪约定](docs/agents/issue-tracker.md)。
-- **R029** 五种分流状态使用默认标签名；设置或调整标签前读取[标签映射](docs/agents/triage-labels.md)。
-- **R030** 领域文档采用单上下文布局：根目录 `CONTEXT.md` 与 `docs/adr/`；维护时读取[领域文档约定](docs/agents/domain.md)。

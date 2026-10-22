@@ -1,23 +1,18 @@
-# Issue tracker: GitHub
+# 议题跟踪约定
 
-Issues and specs for this repo live as GitHub issues in `codeongit/job-tracker`. Use the `gh` CLI for issue operations.
+本项目的议题仓库为 `codeongit/job-tracker`。需要跨任务保留的待办、暂缓处理的问题或后续验收项，可按用户安排放入 GitHub Issues。聊天中的用户指示、仓库内规格和议题都可作为任务依据，按[目标依据规则](change-workflow.md#1-修改前分别核对现状与目标)核对。
 
-## Conventions
+## 处理议题
 
-- Create: `gh issue create --title "..." --body-file <file>`.
-- Read: `gh issue view <number> --comments` and fetch labels when needed.
-- List: `gh issue list --state open --json number,title,body,labels,comments`, with appropriate filters.
-- Comment: `gh issue comment <number> --body-file <file>`.
-- Apply or remove labels: `gh issue edit <number> --add-label "..."` or `--remove-label "..."`.
-- Close: `gh issue close <number> --comment "..."`.
+使用 `gh` 命令行工具，在本仓库目录中执行并核对目标仓库。处理已有议题前，用 `gh issue view <编号> --comments` 读取正文及相关评论，核对后续修正与最新需求；需要判断分流状态时同时读取标签。
 
-Run `gh` inside this clone so it resolves the configured repository.
+创建、评论、改标签或关闭议题按本次任务已获授权的范围执行。本文提供操作约定，本身不构成向 GitHub 发布内容的授权。
 
-## Pull requests as a triage surface
+## 分流与标签
 
-**PRs as a request surface: no.** Set to `yes` if this repo later treats external PRs as feature requests.
+进行议题分流，或设置、调整分流标签前，读取[标签映射](triage-labels.md)，使用约定的五种默认状态名称，并核对远端实际标签。当前外部拉取请求（PR）不作为需求分流入口。
 
-## Skill vocabulary
+## 技能用语
 
-- “Publish to the issue tracker” means create a GitHub issue.
-- “Fetch the relevant ticket” means read the GitHub issue and its comments.
+- “发布到议题跟踪器”（Publish to the issue tracker）指创建 GitHub Issue。
+- “获取相关工单”（Fetch the relevant ticket）指读取 GitHub Issue 正文及评论。
