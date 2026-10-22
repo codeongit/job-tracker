@@ -33,7 +33,11 @@ pnpm format:check
 
 小改动可按影响范围运行定向非浏览器测试；发布前运行完整 `pnpm test`。非浏览器测试放在 `test/` 或 `collector/boss/`，以 `*.test.mjs` 命名，两个目录的子目录也会被收集；fixture/helper 使用普通 `.mjs` 后缀。收集范围以 `package.json` 为准，通配符由 Node 解析，不依赖 shell 展开或 Git 忽略规则；私有运行材料仍放在 `.local/`。浏览器回归保持独立入口。
 
-`pnpm check` 递归检查 dist、scripts、test 和 collector 的 JavaScript 语法，检查公开资源、版本号，以及项目文档的本地链接、标题锚点和 ADR 编号/索引对应；文档范围为根目录 Markdown、docs、collector 和 `.github`，排除私有目录、依赖、第三方技能和测试材料，不访问外链。`pnpm format:check` 检查格式。纯文档改动核对格式、链接与差异；修改检查器本身还须运行其合成测试。
+`pnpm check` 递归检查 dist、scripts、test 和 collector 的 JavaScript 语法，检查公开资源、版本号，以及项目文档的本地链接、标题锚点、ADR 编号/索引和规则编号/保障映射对应；文档范围为根目录 Markdown、docs、collector 和 `.github`，排除私有目录、依赖、第三方技能和测试材料，不访问外链。`pnpm format:check` 检查格式。纯文档改动核对格式、链接与差异；修改检查器本身还须运行其合成测试。
+
+[规则保障映射](agents/rule-assurance.md) 记录各规则的已有机制、验证入口和缺口。检查器要求根 AGENTS 的实际顶层条目使用合法唯一编号，并与固定六列表中的行一一对应；漏项、重复、未知编号、缺少文档或空必填列均报错。代码块、引用示例和嵌套说明不计为顶层规则，总数不固定为 30；链接检查仍只验证目标存在和文档章节，不执行所列命令或推断测试通过。新增规则同次增加映射，编号稳定性及正文含义由差异审查核对。修改此机制运行 `node --test test/docs-check.test.mjs`，只使用临时目录和合成文件。
+
+每次交付按[交付与验收记录](agents/change-workflow.md#4-交付与验收记录) 记录相关规则 ID、实际证据、被测 commit／未提交文件摘要和未验证项。结果使用“通过、失败、未运行、待人工验收、不适用（附理由）”，随版本和场景保存，不把一次通过写成永久保障。
 
 本机工作区客户端与服务接口的联动回归可运行 `node --test test/local-workspace-http.test.mjs`：真实客户端经回环 HTTP 调用真实服务，读写临时目录中的 `WorkspaceStore`，使用合成数据；客户端缓存和本机模式身份标记（authority）使用内存替身。它不启动浏览器，不访问真实平台或用户的 `.local`，已由文件命名自动纳入 `pnpm test` 及 CI 的非浏览器步骤。真实浏览器存储和页面交互仍按 [D017](adr/0017-manual-browser-testing.md) 由人工验收。
 

@@ -91,7 +91,7 @@ function blockContext() {
 
 // This is an offline checker for the repository's Markdown syntax, not a full
 // CommonMark renderer. Masking preserves line positions for diagnostics.
-function prose(source) {
+function prose(source, blockBoundedInline = false) {
   const contentOf = blockContext();
   let result = '',
     fence;
@@ -129,7 +129,7 @@ function prose(source) {
       continue;
     }
     if (source[at] === '`' && !escaped(source, at)) {
-      const end = codeSpanEnd(source, at);
+      const end = codeSpanEnd(source, at, blockBoundedInline);
       if (end !== undefined) {
         // Keep inline code text for heading slugs, but do not interpret a
         // comment opener inside it. Link scanning masks it in the next pass.
@@ -148,14 +148,34 @@ function prose(source) {
   return result;
 }
 
-function codeSpanEnd(source, start) {
+function interruptsParagraph(line) {
+  return (
+    /^ {0,3}(?:#{1,6}(?:[ \t]|$)|>|`{3,}|~{3,}|(?:[-+*]|1[.)])[ \t]+\S)/.test(line) ||
+    /^ {0,3}(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$/.test(line)
+  );
+}
+
+function codeSpanEnd(source, start, blockBounded = false) {
   let end = start;
   while (source[end] === '`') end++;
   const run = source.slice(start, end);
   let closing = source.indexOf(run, end);
   while (closing >= 0 && (source[closing - 1] === '`' || source[closing + run.length] === '`'))
     closing = source.indexOf(run, closing + run.length);
-  return closing < 0 ? undefined : closing + run.length;
+  if (closing < 0) return undefined;
+  const endOffset = closing + run.length;
+  // Rule enumeration must not let an unmatched backtick hide a later block.
+  // Keep the existing general link scanner's supported syntax unchanged.
+  if (
+    blockBounded &&
+    source
+      .slice(start, endOffset)
+      .split('\n')
+      .slice(1)
+      .some((line) => !line.trim() || interruptsParagraph(line) || /^ {0,3}=+[ \t]*$/.test(line))
+  )
+    return undefined;
+  return endOffset;
 }
 
 function withoutInlineCode(source) {
@@ -429,8 +449,147 @@ async function exactPath(root, target) {
   }
 }
 
+function validRuleId(id) {
+  return /^R(?:\d{3}|[1-9]\d{3,})$/.test(id) && id !== 'R000';
+}
+
+function assuranceCells(line) {
+  const text = line.trim(),
+    cells = [];
+  if (!text.startsWith('|') || !text.endsWith('|') || escaped(text, text.length - 1)) return [];
+  let begin = 1;
+  for (let at = 1; at < text.length; at++)
+    if (text[at] === '|' && !escaped(text, at)) {
+      cells.push(text.slice(begin, at).trim());
+      begin = at + 1;
+    }
+  return cells;
+}
+
+function topLevelRuleItems(source) {
+  const items = [];
+  let contentIndent = 0,
+    paragraph = false;
+  for (const [index, line] of prose(source, true).split('\n').entries()) {
+    if (!line.trim()) {
+      paragraph = false;
+      continue;
+    }
+    const indent = line.match(/^[ \t]*/)[0].length;
+    if (contentIndent && indent >= contentIndent) continue;
+    const inList = contentIndent > 0;
+    contentIndent = 0;
+    if (paragraph && /^ {0,3}=+[ \t]*$/.test(line)) {
+      paragraph = false;
+      continue;
+    }
+    if (/^ {0,3}(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$/.test(line)) {
+      paragraph = false;
+      continue;
+    }
+    const marker = line.match(/^ {0,3}([-+*]|\d{1,9}[.)])(?:[ \t]+|$)/);
+    if (!marker) {
+      paragraph = !interruptsParagraph(line);
+      continue;
+    }
+    const text = line.slice(marker[0].length);
+    // Only a nonempty bullet or an ordered item starting at 1 interrupts prose.
+    if (
+      paragraph &&
+      !inList &&
+      (!text.trim() || (/^\d/.test(marker[1]) && !/^1[.)]$/.test(marker[1])))
+    )
+      continue;
+    contentIndent = marker[0].length + (text ? 0 : 1);
+    paragraph = false;
+    items.push({ text, line: index + 1 });
+  }
+  return items;
+}
+
+function checkAgentRules(root, documents, add) {
+  const agentsPath = join(root, 'AGENTS.md'),
+    assurancePath = join(root, 'docs/agents/rule-assurance.md'),
+    rules = new Map();
+  const agents = documents.get(agentsPath);
+  if (!agents) add(agentsPath, 1, 'rule_source_absent', '缺少规则来源 AGENTS.md。');
+  else {
+    const items = topLevelRuleItems(agents.source);
+    if (!items.length) add(agentsPath, 1, 'rule_list_empty', 'AGENTS.md 缺少顶层规则条目。');
+    for (const { text, line } of items) {
+      const id = text.match(/^\*\*(R\d{3,})\*\*(?:\s|$)/)?.[1];
+      if (!id || !validRuleId(id))
+        add(agentsPath, line, 'rule_id_invalid', '顶层规则须以有效编号开头，例如 **R001**。');
+      else if (rules.has(id)) add(agentsPath, line, 'rule_id_duplicate', `规则编号重复：${id}`);
+      else rules.set(id, line);
+    }
+  }
+  const assurance = documents.get(assurancePath);
+  if (!assurance) {
+    add(
+      assurancePath,
+      1,
+      'rule_assurance_absent',
+      '缺少规则保障映射 docs/agents/rule-assurance.md。',
+    );
+    return;
+  }
+  const entries = new Set(),
+    tableSource = prose(assurance.source, true),
+    lines = tableSource.split('\n'),
+    visibleLines = lines.map((line) => withoutInlineCode(line)),
+    rows = lines.flatMap((line, index) =>
+      /^ {0,3}\|/.test(visibleLines[index])
+        ? [{ cells: assuranceCells(line), line: index + 1 }]
+        : [],
+    ),
+    columns = ['ID', '原文位置', '适用场景', '已有保障', '验证入口', '缺口与边界'];
+  if (
+    rows[0]?.cells.join('\0') !== columns.join('\0') ||
+    rows[1]?.line !== rows[0]?.line + 1 ||
+    rows[1]?.cells.length !== columns.length ||
+    !rows[1]?.cells.every((cell) => /^:?-{3,}:?$/.test(cell))
+  ) {
+    add(
+      assurancePath,
+      rows[0]?.line || 1,
+      'rule_assurance_header',
+      '保障映射须使用规定的六列表头及分隔行。',
+    );
+    return;
+  }
+  for (const [index, { cells, line }] of rows.slice(2).entries()) {
+    if (
+      line !== rows[1].line + index + 1 ||
+      cells.length !== columns.length ||
+      cells.some((cell) => !cell)
+    ) {
+      add(
+        assurancePath,
+        line,
+        'rule_assurance_format',
+        '保障映射须连续排列在表头后，每行有六个非空单元格；暂无保障或证据时明确填写“暂无”。',
+      );
+      continue;
+    }
+    const id = cells[0];
+    if (!validRuleId(id)) {
+      add(assurancePath, line, 'rule_assurance_id_invalid', `保障映射编号无效：${id}`);
+      continue;
+    }
+    if (entries.has(id))
+      add(assurancePath, line, 'rule_assurance_duplicate', `保障映射重复：${id}`);
+    entries.add(id);
+    if (!rules.has(id))
+      add(assurancePath, line, 'rule_assurance_unknown', `保障映射没有对应规则：${id}`);
+  }
+  for (const [id, line] of rules)
+    if (!entries.has(id))
+      add(agentsPath, line, 'rule_assurance_missing', `规则缺少保障映射：${id}`);
+}
+
 /**
- * Check owned project Markdown and the ADR index without any network requests.
+ * Check owned Markdown, the ADR index and root AGENTS rule coverage offline.
  * Supported links: inline/image links and full, collapsed or defined shortcut
  * references; escaped/balanced destinations, angle paths and optional titles.
  * Markdown content is read only from root files or owned documentation trees,
@@ -458,6 +617,7 @@ export async function checkDocumentation(directory) {
     documents.set(file, { source, ...markdown(source), headings: headings(source) });
   }
   const headingCache = new Map([...documents].map(([file, document]) => [file, document.headings]));
+  checkAgentRules(root, documents, add);
   for (const [file, document] of documents) {
     for (const problem of document.problems)
       add(file, lineAt(document.source, problem.offset), problem.code, problem.message);

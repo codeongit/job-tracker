@@ -5,10 +5,18 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { checkDocumentation } from '../scripts/docs-check.mjs';
 
+const assuranceHeader =
+  '| ID | 原文位置 | 适用场景 | 已有保障 | 验证入口 | 缺口与边界 |\n' +
+  '| --- | --- | --- | --- | --- | --- |\n';
+const assuranceRow =
+  '| R001 | [原文](../../AGENTS.md#规则) | 修改时 | 独立审查 | 人工核对 | 仍需检查语义 |\n';
+
 async function fixture(t, documents = {}) {
   const root = await mkdtemp(join(tmpdir(), 'job-tracker-docs-check-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const files = {
+    'AGENTS.md': '# 规则\n\n- **R001** 合成规则。\n',
+    'docs/agents/rule-assurance.md': assuranceHeader + assuranceRow,
     'docs/adr/README.md':
       '# 决策索引\n\n| 编号 | 决策 |\n| --- | --- |\n| [D001](0001-synthetic.md) | 合成决定 |\n',
     'docs/adr/0001-synthetic.md': '# D001：合成决定\n\n历史规则 v1 与应用 0.1.0。\n',
@@ -30,6 +38,244 @@ test('checks inline, image, reference and repository-root links without reading 
     'scripts/example.mjs': 'export const symbol = 1;\n',
   });
   assert.deepEqual(await checkDocumentation(root), []);
+});
+
+test('requires the rule assurance document instead of silently skipping its checks', async (t) => {
+  const root = await fixture(t);
+  await rm(join(root, 'docs/agents/rule-assurance.md'));
+  assert.deepEqual(
+    (await checkDocumentation(root)).map(({ file, line, code }) => ({ file, line, code })),
+    [{ file: 'docs/agents/rule-assurance.md', line: 1, code: 'rule_assurance_absent' }],
+  );
+});
+
+test('requires a legal unique ID on each actual top-level AGENTS rule', async (t) => {
+  const root = await fixture(t, {
+    'AGENTS.md':
+      '# 规则\n\n- **R001** 合成规则。\n- 没有编号。\n- **R01** 非法编号。\n- **R001** 重复编号。\n- **R000** 零号。\n',
+  });
+  assert.deepEqual(
+    (await checkDocumentation(root)).map(({ file, line, code }) => ({ file, line, code })),
+    [
+      { file: 'AGENTS.md', line: 4, code: 'rule_id_invalid' },
+      { file: 'AGENTS.md', line: 5, code: 'rule_id_invalid' },
+      { file: 'AGENTS.md', line: 6, code: 'rule_id_duplicate' },
+      { file: 'AGENTS.md', line: 7, code: 'rule_id_invalid' },
+    ],
+  );
+});
+
+test('matches every rule to exactly one assurance row and rejects unknown rows', async (t) => {
+  const root = await fixture(t, {
+    'AGENTS.md': '# 规则\n\n- **R001** 第一条。\n- **R002** 第二条。\n',
+    'docs/agents/rule-assurance.md':
+      assuranceHeader +
+      assuranceRow +
+      assuranceRow +
+      '| R003 | 暂无 | 修改时 | 暂无 | 人工核对 | 暂无 |\n',
+  });
+  assert.deepEqual(
+    (await checkDocumentation(root)).map(({ file, line, code }) => ({ file, line, code })),
+    [
+      { file: 'AGENTS.md', line: 4, code: 'rule_assurance_missing' },
+      { file: 'docs/agents/rule-assurance.md', line: 4, code: 'rule_assurance_duplicate' },
+      { file: 'docs/agents/rule-assurance.md', line: 5, code: 'rule_assurance_unknown' },
+    ],
+  );
+});
+
+test('rejects malformed assurance tables and empty required cells', async (t) => {
+  const cases = [
+    ['missing header', assuranceRow, 'rule_assurance_header'],
+    [
+      'wrong header',
+      assuranceHeader.replace('适用场景', '旧列名') + assuranceRow,
+      'rule_assurance_header',
+    ],
+    [
+      'missing separator',
+      assuranceHeader.split('\n')[0] + '\n' + assuranceRow,
+      'rule_assurance_header',
+    ],
+    ['empty cell', assuranceHeader + assuranceRow.replace('修改时', '  '), 'rule_assurance_format'],
+    [
+      'missing column',
+      assuranceHeader + assuranceRow.replace(' | 仍需检查语义', ''),
+      'rule_assurance_format',
+    ],
+    [
+      'extra column',
+      assuranceHeader + assuranceRow.trimEnd() + ' 多余 |\n',
+      'rule_assurance_format',
+    ],
+    [
+      'invalid ID',
+      assuranceHeader + assuranceRow.replace('R001', 'R1'),
+      'rule_assurance_id_invalid',
+    ],
+    [
+      'missing trailing pipe',
+      assuranceHeader + assuranceRow.replace(/\|\n$/, '\n'),
+      'rule_assurance_format',
+    ],
+  ];
+  for (const [name, source, code] of cases)
+    await t.test(name, async (t) => {
+      const root = await fixture(t, { 'docs/agents/rule-assurance.md': source });
+      assert.ok(
+        (await checkDocumentation(root)).some(
+          (issue) => issue.file === 'docs/agents/rule-assurance.md' && issue.code === code,
+        ),
+      );
+    });
+});
+
+test('accepts reordered future IDs while ignoring code, nested and quoted examples', async (t) => {
+  const root = await fixture(t, {
+    'AGENTS.md': [
+      '# 规则',
+      '',
+      '- **R001** 合成规则。',
+      '  - 嵌套说明无需新编号。',
+      '  * * *',
+      '  - 分隔线后的嵌套说明。',
+      '',
+      '正文结束列表。',
+      '',
+      '  1. **R1031** 后续规则。',
+      '',
+      '```markdown',
+      '- **R001** 代码示例。',
+      '```',
+      '',
+      '    - **R001** 缩进代码。',
+      '',
+      '> - **R001** 引用示例。',
+      '',
+      '`多行示例',
+      '2. **R999** 段落内连续代码。',
+      '结束`',
+      '',
+      '<!--',
+      '- **R001** 注释示例。',
+      '-->',
+      '',
+      '* * *',
+      '',
+      '| 文档索引 | 资料 |',
+      '| --- | --- |',
+      '| 导航 | 说明 |',
+      '',
+    ].join('\n'),
+    'docs/agents/rule-assurance.md':
+      assuranceHeader +
+      '| R1031 | [原文](../../AGENTS.md#规则) | 修改时 | 暂无 | `pnpm check` | 甲\\|乙 |\n' +
+      assuranceRow +
+      '\n```markdown\n' +
+      assuranceRow +
+      '```\n\n> ' +
+      assuranceRow,
+  });
+  assert.deepEqual(await checkDocumentation(new URL(`file://${root}/`)), []);
+});
+
+test('reports missing AGENTS and an empty rule list rather than accepting empty coverage', async (t) => {
+  const root = await fixture(t);
+  await rm(join(root, 'AGENTS.md'));
+  assert.ok((await checkDocumentation(root)).some(({ code }) => code === 'rule_source_absent'));
+  await writeFile(join(root, 'AGENTS.md'), '# 规则\n\n只有说明。\n');
+  await writeFile(join(root, 'docs/agents/rule-assurance.md'), assuranceHeader);
+  assert.deepEqual(
+    (await checkDocumentation(root)).map(({ file, line, code }) => ({ file, line, code })),
+    [{ file: 'AGENTS.md', line: 1, code: 'rule_list_empty' }],
+  );
+});
+
+test('checks assurance links without executing the referenced code or listed commands', async (t) => {
+  const root = await fixture(t, {
+    'test/synthetic.test.mjs': "throw new Error('文档检查不得执行测试文件');\n",
+    'docs/agents/rule-assurance.md':
+      assuranceHeader +
+      '| R001 | [原文](../../AGENTS.md#规则) | 修改时 | [代码](../../test/synthetic.test.mjs) | `exit 99` | 仅入口存在 |\n',
+  });
+  assert.deepEqual(await checkDocumentation(root), []);
+  await writeFile(
+    join(root, 'docs/agents/rule-assurance.md'),
+    assuranceHeader +
+      '| R001 | [原文](../../AGENTS.md#不存在) | 修改时 | 暂无 | [测试](../../test/absent.mjs) | 暂无 |\n',
+  );
+  assert.deepEqual(
+    (await checkDocumentation(root)).map(({ file, line, code }) => ({ file, line, code })),
+    [
+      { file: 'docs/agents/rule-assurance.md', line: 3, code: 'link_anchor_missing' },
+      { file: 'docs/agents/rule-assurance.md', line: 3, code: 'link_target_missing' },
+    ],
+  );
+});
+
+test('does not accept an orphan pipe row outside the assurance table as coverage', async (t) => {
+  const root = await fixture(t, {
+    'docs/agents/rule-assurance.md': assuranceHeader + '\n独立说明。\n\n' + assuranceRow,
+  });
+  assert.ok((await checkDocumentation(root)).some(({ code }) => code === 'rule_assurance_format'));
+});
+
+test('does not let unmatched backticks hide rules across paragraph, list or quote boundaries', async (t) => {
+  const examples = [
+    '说明带单个未闭合 `。\n\n- 缺编号，含 `path` 字段。\n',
+    '说明带单个未闭合 `。\n- 缺编号，含 `path` 字段。\n',
+    '说明带单个未闭合 `。\n> 引用。\n- 缺编号，含 `path` 字段。\n',
+  ];
+  for (const example of examples)
+    await t.test(example, async (t) => {
+      const root = await fixture(t, { 'AGENTS.md': '# 规则\n\n- **R001** 正常。\n\n' + example });
+      assert.ok(
+        (await checkDocumentation(root)).some(
+          ({ file, code }) => file === 'AGENTS.md' && code === 'rule_id_invalid',
+        ),
+      );
+    });
+});
+
+test('distinguishes paragraph continuations from empty top-level list items', async (t) => {
+  const root = await fixture(t, {
+    'AGENTS.md': '# 规则\n\n- **R001** 正常。\n\n普通段落\n2. **R999** 仍是段落。\n\n-\n\n1.\n',
+  });
+  assert.deepEqual(
+    (await checkDocumentation(root)).map(({ file, line, code }) => ({ file, line, code })),
+    [
+      { file: 'AGENTS.md', line: 8, code: 'rule_id_invalid' },
+      { file: 'AGENTS.md', line: 10, code: 'rule_id_invalid' },
+    ],
+  );
+});
+
+test('starts a new rule list after a Setext heading without treating standalone equals as a heading', async (t) => {
+  const root = await fixture(t, {
+    'AGENTS.md':
+      '# 规则\n\n- **R001** 正常。\n\n真实标题\n===\n2. 缺编号\n\n===\n2. 普通段落续行。\n',
+  });
+  assert.deepEqual(
+    (await checkDocumentation(root)).map(({ file, line, code }) => ({ file, line, code })),
+    [{ file: 'AGENTS.md', line: 7, code: 'rule_id_invalid' }],
+  );
+});
+
+test('does not let unmatched backticks in one table row hide duplicate or unknown rows', async (t) => {
+  const root = await fixture(t, {
+    'docs/agents/rule-assurance.md':
+      assuranceHeader +
+      '| R001 | 原文 | 修改 | 机制 | `未结束 | 边界 |\n' +
+      '| R001 | 原文 | 修改 | 机制 | `结束 | 边界 |\n' +
+      '| R999 | 原文 | 修改 | 机制 | 暂无 | 边界 |\n',
+  });
+  assert.deepEqual(
+    (await checkDocumentation(root)).map(({ file, line, code }) => ({ file, line, code })),
+    [
+      { file: 'docs/agents/rule-assurance.md', line: 4, code: 'rule_assurance_duplicate' },
+      { file: 'docs/agents/rule-assurance.md', line: 5, code: 'rule_assurance_unknown' },
+    ],
+  );
 });
 
 test('decodes Chinese and percent-encoded paths and handles spaces, parentheses and escapes', async (t) => {
@@ -277,6 +523,7 @@ test('does not walk a top-level docs alias into private materials even when it c
     [
       { file: 'docs', line: 1, code: 'document_scope_excluded' },
       { file: 'docs/adr/README.md', line: 1, code: 'adr_index_absent' },
+      { file: 'docs/agents/rule-assurance.md', line: 1, code: 'rule_assurance_absent' },
     ],
   );
 });

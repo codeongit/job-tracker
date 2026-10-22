@@ -57,5 +57,5 @@ for (const finding of documentationFindings)
   process.stderr.write(`${finding.file}:${finding.line} [${finding.code}] ${finding.message}\n`);
 if (documentationFindings.length) process.exit(1);
 process.stdout.write(
-  '语法、模块依赖边界与循环、入口资源、版本号、公开目录、文档链接与 ADR 索引检查通过。\n',
+  '语法、模块依赖边界与循环、入口资源、版本号、公开目录、文档链接、ADR 索引与规则保障映射检查通过。\n',
 );
