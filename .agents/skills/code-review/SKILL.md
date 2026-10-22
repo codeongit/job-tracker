@@ -1,76 +1,76 @@
 ---
 name: code-review
-description: "Review a branch, pull request, or working-tree changes against the project's standards and original requirements. Independently check the existing mechanism and intended behavior before judging the implementation."
+description: 审查分支、拉取请求或工作树改动是否符合项目规范和原始需求。先独立核对现有机制与目标行为，再判断实现。
 ---
 
-Review on two separate axes:
+分别从两个维度审查：
 
-- **Standards**: does the change conform to the repo's coding standards?
-- **Spec**: are the current mechanism and intended behavior understood correctly, and does the change satisfy the original requirements?
+- **规范（Standards）**：改动是否符合仓库的编码规范？
+- **规格（Spec）**：对现有机制和目标行为的理解是否正确，改动是否满足原始需求？
 
-Follow [change workflow](../../../docs/agents/change-workflow.md), especially its two-stage independent review. Both axes inspect the same captured version of the change. Preserve their separate conclusions.
+审查前读取[变更流程](../../../docs/agents/change-workflow.md)。共用的证据规则、两阶段独立审查、发现分类和实施交接在该流程维护。本技能说明如何固定材料、分派审查并汇总结果。
 
-## Process
+## 流程
 
-### 1. Capture the baseline and full review scope
+### 1. 固定基线与完整审查范围
 
-Reuse the task's recorded baseline and scope. Resolve each ref to a commit once and record whether the target is a committed revision or the current working tree. For a committed comparison, pin the merge-base and target HEAD and use that fixed pair. If a necessary ref or the actual scope is missing, ask for the missing choice while inspecting known material.
+准备材料前记录审查开始时间。复用任务已记录的基线与范围。将每个引用一次性解析为具体提交，注明审查目标是已提交版本还是当前工作树。比较已提交版本时，固定共同祖先（merge-base）和目标 HEAD，并记录提交列表。只有确实缺少范围选择时才提问，同时继续检查已知材料。
 
-For a working-tree review:
+审查工作树时：
 
-- Capture `git status --short` and the tracked difference with `git diff <resolved-base>`; this includes staged and unstaged changes. Capture the changed tracked files and their baseline contents.
-- Inventory new files with `git ls-files --others --exclude-standard`; include the relevant new files' contents, not just their names. Apply project privacy boundaries and keep ignored private data out of review material.
-- If the task started with local changes, use the recorded pre-change copies to distinguish existing work from this task. HEAD alone does not represent that starting state. If those copies are absent, declare the broader scope or missing attribution instead of claiming all changes belong to the task.
-- Capture file contents in a temporary review snapshot, or record and verify their hashes throughout review. Freeze the baseline, diff, new-file contents, and relevant sources for both reviewers; recapture affected material if files change.
+- 保存 `git status --short` 和 `git diff <resolved-base>`；后者包含已暂存与未暂存的改动。同时保存变更的受跟踪文件及其基线内容。
+- 用 `git ls-files --others --exclude-standard` 列出新增文件，保存相关文件的内容，遵守项目隐私边界，排除被忽略的私有数据。
+- 用已保存的修改前副本区分原有本机改动与本任务改动。缺少副本时，声明实际采用的更大范围或无法归因的部分。
+- 将基线、差异、新文件内容及相关来源保存在临时快照中，或在整个审查期间记录并核验其哈希。两个审查者使用同一份固定版本；材料变化时重新保存受影响部分。
 
-A committed diff being empty does not end a working-tree review: evaluate the tracked working-tree diff and relevant new files together. Record the commit list where applicable. **Complete when the baseline, target version, included files, and scope limitations are explicit.**
+已提交版本之间没有差异，不代表工作树审查结束；仍须纳入受跟踪文件的工作树差异及相关新增文件。**完成条件：基线、目标版本、纳入的文件和范围限制均已明确。**
 
-### 2. Identify the original target evidence
+### 2. 定位目标依据与规范
 
-Use the user's original request and corrections, or the originating issue/specification, as target evidence. Find issue references through `docs/agents/issue-tracker.md`, reuse a supplied path, or inspect relevant original specs under `docs/`, `specs/`, or `.scratch/`. User intent already present in the task is sufficient; ask only for genuinely missing decisions.
+查找原始要求及后续修正，或起始议题、规格。议题引用遵循 `docs/agents/issue-tracker.md`；复用用户提供的路径，或检查 `docs/`、`specs/`、`.scratch/` 中相关的原始规格。按变更流程中的[目标依据规则](../../../docs/agents/change-workflow.md#1-修改前分别核对现状与目标)处理证据，将无法取得的依据记为限制。
 
-Separate original requirements and existing constraints from implementer assumptions, new proposals, and new ADRs. Implementation agreement with a new document does not establish that the target is correct. Where target evidence is unavailable, report the limitation and review the verifiable mechanisms and standards; do not invent a requirement or silently mark Spec as passed.
+读取相关项目指令与规范，例如 `CODING_STANDARDS.md`、`CONTRIBUTING.md`。为规格审查保存基线中的决定和契约，为规范审查保存适用规范。本次修改的规则和测试仍是待审材料。报告缺失的必需指针，并继续依据可用材料审查。
 
-### 3. Identify the standards sources
+### 3. 结合上下文检查代码气味
 
-Read relevant repo standards such as `CODING_STANDARDS.md`, `CONTRIBUTING.md`, and project instructions. If a required configuration pointer is absent, report it and continue the review that available material supports.
+仓库已有规范优先于下列气味清单。用气味追查具体维护成本；仅凭代码形状不能判定违规。提出重构时，按共用流程的发现分类说明收益、代价与适用条件。机械规则交给工具检查。
 
-The Standards axis also carries the Fowler smell baseline below. Documented repo standards override it. Smells remain labelled judgement calls, such as "possible Feature Envy"; skip rules already enforced by tooling.
+- **含糊命名（Mysterious Name）**：名称是否掩盖了领域概念、动作或结果？改名能否在表达清楚的同时保留必要兼容性？
+- **重复代码（Duplicated Code）**：这些代码是否表达同一业务规则，并因同一原因变化？共用实现能否减少重复知识，同时避免耦合无关行为？
+- **依恋外部数据（Feature Envy）**：将行为移近数据，能否减少跨模块接口泄漏的知识，并符合所有权约定？
+- **数据泥团（Data Clumps）**：反复同行的字段是否构成完整概念，组合后能否让调用契约更清楚？
+- **基本类型偏执（Primitive Obsession）**：使用基本类型是否迫使调用者重复校验或解释，而这些职责本可由领域表示承担？
+- **重复分支（Repeated Switches）**：这些分支是否重复表达同一判断规则？统一判断带来的调用简化，是否大于实现增加的复杂度？
+- **霰弹式修改（Shotgun Surgery）**：分散改动暴露的是职责重复，还是现有责任模块之间的必要协作？调整归属能否真正让后续变化集中？
+- **发散式变化（Divergent Change）**：无关职责是否相互耦合，拆分能否减少调用者需要了解的知识或降低修改风险？
+- **夸夸其谈的通用性（Speculative Generality）**：抽象、参数或扩展点是否服务于当前需求或已接受的约束？删除后能消除哪些复杂度？
+- **过长消息链（Message Chains）**：连续访问是否暴露了调用者不该了解的内部结构，还是在使用完整一致的公开接口？
+- **中间人（Middle Man）**：移除转发层会消除复杂度，还是把协议、适配或兼容性知识推给调用者？用[删除检验](../codebase-design/SKILL.md#principles)判断其价值。
+- **拒绝继承契约（Refused Bequest）**：忽略继承行为是否破坏了所承诺的契约，改用组合能否更清楚地表达实际契约？
 
-Each smell reads _what it is_ → _how to fix_; match it against the diff:
+### 4. 分派独立审查
 
-- **Mysterious Name**: a function, variable, or type whose name doesn't reveal what it does or holds. → rename it; if no honest name comes, the design's murky.
-- **Duplicated Code**: the same logic shape appears in more than one hunk or file in the change. → extract the shared shape, call it from both.
-- **Feature Envy**: a method that reaches into another object's data more than its own. → move the method onto the data it envies.
-- **Data Clumps**: the same few fields or params keep travelling together (a type wanting to be born). → bundle them into one type, pass that.
-- **Primitive Obsession**: a primitive or string standing in for a domain concept that deserves its own type. → give the concept its own small type.
-- **Repeated Switches**: the same `switch`/`if`-cascade on the same type recurs across the change. → replace with polymorphism, or one map both sites share.
-- **Shotgun Surgery**: one logical change forces scattered edits across many files in the diff. → gather what changes together into one module.
-- **Divergent Change**: one file or module is edited for several unrelated reasons. → split so each module changes for one reason.
-- **Speculative Generality**: abstraction, parameters, or hooks added for needs the spec doesn't have. → delete it; inline back until a real need shows.
-- **Message Chains**: long `a.b().c().d()` navigation the caller shouldn't depend on. → hide the walk behind one method on the first object.
-- **Middle Man**: a class or function that mostly just delegates onward. → cut it, call the real target direct.
-- **Refused Bequest**: a subclass or implementer that ignores or overrides most of what it inherits. → drop the inheritance, use composition.
+向**规范审查者**提供固定的差异、新文件内容、适用规范和气味清单。它可以与规格审查的第一阶段并行。
 
-### 4. Run independent Standards and Spec reviews
+在独立上下文中启动**规格审查者**（工具支持时使用 `fork_turns: "none"`）。按共用流程的[两阶段材料规则](../../../docs/agents/change-workflow.md#3-独立审查)分两次提供输入：先给原始目标依据和明确的基线来源路径；保留其对机制与目标的独立判断后，第二次再给固定的差异、新文件和测试。两个阶段使用同一个审查者。无法获得独立上下文时，先推演基线再看改动，并说明独立性降低。
 
-Give the **Standards reviewer** the captured diff, new-file contents, standards-source files and smell baseline in full. Ask for documented violations with source references and separately labelled judgement calls. It can run while the Spec reviewer establishes its independent understanding.
+按受影响路径调整探索范围。通过代码、测试或获授权的检查解决事实缺口。审查者发现固定范围之外的新依赖时，保存相关基线和目标材料，重新核对受影响结论。每个审查轴的最终报告保持简洁（通常不超过 400 词），同时交代覆盖范围和未解决的限制。
 
-Start the **Spec reviewer** in a fresh context (`fork_turns: "none"` when available). Provide materials in two separate turns:
+### 5. 汇总与交接
 
-1. **Before the diff:** give the user's original requirements/corrections, the pinned baseline code, relevant pre-existing decisions/contracts, and a neutral scope description. Explicitly direct it to read baseline sources rather than modified working-tree files. Ask it to independently trace the affected mechanism, intended results, preserved constraints and consequential uncertainties, citing evidence. Withhold implementer conclusions, new proposals/ADRs, the diff and modified test expectations. Retain this response as the independent comparison.
-2. **After that response:** provide the same captured change reviewed by Standards, including new files and tests. Ask for requirements missing or wrong, unintended behavior, overlooked dependencies/side effects, and mismatches between the original target, baseline mechanism and change. New documents and tests are review subjects. Each finding should cite the source and concrete impact; original specs can themselves be ambiguous or incomplete.
+分别使用 `## 规范审查` 和 `## 规格审查` 输出报告。遵循共用流程的[发现与交接规则](../../../docs/agents/change-workflow.md#发现与交接)：为每项发现给出稳定编号、位置、证据和具体影响；两个审查轴讨论同一根因时，引用同一个编号。
 
-Scale exploration to the change's impact. Resolve factual gaps through code, tests or authorized inspection; surface intent conflicts with their source instead of converting an assumption into user confirmation. If a fresh context is unavailable, state the reduced independence and perform baseline reasoning before examining the change; do not claim the full two-stage independence was achieved.
+末尾分别列出各轴的确定问题、建议和待核实项数量，影响最大的一项及覆盖限制。附上文档影响结论。将已完成的检查与待完成的验证分开，满足共用完成条件后再宣称通过。
 
-Keep each final axis report concise (normally under 400 words), with its coverage and unresolved limitations. Recheck affected material if either reviewer finds a new dependency outside the captured scope.
+### 6. 保留简单的审查记录
 
-### 5. Aggregate
+每个受审版本在已有任务记录或审查报告中补一行；案例与版本引用须能确定代码快照和技能版本。无需另建统计系统：
 
-Present the reports under `## Standards` and `## Spec`. Preserve the axes separately. A missing target or unresolved mechanism/intent issue prevents a complete Spec acceptance, even when tests pass or the change matches its newly written ADR.
+`案例／版本 | 确认有效 | 确认误报 | 待确认 | 后来确认的遗漏 | 总耗时（分钟）`
 
-End with the total findings per axis, the worst issue within each axis, and any coverage limitations. For implementation handoff, resolve blocking findings and recheck the affected content before claiming completion.
+- 按发现编号对同一根因去重。设计建议，以及约定变更范围之外的既有问题，与缺陷数量分开记录。
+- 通过复现、已记录的规则核对或有依据的反馈确认有效或误报；报告自己的断言不算确认。尚未判定的保留为待确认。未采纳或未修复不等于误报。在对应发现旁保留证据或反馈引用。
+- 收到反馈后更新同一条记录。只有确认遗漏在受审版本中已经存在、且属于约定范围，才补记为后来确认的遗漏。新引入的回归问题归入它自己的版本。
+- 总耗时按准备材料到该版本首次汇总报告的实际经过时间计算，包含等待；并行代理的用时不相加。修复与复查另计。缺少时间戳时标为无法取得，不补估。
 
-## Why two axes
-
-Standards checks code quality and repo conventions. Spec independently checks the target understanding and implementation. Either can fail while the other passes; keeping their reports separate makes that visible.
+已有记录积累到五次时，汇总误报占比 `误报数 /（有效数 + 误报数）`，同时列出待确认数、已知遗漏总数和耗时中位数。分母为零时标为无法计算。按可比较的范围和技能版本分组，注明样本量；缺少耗时的记录不计入耗时中位数。没有独立建立的完整缺陷集时，只报告已知遗漏数，不计算漏报率。根据反复出现的实例，决定下一次局部技能调整。
