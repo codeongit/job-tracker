@@ -33,7 +33,7 @@ pnpm format:check
 
 小改动可按影响范围运行定向非浏览器测试；发布前运行完整 `pnpm test`。非浏览器测试放在 `test/` 或 `collector/boss/`，以 `*.test.mjs` 命名，两个目录的子目录也会被收集；fixture/helper 使用普通 `.mjs` 后缀。收集范围以 `package.json` 为准，通配符由 Node 解析，不依赖 shell 展开或 Git 忽略规则；私有运行材料仍放在 `.local/`。浏览器回归保持独立入口。
 
-`pnpm check` 递归检查 dist、scripts、test 和 collector 的 JavaScript 语法，检查公开资源、版本号，以及项目文档的本地链接、标题锚点、ADR 编号/索引和规则编号/保障映射对应；文档范围为根目录 Markdown、docs、collector 和 `.github`，排除私有目录、依赖、第三方技能和测试材料，不访问外链。`pnpm format:check` 检查格式。纯文档改动核对格式、链接与差异；修改检查器本身还须运行其合成测试。
+`pnpm check` 递归检查 dist、scripts、test 和 collector 的 JavaScript 语法，检查公开资源、版本号，以及项目文档的本地链接、标题锚点、ADR 编号/索引和规则编号/保障映射对应；文档范围为根目录 Markdown、docs、collector、`.github` 及明确维护的技能目录，排除私有目录、依赖、名单外技能和测试材料，不访问外链。技能名单统一维护在 [owned-skills.mjs](../scripts/owned-skills.mjs)，包括初次引入后已在本仓库定制的技能及其共用参考；接管其他技能时更新该名单。`pnpm format` 和 `pnpm format:check` 在常规格式范围之外，分别格式化和检查同一名单内的 Markdown/YAML。纯文档改动核对格式、链接与差异；修改检查器本身还须运行其合成测试。
 
 [规则保障映射](agents/rule-assurance.md) 记录各规则的已有机制、验证入口和缺口。检查器要求根 AGENTS 的实际顶层条目使用合法唯一编号，并与固定六列表中的行一一对应；漏项、重复、未知编号、缺少文档或空必填列均报错。代码块、引用示例和嵌套说明不计为顶层规则，总数不固定为 30；链接检查仍只验证目标存在和文档章节，不执行所列命令或推断测试通过。新增规则同次增加映射，编号稳定性及正文含义由差异审查核对。修改此机制运行 `node --test test/docs-check.test.mjs`，只使用临时目录和合成文件。
 

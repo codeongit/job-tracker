@@ -11,10 +11,11 @@
     "test:boss-contracts": "node --test collector/boss/runtime-state.test.mjs collector/boss/resume-history.test.mjs collector/boss/history-phase.test.mjs collector/boss/history-commit.test.mjs collector/boss/tracker.test.mjs test/boss-action-evidence.test.mjs",
     "check": "node scripts/check.mjs",
     "test:browser": "node --test test/browser-regression.mjs",
-    "format": "prettier --write .",
-    "format:check": "prettier --check .",
+    "format": "prettier --write . && node scripts/format-skills.mjs --write",
+    "format:check": "prettier --check . && node scripts/format-skills.mjs --check",
     "verify": "pnpm test && pnpm check && pnpm format:check && pnpm test:browser",
-    "doctor": "node scripts/doctor.mjs"
+    "doctor": "node scripts/doctor.mjs",
+    "review:metrics": "node scripts/review-metrics.mjs"
   },
   "engines": {
     "node": ">=24 <25"

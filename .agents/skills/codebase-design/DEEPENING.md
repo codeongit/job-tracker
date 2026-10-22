@@ -1,37 +1,38 @@
-# Deepening
+# 模块深化
 
-How to deepen a cluster of shallow modules safely, given its dependencies. Assumes the vocabulary in [SKILL.md](SKILL.md): **module**, **interface**, **seam**, **adapter**.
+本页使用 [共享术语](SKILL.md)，用于评估一组模块能否减少调用者负担，并在调整职责时保留必要验证。
 
-## Dependency categories
+## 1. 确认深化的价值
 
-When assessing a candidate for deepening, classify its dependencies. The category determines how the deepened module is tested across its seam.
+从实际调用路径找出重复知识：调用者是否重复校验、解释错误或安排同一组步骤？说明哪些职责会集中、哪些仍应独立，以及保留现状或局部简化的成本。
 
-### 1. In-process
+纯计算、没有 I/O 或存在测试替身，均不足以决定合并。只有调用负担减少、职责更清楚且收益足以覆盖迁移成本时，才推进深化。接缝的判断使用主文档的[设计原则](SKILL.md#设计原则)。
 
-Pure computation, in-memory state, no I/O. Always deepenable: merge the modules and test through the new interface directly. No adapter needed.
+**完成条件：** 有具体调用实例说明问题、预期收益和必须保留的行为；不能证明收益时，保留现状或缩小调整范围。
 
-### 2. Local-substitutable
+## 2. 选择依赖与验证方式
 
-Dependencies that have local test stand-ins (PGLite for Postgres, in-memory filesystem). Deepenable if the stand-in exists. The deepened module is tested with the stand-in running in the test suite. The seam is internal; no port at the module's external interface.
+按实际依赖选择验证方式，同一模块可能涉及多类。分类帮助识别可控部分和剩余风险，不直接决定接口形态。
 
-### 3. Remote but owned (Ports & Adapters)
+| 依赖情况                     | 可采用的方式                                                       | 需要保留的验证                                                   |
+| ---------------------------- | ------------------------------------------------------------------ | ---------------------------------------------------------------- |
+| 进程内计算或内存状态         | 通过模块接口直接执行；通常无需新增适配器                           | 输入边界、状态转换和错误结果；职责不同的模块仍可独立             |
+| 本机存储或可在本地运行的依赖 | 按目标行为选择临时目录、隔离实例或内存替身                         | 替身未覆盖的真实语义，例如事务、原子替换、编码和故障恢复         |
+| 自有远端系统                 | 在需要隔离传输的位置定义接口，由生产适配器处理协议；测试可提供替身 | 超时、序列化、重试及服务端契约；内存测试不能证明网络链路正确     |
+| 第三方系统                   | 围绕实际使用的能力封装适配器，使用受控响应或替身验证业务逻辑       | 外部协议、错误映射与响应格式；真实连接验证遵循项目授权和测试约定 |
 
-Your own services across a network boundary (microservices, internal APIs). Define a **port** (interface) at the seam. The deep module owns the logic; the transport is injected as an **adapter**. Tests use an in-memory adapter. Production uses an HTTP/gRPC/queue adapter.
+接缝可以位于模块内部，由组装代码提供依赖。测试使用内部接缝，不意味着普通调用者也应配置它。仅为满足适配器数量要求而增加替身，会增加维护成本。
 
-Recommendation shape: *"Define a port at the seam, implement an HTTP adapter for production and an in-memory adapter for testing, so the logic sits in one deep module even though it's deployed across a network."*
+**完成条件：** 明确测试经过的生产模块、替身替换的位置，以及真实契约由哪些检查覆盖；未验证的部分如实保留。
 
-### 4. True external (Mock)
+## 3. 迁移测试覆盖
 
-Third-party services (Stripe, Twilio, etc.) you don't control. The deepened module takes the external dependency as an injected port; tests provide a mock adapter.
+先核对旧测试验证的行为，再决定保留、迁移或删除：
 
-## Seam discipline
+1. 对照目标契约，列出受影响的正常行为、边界、失败路径和历史回归；断言依据沿用项目要求，不能直接从新实现生成。
+2. 在合适的模块层级补足接口测试，确认它们能区分正确行为与原来需要防止的错误。仍有独立职责的内部模块，可以保留自己的接口测试。
+3. 新测试承接相应覆盖后，删除重复测试或绑定已移除实现细节的测试。具有独立验证价值的规则、适配器和连接测试继续保留。
 
-- **One adapter means a hypothetical seam. Two adapters means a real one.** Don't introduce a port unless at least two adapters are justified (typically production + test). A single-adapter seam is just indirection.
-- **Internal seams vs external seams.** A deep module can have internal seams (private to its implementation, used by its own tests) as well as the external seam at its interface. Don't expose internal seams through the interface just because tests use them.
+内部实现变化时，验证同一契约的断言应尽量稳定；契约或所选模块层级发生变化时，测试可能需要合理迁移，不能仅因测试改动就判定其无价值。测试准备的调整与行为断言的变化分别核对。
 
-## Testing strategy: replace, don't layer
-
-- Old unit tests on shallow modules become waste once tests at the deepened module's interface exist; delete them.
-- Write new tests at the deepened module's interface. The **interface is the test surface**.
-- Tests assert on observable outcomes through the interface, not internal state.
-- Tests should survive internal refactors, since they describe behaviour, not implementation. If a test has to change when the implementation changes, it's testing past the interface.
+**完成条件：** 能解释受影响的旧覆盖去了哪里、为何删除或保留，以及哪些生产连接仍未验证。测试数量下降不是完成依据。

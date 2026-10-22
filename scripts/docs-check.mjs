@@ -1,22 +1,11 @@
 import { readdir, readFile, realpath, stat } from 'node:fs/promises';
 import { resolve, relative, join, dirname, isAbsolute, sep, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  ownedSkillDirectories,
+  skippedDocumentationDirectories as skippedDirectories,
+} from './owned-skills.mjs';
 
-const skippedDirectories = new Set([
-  '.git',
-  '.local',
-  '.agents',
-  '.codex',
-  'node_modules',
-  'test',
-  'tests',
-  'fixtures',
-  '__fixtures__',
-  '__tests__',
-  'vendor',
-  'third-party',
-  'third_party',
-]);
 const syntaxLimit = 16_384;
 const ownedDirectories = new Set(['docs', 'collector', '.github']);
 
@@ -28,6 +17,10 @@ function inside(root, path) {
 function ownedScope(root, path, directory = false) {
   if (!inside(root, path)) return false;
   const parts = relative(root, path).split(sep).filter(Boolean);
+  if (ownedSkillDirectories.includes(parts.slice(0, 3).join('/'))) {
+    if (parts.slice(3).some((part) => skippedDirectories.has(part))) return false;
+    return directory || /\.md$/i.test(path);
+  }
   if (parts.some((part) => skippedDirectories.has(part))) return false;
   if (directory) return ownedDirectories.has(parts[0]);
   return /\.md$/i.test(path) && (parts.length === 1 || ownedDirectories.has(parts[0]));
@@ -411,7 +404,7 @@ async function documentationFiles(root, excluded) {
   }
   for (const entry of await readdir(root, { withFileTypes: true }))
     if (entry.isFile() && /\.md$/i.test(entry.name)) result.push(join(root, entry.name));
-  for (const directory of ownedDirectories) {
+  for (const directory of [...ownedDirectories, ...ownedSkillDirectories]) {
     const path = join(root, directory);
     try {
       const resolved = await realpath(path);
@@ -592,7 +585,8 @@ function checkAgentRules(root, documents, add) {
  * Check owned Markdown, the ADR index and root AGENTS rule coverage offline.
  * Supported links: inline/image links and full, collapsed or defined shortcut
  * references; escaped/balanced destinations, angle paths and optional titles.
- * Markdown content is read only from root files or owned documentation trees,
+ * Markdown content is read only from root files, owned documentation trees or
+ * the explicitly maintained skill directories in owned-skills.mjs,
  * including after symlink resolution; excluded Markdown targets are reported.
  * Raw HTML links/anchors and arbitrary CommonMark extensions are not parsed.
  * Returns deterministic { file, line, code, message } findings; no files change.

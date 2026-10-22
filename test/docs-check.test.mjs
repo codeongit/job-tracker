@@ -29,6 +29,43 @@ async function fixture(t, documents = {}) {
   return root;
 }
 
+test('checks maintained skill links and anchors while leaving other skills outside the scan', async (t) => {
+  const root = await fixture(t, {
+    '.agents/skills/code-review/SKILL.md':
+      '# 审查\n\n[流程](../../../docs/guide.md#流程)\n[词汇](../codebase-design/SKILL.md#principles)\n[缺失](missing.md)\n[章节](../../../docs/guide.md#不存在)\n',
+    '.agents/skills/codebase-design/SKILL.md': '# Principles\n',
+    '.agents/skills/tdd/tests.md': '[审查](../code-review/SKILL.md#审查)\n',
+    '.agents/skills/external/SKILL.md': '[外部技能不扫描](absent.md)\n',
+    'docs/guide.md': '# 流程\n',
+  });
+  assert.deepEqual(
+    (await checkDocumentation(root)).map(({ file, line, code }) => ({ file, line, code })),
+    [
+      { file: '.agents/skills/code-review/SKILL.md', line: 5, code: 'link_target_missing' },
+      { file: '.agents/skills/code-review/SKILL.md', line: 6, code: 'link_anchor_missing' },
+    ],
+  );
+  await writeFile(join(root, '.agents/skills/code-review/missing.md'), '# 补充\n');
+  await writeFile(join(root, 'docs/guide.md'), '# 流程\n\n## 不存在\n');
+  assert.deepEqual(await checkDocumentation(root), []);
+});
+
+test('checks all workflows customized in this repository after the initial skill import', async (t) => {
+  const root = await fixture(t, {
+    '.agents/skills/ask-matt/SKILL.md': '[写作参考](missing.md)\n',
+    '.agents/skills/diagnosing-bugs/SKILL.md': '[诊断流程](missing.md)\n',
+    '.agents/skills/implement/SKILL.md': '[实施流程](missing.md)\n',
+  });
+  assert.deepEqual(
+    (await checkDocumentation(root)).map(({ file, code }) => ({ file, code })),
+    [
+      { file: '.agents/skills/ask-matt/SKILL.md', code: 'link_target_missing' },
+      { file: '.agents/skills/diagnosing-bugs/SKILL.md', code: 'link_target_missing' },
+      { file: '.agents/skills/implement/SKILL.md', code: 'link_target_missing' },
+    ],
+  );
+});
+
 test('checks inline, image, reference and repository-root links without reading code headings', async (t) => {
   const root = await fixture(t, {
     'README.md':
