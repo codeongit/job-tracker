@@ -1,5 +1,5 @@
 interface:
-  display_name: 'Ask Matt'
-  short_description: 'Find the right skill or workflow'
+  display_name: '选择技能入口'
+  short_description: '按当前目标选择澄清、规格、拆票、实施及其它专项技能的合适入口'
 policy:
   allow_implicit_invocation: false

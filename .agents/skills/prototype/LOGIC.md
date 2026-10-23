@@ -21,7 +21,7 @@ Before writing code, write down what state model and what question you're protot
 
 ### 2. Isolate the logic in a portable module
 
-Put the actual logic (the bit that's answering the question) in a single `<script>` block written as a small, pure module that could be lifted out and dropped into the real codebase later. The page around it is throwaway; this module isn't.
+将回答问题的逻辑写成单个 `<script>` 块中的小型纯模块，与页面外壳分开。逻辑和页面都属于原型；这种隔离便于判断模型，也便于已获授权的正式实施参考其设计。
 
 The right shape depends on the question:
 
@@ -30,7 +30,7 @@ The right shape depends on the question:
 - **A small set of pure functions** over a plain data type. Good when there's no implicit current state, just transformations.
 - **A class or module with a clear method surface** when the logic genuinely owns ongoing internal state.
 
-Pick whichever shape best fits the question being asked, *not* whichever is easiest to wire to a page. Keep it pure: no DOM, no `document`, no button handlers reaching inside it. The page calls into it; nothing flows the other direction. This is what makes the prototype useful past its own lifetime: once the question's answered, the validated reducer / machine / function set lifts into the real module on its own.
+Pick whichever shape best fits the question being asked, _not_ whichever is easiest to wire to a page. Keep it pure: no DOM, no `document`, no button handlers reaching inside it. The page calls into it; nothing flows the other direction. 正式实施可以参考经核对的 reducer、状态机或函数设计，仍需按生产要求补足验证与错误处理。
 
 ### 3. Build the shareable HTML file
 
@@ -51,11 +51,11 @@ Keep it beautiful but restrained: clean typography, generous spacing, one accent
 
 ### 4. Hand it over
 
-Send them the file, or open it for them. They'll click through the walkthroughs and free-play whenever they get to it; the interesting moments are when they say "wait, that shouldn't be possible" or "huh, I assumed X would be different"; those are the bugs in the _idea_, which is the whole point. If they want new actions or a new scenario, add them. Prototypes evolve.
+交付文件与简短操作说明，由用户打开并体验。本项目的真实浏览器验证遵循 [D017](../../../docs/adr/0017-manual-browser-testing.md)，已有原型授权不自动包括代理控制浏览器。用户发现“不应该发生”或“预期不同”的场景时，记录模型问题，并在原型范围内增加相应操作或引导演示。
 
 ### 5. Capture the answer and the prototype
 
-Once the prototype has answered its question, capture the answer, then capture the prototype the way the [SKILL](SKILL.md) describes. The logic-specific mapping: the validated reducer / machine / function set lifts into the real module (the decision, absorbed); the HTML shell rides along to the throwaway branch that keeps the prototype as a primary source, and being one self-contained file, it stays trivially re-runnable there.
+按 [SKILL](SKILL.md) 记录模型结论、反例、用户确认和未验证项，保存完整 HTML 及运行说明。仅要求验证模型时，交付原型与结论；正式实施已获授权时，将经核对的模型设计交回原任务，通过 implement 完成生产实现、测试与审查。完整 HTML 继续作为可重跑的设计证据保存。
 
 ## Anti-patterns
 

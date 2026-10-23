@@ -1,5 +1,5 @@
 interface:
-  display_name: "To Spec"
-  short_description: "Turn a conversation into a spec"
+  display_name: '整理规格'
+  short_description: '将已有讨论整理为可交接规格，保留决定来源、确认状态和验收条件'
 policy:
   allow_implicit_invocation: false

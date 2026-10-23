@@ -1,5 +1,5 @@
 interface:
-  display_name: 'Implement'
-  short_description: 'Build work from a spec or tickets'
+  display_name: '实施与交付'
+  short_description: '根据明确要求、规格或工单完成实施、验证、独立审查与提交交付'
 policy:
   allow_implicit_invocation: false

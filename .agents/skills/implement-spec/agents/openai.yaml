@@ -1,5 +1,5 @@
 interface:
-  display_name: "Implement Spec"
-  short_description: "Implement a whole spec as one PR"
+  display_name: '协调规格实施'
+  short_description: '按依赖协调多个工单，串行合并并完成完整规格的验证与独立审查'
 policy:
   allow_implicit_invocation: false

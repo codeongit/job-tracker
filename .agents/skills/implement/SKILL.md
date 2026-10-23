@@ -1,17 +1,44 @@
 ---
 name: implement
-description: 'Implement a piece of work based on a spec or set of tickets.'
-disable-model-invocation: true
+description: 根据已明确的用户要求、规格或工单完成实施、验证、独立审查与交付。
 ---
 
-Implement the work described by the user in the spec or tickets.
+# 实施与交付
 
-Follow [change workflow](../../../docs/agents/change-workflow.md) before editing: verify the affected current mechanism and intended behavior separately, capture the task baseline, and resolve consequential assumptions. Reuse this record for verification and independent review; scale the work to the actual impact. Do not treat an implementer-authored spec or ADR as evidence of user confirmation.
+将一个已获授权的明确目标落实为可验证的改动。输入可以是聊天要求、规格或工单；小任务直接实施，多工单协调见 [implement-spec](../implement-spec/SKILL.md)。已有诊断或测试流程进入本技能时，复用其基线与结果，从尚未完成的步骤继续。
 
-Use /tdd where possible, at pre-agreed seams.
+## 1. 核对目标与基线
 
-Run typechecking regularly, single test files regularly, and the full test suite once at the end.
+读取原始要求及后续修正；引用议题时按[议题跟踪约定](../../../docs/agents/issue-tracker.md)读取正文与相关评论。依据[现状与目标规则](../../../docs/agents/change-workflow.md#现状与目标依据)分别核对受影响机制与正确预期，并检查[交接条件](../../../docs/agents/change-workflow.md#阶段交接与可实施条件)。
 
-Once done, use /code-review to review the work.
+按[任务记录约定](../../../docs/agents/change-workflow.md#任务记录试行)创建或沿用说明，记录实际开始时间、原始目标、适用规则、影响、假设和验证安排；保留修改前基线，区分原有改动与本任务范围。已有用户决定、接缝和授权继续有效；仅补充会改变方案的缺口。
 
-Commit your work to the current branch.
+**完成条件：** 能用来源解释现有机制和目标，前置依赖已满足，关键假设已解决，基线与本次范围可定位。
+
+## 2. 分步实现与验证
+
+按影响逐步修改并核对调用者和依赖。测试先行、缺陷回归或集成测试使用 [tdd](../tdd/SKILL.md)，复用现有接缝；缺陷修复沿用 [diagnosing-bugs](../diagnosing-bugs/SKILL.md) 的复现、定位和回归结果。技能回引时继续当前任务，复用已完成工作。
+
+按[验证依据与覆盖](../../../docs/agents/change-workflow.md#验证依据与覆盖)选择能验证目标行为的检查。开发中运行相关非浏览器测试，收尾执行[维护手册要求的检查](../../../docs/MAINTENANCE.md#每次改动)，按影响选择定向或完整测试；发布前运行完整测试。纯文档按文档检查范围执行。发现新影响或原假设不成立时，更新任务记录并补查。
+
+按[证据版本与检查配置](../../../docs/agents/change-workflow.md#证据版本与检查配置)声明检查范围，用本机证据工具执行和关联适用检查；高风险验收条件在实现前独立核对。检查配置变化对照任务基线审查，证据失效后只补查受影响范围。
+
+按[文档影响规则](../../../docs/agents/change-workflow.md#文档影响与维护)同步维护受影响正文，或记录现有描述仍准确的依据。领域术语、当前行为和历史决定沿用各自权威位置。
+
+已约定的广泛重构若将整体通过条件放在最终集成工单，本工单须完成约定的局部验证，并记录暂未通过的整体检查、原因及承担者；不能据此宣称整体完成或发布。约定范围外的失败仍须处理。
+
+**完成条件：** 目标场景和保留行为有依据或验证，错误路径、覆盖限制和文档影响明确，本工单约定检查通过；留给最终集成的检查和人工验收单独记录。
+
+## 3. 独立审查与修正
+
+使用 [code-review](../code-review/SKILL.md) 审查完整本次改动，提供原始目标、修改前基线、相关规则与当前文件版本。按[发现与交接规则](../../../docs/agents/change-workflow.md#发现与交接)处理阻断项，判断建议的收益和范围；修正后按影响重跑检查，并交回审查者复查。
+
+**完成条件：** Spec 与 Standards 对同一交付版本明确结论，阻断项已解决，修正内容已验证和复查，剩余限制已记录。
+
+## 4. 提交与交付
+
+检查最终差异与暂存范围，将本任务改动提交到当前分支；已有任务明确另有提交安排时沿用该安排，原有无关改动保持独立。外部发布遵循本次任务授权。
+
+按[交付与验收记录](../../../docs/agents/change-workflow.md#交付与验收记录)交付：说明结果、文档影响、提交与验证版本、审查统计及记录链接，提供适用的简短人工验收项。记录首次交付时间；后续反馈与修复沿用同一任务说明。
+
+**完成条件：** 改动、验证和审查证据可对应实际交付版本，本地检查、CI 和人工验收状态分别明确。

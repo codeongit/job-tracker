@@ -1,3 +1,3 @@
 interface:
-  display_name: "领域建模"
-  short_description: "澄清领域概念、关系与业务边界，维护术语表并记录关键决定"
+  display_name: '领域建模'
+  short_description: '澄清领域概念、关系与业务边界，维护术语表并记录关键决定'

@@ -5,7 +5,7 @@
 ## 任务路由
 
 - **R001** 本仓库采用单上下文：根目录 [CONTEXT.md](CONTEXT.md) 仅定义领域术语，[docs/adr/](docs/adr/) 统一保存决策历史。开始任务前，读取 [ADR 索引](docs/adr/README.md)、相关 ADR 和 `CONTEXT.md`，核对已接受的决定、理由、重新评估条件及领域术语；议题、方案和代码沿用这些术语，发现与既有决定冲突时明确说明。当前系统行为从下方文档索引中的架构、数据与恢复、维护手册进入，文档维护遵循[文档影响与维护流程](docs/agents/change-workflow.md#文档影响与维护)。
-- **R002** 代码改动前及审查时，遵循[变更流程](docs/agents/change-workflow.md)，分别核对现有机制与目标行为，证据范围随影响调整。实施决策前及 Standards 审查时读取相关[编码规范](CODING_STANDARDS.md)，详细契约与流程沿文档指针查阅。
+- **R002** 实施任务使用 [implement](.agents/skills/implement/SKILL.md)，缺陷诊断使用 [diagnosing-bugs](.agents/skills/diagnosing-bugs/SKILL.md)，独立审查使用 [code-review](.agents/skills/code-review/SKILL.md)；按任务选择入口，复用已完成步骤。代码改动前及审查时按[变更共用规则](docs/agents/change-workflow.md)分别核对现有机制与目标行为，证据范围随影响调整。实施决策前及 Standards 审查时读取相关[编码规范](CODING_STANDARDS.md)。
 - **R003** 用户的新指示优先于旧决定。改变关键决定时，新增下一编号的 ADR，写明来源并附替代关系链接，保留旧 ADR 并更新索引。
 - **R004** BOSS 变更按文档索引中的触发条件读取设计、实现或操作说明；同次更新受影响文档，或说明现有描述仍准确的依据。结论按[文档维护流程](docs/agents/change-workflow.md#文档影响与维护)接受独立审查。
 - **R028** 处理 GitHub Issue 时，按[议题跟踪约定](docs/agents/issue-tracker.md)读取正文及相关评论，核对最新需求；本项目议题仓库为 `codeongit/job-tracker`。

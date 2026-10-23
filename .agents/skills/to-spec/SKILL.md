@@ -1,75 +1,68 @@
 ---
 name: to-spec
-description: "Turn the current conversation into a spec and publish it to the project issue tracker: no interview, just synthesis of what you've already discussed."
-disable-model-invocation: true
+description: 将已有讨论、计划或材料整理为可交接的规格，保留决定来源、确认状态和验收条件；用于综合已有结论，不自动开始实施。
 ---
 
-This skill takes the current conversation context and codebase understanding and produces a spec. Do NOT interview the user; just synthesize what you already know.
+# 整理规格
 
-The issue tracker and triage label vocabulary should have been provided to you. If not, tell the user to run `/setup-matt-pocock-skills`.
+将已有讨论和代码库理解整理为一份可交接的规格。复用已有结论；只有影响正确预期的缺口需要补充核实或聚焦提问，不重新开展整轮访谈。完成规格不代表已获实施授权。
 
-## Process
+## 1. 核对来源与已有决定
 
-1. Explore the repo to understand the current state of the codebase, if you haven't already. Use the project's domain glossary vocabulary throughout the spec, and respect any ADRs in the area you're touching.
+读取用户指定材料。来源是已有议题时，按[议题跟踪约定](../../../docs/agents/issue-tracker.md)读取正文及相关评论，核对后续修正。按 [AGENTS](../../../AGENTS.md) 查阅领域术语和相关 ADR，沿用已有任务记录。
 
-2. Sketch out the seams at which you're going to test the feature. Existing seams should be preferred to new ones. Use the highest seam possible. If new seams are needed, propose them at the highest point you can. The fewer seams across the codebase, the better - the ideal number is one.
+按[现状与目标依据](../../../docs/agents/change-workflow.md#现状与目标依据)分别核对当前机制与目标来源，承接上游的已确认决定、待验证假设和必须保留的约束。能从代码或材料查证的事实由代理核实；建议和未决事项保留其状态。
 
-Check with the user that these seams match their expectations.
+**完成条件：** 目标与保留条件有可追溯来源，未决事项及其影响明确；已有确认不因重新整理而失效。
 
-3. Write the spec using the template below, then publish it to the project issue tracker. Apply the `ready-for-agent` triage label - no need for additional triage.
+## 2. 综合规格与验收条件
 
-<spec-template>
+按实际影响裁剪下方模板。用用户可观察的行为描述方案，为关键行为、失败和边界场景提供可核对的验收条件。需要用户故事时，用“作为……，我希望……，以便……”表达；篇幅以覆盖目标为准。
 
-## Problem Statement
+测试安排遵循[验证依据与覆盖](../../../docs/agents/change-workflow.md#验证依据与覆盖)：复用已约定的测试接缝和现有先例，优先选择能覆盖目标行为的较高层稳定接口。只有现有接缝不足时才说明新增需求；会改变用户范围或取舍的选择才需要用户决定。
 
-The problem that the user is facing, from the user's perspective.
+高风险变更按同节的验收条件前置核对，将原始要求、预期结果、失败反例与验证方式对应；复用已有独立结论，避免错误目标进入实施。
 
-## Solution
+实现决定描述模块职责、接口契约、数据关系及取舍，不把易变的文件路径或实现代码写成需求。原型若用状态机、reducer、schema 或类型片段更准确地表达决定，可保留必要片段，注明原型来源及确认状态。
 
-The solution to the problem, from the user's perspective.
+```markdown
+# <规格标题>
 
-## User Stories
+## 问题与目标
 
-A LONG, numbered list of user stories. Each user story should be in the format of:
+用户遇到的问题、期望结果和本次范围。
 
-1. As an <actor>, I want a <feature>, so that <benefit>
+## 来源与决定状态
 
-<user-story-example>
-1. As a mobile bank customer, I want to see balance on my accounts, so that I can make better informed decisions about my spending
-</user-story-example>
+- 原始要求与相关讨论、议题或文档链接。
+- 已确认决定及确认依据。
+- 待验证假设、未决事项及其影响。
 
-This list of user stories should be extremely extensive and cover all aspects of the feature.
+## 目标行为与验收条件
 
-## Implementation Decisions
+按行为列出可观察结果和验收条件，覆盖相关失败与边界场景。
 
-A list of implementation decisions that were made. This can include:
+## 必须保留的行为与范围外事项
 
-- The modules that will be built/modified
-- The interfaces of those modules that will be modified
-- Technical clarifications from the developer
-- Architectural decisions
-- Schema changes
-- API contracts
-- Specific interactions
+既有约束、兼容性要求及本次不处理的内容。
 
-Do NOT include specific file paths or code snippets. They may end up being outdated very quickly.
+## 实现与验证安排
 
-Exception: if a prototype produced a snippet that encodes a decision more precisely than prose can (state machine, reducer, schema, type shape), inline it within the relevant decision and note briefly that it came from a prototype. Trim to the decision-rich parts, not a working demo, just the important bits.
+已有模块、接口和测试决定及其依据；测试接缝、先例、覆盖范围和人工验收安排。待实施方案与已生效行为分别标明。
 
-## Testing Decisions
+## 交接状态
 
-A list of testing decisions that were made. Include:
+是否达到可实施条件，尚缺哪些决定、证据或依赖。
+```
 
-- A description of what makes a good test (only test external behavior, not implementation details)
-- Which modules will be tested
-- Prior art for the tests (i.e. similar types of tests in the codebase)
+**完成条件：** 规格覆盖已授权目标，确认状态与原始来源一致，验收条件能区分正确行为与错误行为；没有因整理而补入未经确认的新要求。
 
-## Out of Scope
+## 3. 核对就绪状态并交付
 
-A description of the things that are out of scope for this spec.
+按[阶段交接与可实施条件](../../../docs/agents/change-workflow.md#阶段交接与可实施条件)判断规格是否可交接；缺少关键决定时交付带明确未决事项的草稿。需要拆成多个实施单元时，可交给 [to-tickets](../to-tickets/SKILL.md)；单个明确目标可供 [implement](../implement/SKILL.md) 使用，不要求每次走完整技能链。
 
-## Further Notes
+按本次请求交付到聊天、指定文档或已授权的 GitHub Issue。发布和标签操作遵循[议题跟踪约定](../../../docs/agents/issue-tracker.md)，沿用本次任务已有授权；仅在满足可实施条件时设置 `ready-for-agent`，缺少条件时说明原因，不机械标记就绪。
 
-Any further notes about the feature.
+实际修改仓库文档时，按[文档交付规则](../../../docs/agents/change-workflow.md#文档影响与维护)完成适用检查、审查和提交；草稿可按明确的未决状态交付，不扩大为方案实施。
 
-</spec-template>
+**完成条件：** 交付位置、来源、就绪状态和剩余缺口明确；发布时返回实际议题链接。规格交付到此结束，不自动实施。

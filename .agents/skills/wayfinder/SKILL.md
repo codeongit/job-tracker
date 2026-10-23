@@ -10,7 +10,7 @@ The destination varies per effort, and naming it is the first act of charting: i
 
 ## Plan, don't do
 
-Wayfinder is **planning** by default: each ticket resolves a decision, and the map is done when the way is clear, with nothing left to decide before someone goes and does the thing. The pull to just do the work is usually the signal you've reached the edge of the map and it's time to hand off. An effort can override this in its **Notes**, carrying execution into the map itself, but absent that, produce decisions, not deliverables.
+Wayfinder is **planning** by default: each ticket resolves a decision, and the map is done when the way is clear, with nothing left to decide before someone goes and does the thing. The pull to just do the work is usually the signal you've reached the edge of the map and it's time to hand off. 用户已授权的执行范围可记录在 **Notes**，并交由 [implement](../implement/SKILL.md) 继续；写入 Notes 本身不增加授权。复用已确认的目标与决定，只追问影响当前路径的实际缺口。
 
 ## Refer by name
 
@@ -22,7 +22,7 @@ The map is a single issue on this repo's issue tracker, labelled `wayfinder:map`
 
 The map is an **index**, not a store. It lists the decisions made and points at the tickets that hold their detail; a decision lives in exactly one place, its ticket, so the map never restates it, only gists it and links.
 
-**Where the map, its child tickets, blocking, and frontier queries physically live is tracker-specific.** The issue tracker should have been provided to you. If not, tell the user to run `/setup-matt-pocock-skills`. Consult the tracker doc's "Wayfinding operations" section for how _this_ repo expresses them. If no tracker has been provided, default to the local-markdown tracker.
+本项目使用[议题跟踪约定](../../../docs/agents/issue-tracker.md)中的 GitHub 仓库。操作前核对现有地图、议题、标签及可用的子议题和依赖能力；尚无约定时在本次地图 Notes 中明确关系的表达方式。实际能力不足以表示依赖时，用正文中的明确链接记录并据此核对前置项；不假定已有专门的地图查询接口。创建、评论、分配和关闭议题均遵循本次授权。
 
 ### The map body
 
@@ -102,18 +102,18 @@ Ruling something out of scope is a scoping act, not a step on the route. When a 
 
 ## Invocation
 
-Two modes. Either way, **never resolve more than one ticket per session**, with the exception of research tickets.
+两种入口均按依赖逐项处理决定，已授权连续推进时可以继续下一项；只有实际需要用户决定或授权的步骤才等待。保持每项结论与来源可定位，跨上下文时按[阶段边界](../ask-matt/PHASE-BOUNDARIES.md)交接。
 
 ### Chart the map
 
 User invokes with a loose idea.
 
 1. **Name the destination.** Call the Skill tool twice, for "grilling" and "domain-modeling", to pin down what this map is finding its way to: the spec, decision, or change. The destination fixes the scope, so it's settled first.
-2. **Map the frontier.** Grill again, **breadth-first** this time: fan out across the whole space rather than deep on any one thread, surfacing the open decisions and the first steps takeable now. **If this surfaces no fog** (the way to the destination is already clear, the whole journey small enough for one session), you don't need a map. Stop and ask the user how they'd like to proceed.
+2. **Map the frontier.** Grill again, **breadth-first** this time: fan out across the whole space rather than deep on any one thread, surfacing the open decisions and the first steps takeable now. 路径已经清楚且任务无需跨会话地图时，省略地图；已有授权覆盖下一步就回到对应技能继续，仅要求规划时交付结论。
 3. **Create the map** (label `wayfinder:map`): Destination and Notes filled in, Decisions-so-far empty, the fog sketched into **Not yet specified**.
 4. **Create the tickets you can specify now** as child issues of the map, then wire blocking edges in a **second pass** (issues need ids before they can reference each other). Wiring sorts them into the frontier and the blocked; everything you can't yet specify stays in the fog: the **Not yet specified** section.
 5. **Fire the research subagents.** For each `research` ticket you just created, spin up a subagent that calls the Skill tool with "research" to resolve it in parallel, capturing its findings on a throwaway `research/<name>` branch with a context pointer from the ticket.
-6. Stop: charting is one session's work; it hand-resolves nothing.
+6. 核对地图及来源后交付。仅要求绘制地图时在此完成；用户已授权继续解决决定时，进入下方流程，复用刚建立的材料。
 
 ### Work through the map
 

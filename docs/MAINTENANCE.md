@@ -22,7 +22,7 @@ pnpm service status
 
 系统结构与模块职责见[当前架构](ARCHITECTURE.md)。BOSS 变更按[文档影响与维护](agents/change-workflow.md#文档影响与维护)选择设计、实现或操作正文，在同次变更中更新受影响内容，或说明无需更新的核对依据；本次 BOSS 职责重构及保留条件见[重构记录](ARCHITECTURE_REFACTOR_PLAN.md)。
 
-代理改动按[现状理解与目标核对](agents/change-workflow.md)执行，检查范围随影响调整；该页统一维护修改前核对、独立测试预期、覆盖核对、审查及交付记录。
+代理实施按 [implement](../.agents/skills/implement/SKILL.md) 推进，独立审查按 [code-review](../.agents/skills/code-review/SKILL.md) 执行，检查范围随影响调整；[变更共用规则](agents/change-workflow.md)统一维护目标依据、阶段交接、验证覆盖、文档与交付记录要求。
 
 ```sh
 pnpm format
@@ -37,7 +37,9 @@ pnpm format:check
 
 [规则保障映射](agents/rule-assurance.md) 记录各规则的已有机制、验证入口和缺口。检查器要求根 AGENTS 的实际顶层条目使用合法唯一编号，并与固定六列表中的行一一对应；漏项、重复、未知编号、缺少文档或空必填列均报错。代码块、引用示例和嵌套说明不计为顶层规则，总数不固定为 30；链接检查仍只验证目标存在和文档章节，不执行所列命令或推断测试通过。新增规则同次增加映射，编号稳定性及正文含义由差异审查核对。修改此机制运行 `node --test test/docs-check.test.mjs`，只使用临时目录和合成文件。
 
-每次交付按[交付与验收记录](agents/change-workflow.md#4-交付与验收记录) 记录相关规则 ID、实际证据、被测 commit／未提交文件摘要和未验证项。结果使用“通过、失败、未运行、待人工验收、不适用（附理由）”，随版本和场景保存，不把一次通过写成永久保障。
+每次交付按[交付与验收记录](agents/change-workflow.md#交付与验收记录) 记录相关规则 ID、实际证据、被测 commit／未提交文件摘要和未验证项。结果使用“通过、失败、未运行、需补查、待人工验收、不适用（附理由）”，随版本和场景保存，不把一次通过写成永久保障。
+
+代码、检查器及流程规则任务按[本机证据核验](agents/task-evidence.md)使用 `pnpm task:evidence` 固定检查与审查范围、运行非浏览器检查，并在交付前复核版本。它在 `.local/tasks/` 记录命令结果和文件摘要，核验声明范围内的版本变化及检查配置漂移；授权、审查独立性和人工验收仍由原流程确认。修改该工具运行 `node --test test/task-evidence.test.mjs`；流程语义变化另按[流程回归案例](agents/workflow-regressions.md)做受影响场景的独立试验。
 
 本机工作区客户端与服务接口的联动回归可运行 `node --test test/local-workspace-http.test.mjs`：真实客户端经回环 HTTP 调用真实服务，读写临时目录中的 `WorkspaceStore`，使用合成数据；客户端缓存和本机模式身份标记（authority）使用内存替身。它不启动浏览器，不访问真实平台或用户的 `.local`，已由文件命名自动纳入 `pnpm test` 及 CI 的非浏览器步骤。真实浏览器存储和页面交互仍按 [D017](adr/0017-manual-browser-testing.md) 由人工验收。
 

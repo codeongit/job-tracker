@@ -1,3 +1,3 @@
 interface:
-  display_name: "Grilling"
-  short_description: "Stress-test thinking a round of questions at a time"
+  display_name: '分轮追问'
+  short_description: '通过分轮追问检验计划、设计或决策，查证事实并澄清关键取舍'

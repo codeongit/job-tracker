@@ -1,35 +1,62 @@
 ---
 name: implement-spec
-description: "Implement a specification in code."
-disable-model-invocation: true
+description: 协调已有规格下的多个工单，按依赖实施并串行合并，经整体验证与独立审查后交付同一分支及 PR。
 ---
 
-You have been provided a spec. This spec should have tickets associated with it, describing how to implement the spec.
+# 协调规格实施
 
-The goal is a PR which implements the entire spec on a single branch.
+输入是明确且获授权的规格及其关联工单，目标是在同一集成分支交付完整规格。单个工单的实施交给 [implement](../implement/SKILL.md)；本技能负责依赖、分工、合并和整体验证。只有一个明确实施单元时，直接使用 implement。
 
-The tickets are not a list of steps. They are a **task graph** with blocking relationships between them. This means there is always a **frontier** of tickets which are ready to be grabbed.
+工单构成带前置依赖的**任务图**。当前可开始的工单必须满足[变更共用规则](../../../docs/agents/change-workflow.md#阶段交接与可实施条件)，且所需前置结果已经合入集成分支。按实际资源、接口稳定性和写入冲突安排并行，同一集成分支的合并与修复串行执行。
 
-Communication to and from subagents should be sparse. Communicate primarily through **context pointers**: to the spec, tickets, research notes, and previous commits. Don't duplicate information already available via pointers.
+## 1. 核对规格与任务图
 
-**Implementer subagents** should be run in the background where possible for **maximum concurrency**.
+读取原始规格、关联工单及后续修正；GitHub 议题按[议题跟踪约定](../../../docs/agents/issue-tracker.md)读取正文和评论。核对目标来源、确认状态、范围限制、整体验收条件，以及各工单对规格的覆盖关系。
 
-## Steps
+记录前置依赖、可并行部分和跨工单验证责任。尚未解决的关键决定交回需求澄清，仍可独立实施的部分继续推进。依赖冲突或循环须先解决，生成工单和标签本身不证明工作已经可实施。
 
-1. Read the spec and tickets. Read enough to understand the task graph.
+**完成条件：** 规格验收项均有实施或验证归属，当前可开始的工单明确，关键未知与授权边界已记录。
 
-2. (optional) Use an **exploration subagent** to conduct any exploration required by the tickets - relevant codebase files or external documentation. Ensure the exploration subagent can save files - it should save its markdown notes in a directory outside the repo, accessible by all future subagents. This lets **implementer subagents** focus on implementation rather than exploration.
+## 2. 准备集成分支与上下文
 
-3. Create a branch, and a draft PR. The PR should be marked as 'closing' the spec issue and tickets.
+按共用规则保留[修改前基线](../../../docs/agents/change-workflow.md#现状与目标依据)并建立任务记录。沿用用户指定的集成分支，或按仓库约定创建本任务分支。记录每个工单的负责人、分支、基线、合入提交及验证状态。
 
-4. Use **implementer subagents** to implement each ticket. Each implementer subagent should work in its own worktree, on its own branch.
+以**上下文指针**交接原始规格、工单、研究材料、决定来源和前置提交，附上理解当前任务必需的摘要。需要探索代码或外部契约时，可先分派研究子代理；材料放在所有后续实施者可读取的位置，并按仓库隐私规则保留。
 
-5. Once an **implementer subagent** completes, merge its work to the PR branch with a **merger subagent**.
+按本次已有授权创建或更新草稿 PR；未授权外部发布时，先完成本地分支与可审阅的 PR 文案。PR 说明关联规格与工单，只有确认完整覆盖的议题才使用关闭关键词。撰写 PR 说明使用 `pr`。
 
-6. If this changes the **frontier** of available tickets, kick off more **implementer subagents** to work on the new tickets. This allows for maximum concurrency.
+**完成条件：** 集成分支、基线、任务图及交接材料可定位，外部操作沿用已有授权。
 
-7. Once all tickets are complete, run /code-review on the PR branch. Fix all issues raised by the code review in a single **implementer subagent**.
+## 3. 分派单个工单
 
-8. Mark the PR as ready for review.
+从当前可开始的工单中，选择能独立推进的任务分派给实施子代理。每个实施者使用独立 worktree 和分支，从包含所需前置提交的集成分支开始，并按 [implement](../implement/SKILL.md)完成实现、验证、独立审查及提交。
 
-9. Clean up all **implementer subagent** worktrees.
+交接时给出工单范围、必须保留的行为、来源指针、前置提交、接口约定及回报要求。实施者返回提交、实际检查与审查记录、剩余限制，以及会影响其它工单的接口变化。共享文件或未稳定接口会造成冲突时，缩小并行范围或先完成前置任务。
+
+**完成条件：** 每个执行中的工单都有明确边界和独立工作区，实施者取得足够来源及依赖结果。
+
+## 4. 串行合并并更新依赖
+
+实施者完成后，由一个合并责任人逐个核对提交范围、验证结果与审查结论，再合入集成分支。可使用合并子代理，但同一时刻只有一个责任人修改集成分支；发生冲突时使用 `resolving-merge-conflicts`追溯双方意图。
+
+每次合并后按影响验证连接、更新工单状态与任务图。只有前置结果已合入且依赖接口成立，才启动后续工单；已有并行分支受新变化影响时，先同步依赖并补充验证。工单因新发现受阻时，记录原因、解除条件及仍可继续的工作。广泛重构已约定中间批次不能独立通过全部检查时，沿用各工单的局部验证及最终集成责任，完整通过条件在最终集成工单兑现。
+
+**完成条件：** 已合入内容与任务图状态一致，合并或接口变化有相应验证，后续工单使用有效的前置结果。
+
+## 5. 验证并审查完整规格
+
+全部实施单元合入后，以原始规格的整体验收条件核对跨工单行为、必须保留的约束和文档影响。按[维护手册](../../../docs/MAINTENANCE.md#每次改动)运行适用检查；逐票通过不能替代整体连接验证，人工验收与未验证部分单独标明。
+
+对同一最终分支版本调用 [code-review](../code-review/SKILL.md)，提供原始规格、修改前基线、完整改动、各工单的来源与验证记录。指定实施者在已有授权内解决阻断项，修复串行合入，再按影响验证并交回独立审查者复查；变更后的结论对应新的文件版本。
+
+按[证据复用规则](../../../docs/agents/change-workflow.md#审查证据与发现)承接仍有效的逐票检查和审查，最终补查跨工单连接、集成差异与整体验收缺口；逐票记录的存在本身不能证明这些连接成立。
+
+**完成条件：** 整体目标与约束有对应证据，阻断项已解决且受影响部分已复查，剩余限制和人工验收项明确。
+
+## 6. 交付与清理
+
+按[交付与验收记录](../../../docs/agents/change-workflow.md#交付与验收记录)汇总最终提交、规格覆盖、实际验证、审查结果及剩余验收项。已获 PR 操作授权且满足上一步完成条件时，将 PR 标为可审查；标为可审查不等于用户已经验收。
+
+确认必要提交、任务材料及恢复线索已保留后，只清理本任务创建且不再需要的实施 worktree。保留尚有未合入成果或未保存材料的工作区，并说明其用途；清理范围不包含用户原有工作区或无关分支。
+
+**完成条件：** 交付物与验证版本一致，规格整体状态如实可查，本任务临时工作区已清理或说明保留原因。

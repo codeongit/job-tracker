@@ -15,7 +15,8 @@
     "format:check": "prettier --check . && node scripts/format-skills.mjs --check",
     "verify": "pnpm test && pnpm check && pnpm format:check && pnpm test:browser",
     "doctor": "node scripts/doctor.mjs",
-    "review:metrics": "node scripts/review-metrics.mjs"
+    "review:metrics": "node scripts/review-metrics.mjs",
+    "task:evidence": "node scripts/task-evidence.mjs"
   },
   "engines": {
     "node": ">=24 <25"

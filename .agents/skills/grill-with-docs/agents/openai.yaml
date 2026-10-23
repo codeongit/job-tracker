@@ -1,5 +1,5 @@
 interface:
-  display_name: "Grill with Docs"
-  short_description: "Grill a design and write its docs"
+  display_name: '方案追问与文档整理'
+  short_description: '通过分轮追问澄清方案，在讨论过程中维护已确认的术语、业务规则和关键决定'
 policy:
   allow_implicit_invocation: false

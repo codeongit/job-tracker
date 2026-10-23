@@ -1,105 +1,29 @@
-# Out-of-Scope Knowledge Base
+# 不予实施的决定
 
-The `.out-of-scope/` directory in a repo stores persistent records of rejected feature requests. It serves two purposes:
+记录拒绝理由与来源，使后续类似需求能够核对当时的范围和取舍。本仓库按 [AGENTS 的 R001／R003](../../../AGENTS.md#任务路由)维护决定：关键决定进入 [ADR 历史](../../../docs/adr/README.md)，具体议题的处理结果留在议题正文或评论中，不另建 `.out-of-scope/` 作为第二份决定库。
 
-1. **Institutional memory**: why a feature was rejected, so the reasoning isn't lost when the issue is closed
-2. **Deduplication**: when a new issue comes in that matches a prior rejection, the skill can surface the previous decision instead of re-litigating it
+## 查阅与判断
 
-## Directory structure
+分流时按领域概念查找相关 ADR 和已有议题，不只匹配标题用词。找到类似拒绝后，核对原始来源、理由、约束、状态与重新评估条件：
 
-```
-.out-of-scope/
-├── dark-mode.md
-├── plugin-system.md
-└── graphql-api.md
-```
+- 既有决定仍适用且本次授权允许处理时，引用其依据继续分流。
+- 用户的新指示改变旧决定时，按下方维护规则更新；不重复询问已明确的新意图。
+- 材料不足以判断是否适用时，说明具体差异和待决定事项，继续独立核对。
+- 相似议题涉及不同约束时，分别处理，不能只凭概念相似关闭新需求。
 
-One file per **concept**, not per issue. Multiple issues requesting the same thing are grouped under one file.
+## 哪些情况需要记录
 
-## File format
+- **拒绝增强需求：** 说明项目范围、能力约束或已接受的取舍，并链接原始需求与决定来源。属于关键决定时按 ADR 约定新增或引用现有决定；单个议题的局部处置可留在议题历史。
+- **已经实现：** 给出实现位置及核对结果。这是完成状态，不记录为拒绝决定。
+- **暂缓处理：** 说明尚未满足的条件及再次处理时机。暂时缺少时间或资源不等于永久拒绝。
+- **缺陷不予处理：** 保留核对结果和理由；是否需要 ADR 由决定的影响范围确定，不由 `bug`／`enhancement` 标签单独决定。
 
-The file should be written in a relaxed, readable style, more like a short design document than a database entry. Use paragraphs, code samples, and examples to make the reasoning clear and useful to someone encountering it for the first time.
+同一决定覆盖多个议题时，复用该决定并追加来源链接，避免重复维护理由。议题操作按[议题跟踪约定](../../../docs/agents/issue-tracker.md)及本次授权执行。
 
-```markdown
-# Dark Mode
+## 改变既有决定
 
-This project does not support dark mode or user-facing theming.
+用户明确改变关键决定时，新增下一编号的 ADR，写明新指示来源、理由和替代关系，保留旧 ADR 并更新索引。局部处置改变时，在议题中保留原记录并追加新结论。旧议题是否重开按本次任务范围判断，不因决定被替代就自动重开所有历史议题。
 
-## Why this is out of scope
+## 迁用于其他仓库
 
-The rendering pipeline assumes a single color palette defined in
-`ThemeConfig`. Supporting multiple themes would require:
-
-- A theme context provider wrapping the entire component tree
-- Per-component theme-aware style resolution
-- A persistence layer for user theme preferences
-
-This is a significant architectural change that doesn't align with the
-project's focus on content authoring. Theming is a concern for downstream
-consumers who embed or redistribute the output.
-
-```ts
-// The current ThemeConfig interface is not designed for runtime switching:
-interface ThemeConfig {
-  colors: ColorPalette; // single palette, resolved at build time
-  fonts: FontStack;
-}
-```
-
-## Prior requests
-
-- #42: "Add dark mode support"
-- #87: "Night theme for accessibility"
-- #134: "Dark theme option"
-```
-
-### Naming the file
-
-Use a short, descriptive kebab-case name for the concept: `dark-mode.md`, `plugin-system.md`, `graphql-api.md`. The name should be recognizable enough that someone browsing the directory understands what was rejected without opening the file.
-
-### Writing the reason
-
-The reason should be substantive: not "we don't want this" but why. Good reasons reference:
-
-- Project scope or philosophy ("This project focuses on X; theming is a downstream concern")
-- Technical constraints ("Supporting this would require Y, which conflicts with our Z architecture")
-- Strategic decisions ("We chose to use A instead of B because...")
-
-The reason should be durable. Avoid referencing temporary circumstances ("we're too busy right now"); those aren't real rejections, they're deferrals.
-
-## When to check `.out-of-scope/`
-
-During triage (Step 1: Gather context), read all files in `.out-of-scope/`. When evaluating a new issue:
-
-- Check if the request matches an existing out-of-scope concept
-- Matching is by concept similarity, not keyword: "night theme" matches `dark-mode.md`
-- If there's a match, surface it to the maintainer: "This is similar to `.out-of-scope/dark-mode.md`. We rejected this before because [reason]. Do you still feel the same way?"
-
-The maintainer may:
-
-- **Confirm**: the new issue gets added to the existing file's "Prior requests" list, then closed
-- **Reconsider**: the out-of-scope file gets deleted or updated, and the issue proceeds through normal triage
-- **Disagree**: the issues are related but distinct, proceed with normal triage
-
-## When to write to `.out-of-scope/`
-
-Only when an **enhancement** (not a bug) is *rejected* as `wontfix`. This applies to enhancement PRs exactly as it does to issues: a rejected PR is recorded here so the same request doesn't return as fresh code.
-
-Do **not** write here when something is closed as `wontfix` because it's **already implemented**. That's a built feature, not a rejected one; recording it would poison the dedup checks with false rejections. Instead, the closing comment points to where the feature already lives.
-
-The flow:
-
-1. Maintainer decides a feature request is out of scope
-2. Check if a matching `.out-of-scope/` file already exists
-3. If yes: append the new issue to the "Prior requests" list
-4. If no: create a new file with the concept name, decision, reason, and first prior request
-5. Post a comment on the issue explaining the decision and mentioning the `.out-of-scope/` file
-6. Close the issue with the `wontfix` label
-
-## Updating or removing out-of-scope files
-
-If the maintainer changes their mind about a previously rejected concept:
-
-- Delete the `.out-of-scope/` file
-- The skill does not need to reopen old issues; they're historical records
-- The new issue that triggered the reconsideration proceeds through normal triage
+其他仓库若明确采用 `.out-of-scope/` 拒绝库，可按概念归并拒绝理由和议题链接，并沿用该仓库的历史维护约定。先查现有决定的权威位置，避免在 ADR 与拒绝库中复制完整定义；更新后仍须能定位旧理由及其被替代的依据。

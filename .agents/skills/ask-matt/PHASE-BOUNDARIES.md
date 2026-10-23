@@ -1,55 +1,47 @@
-# Phase boundaries
+# 阶段边界与上下文选择
 
-A **phase** is a chunk of work inside a session: the grilling, the implementation, the QA. The definition is fuzzy on purpose: a phase ends when you think _"ok, we're done with that"_.
+**阶段**是围绕一个目标展开的一段工作，例如澄清需求、完成实现或形成审查结论。**阶段边界**是这段工作已有可交接结果、准备进入下一段工作的时点；它不要求每个任务经历同样的阶段。
 
-The **phase boundary** is the gap between two phases, and it is the only place this decision belongs. Mid-phase there is no decision to make: continue, or split the work that's left into subagents. Compacting mid-phase makes the agent lose the thread.
+优先在阶段边界判断上下文去留，此时更容易说明已完成什么、下一步需要什么。阶段中仍可继续或委派独立工作；若环境限制要求提前切换，先保存当前进度、未完成动作和继续入口，再按实际能力交接或压缩。
 
-## The five options
+## 按顺序判断
 
-| Option         | What it does                                                        |
-| -------------- | ------------------------------------------------------------------- |
-| **Continue**   | Stay in the session. No context switch at all.                      |
-| **`/clear`**   | Empty the context window and start from nothing.                    |
-| **`/handoff`** | Write a portable markdown file and seed a session anywhere with it. |
-| **Subagent**   | Send the task to its own context window and get a report back.      |
-| **`/compact`** | Compress this context and seed a fresh session with the summary.    |
+依次评估以下选择，找到适合主线下一步的方式后即可停止。这个顺序用于判断主线上下文的去留；可独立推进的工作，也可在主线继续时并行委派。
 
-## The tree
+### 1. 能在当前会话继续吗？
 
-Work top to bottom at the boundary. The first **yes** wins.
+下一阶段仍需要本轮讨论的原始理由，或当前上下文足以支持剩余工作时，优先继续。例如，从需求澄清进入规格整理，保留原始讨论有助于区分已确认决定、探索中的设想和否决理由。
 
-**1. Can you continue in this session?** Two things make the answer yes: the next phase needs this phase as a **primary source**, or you have enough [smart zone](https://www.aihero.dev/ai-coding-dictionary/smart-zone) left (~150k tokens) for the next phase to fit. Grilling → implementation is the standard yes: the implementation wants the reasoning verbatim, not a summary of it. Continue costs nothing and loses nothing, so rule it out before anything else.
+结合当前环境的实际限制、剩余工作的规模，以及是否已出现遗漏或反复重查来判断承载能力；不使用固定 token 数作为跨模型、跨环境的切换门槛。继续能保留已有细节，也会保留探索过程的噪声，需要权衡它们对下一步的影响。
 
-**2. Is the context irrelevant to what comes next?** Is everything in this session (the exploration, the decisions, the dead ends) disposable? If so, **`/clear`**. It is the cheapest move on the board: it takes no time and hands back the whole window. `/clear` also isn't terminal: the old session stays resumable.
+### 2. 当前上下文对下一项工作已无关吗？
 
-The cost of getting this wrong is one-way. Clear a _relevant_ context and you lose the **why** behind what you built, and no amount of reading the diff back gets it returned.
+若下一项工作不依赖当前讨论，且需要保留的结果已落在可定位的材料中，可以清空上下文或开启新会话。工单自包含不代表上一轮的上下文必然无关；先核对是否仍有未落盘的决定、限制或未完成动作。
 
-**3. Do you need to hand off?** `/handoff` is narrow. You need it only when you are:
+误清空可能丢失“为什么这样做”，仅重读文件差异通常无法还原未记录的取舍。旧会话是否可恢复，以当前环境提供的能力为准。
 
-- swapping to a **new harness** (Claude → Codex),
-- moving to a **new directory** or repo,
-- sending the work to a **colleague**,
-- or forking a side task you found **mid-phase** without derailing what you're doing.
+### 3. 是否需要可携带的交接？
 
-That list is the whole clause. What `/handoff` buys is **portability**: a file that travels. If nothing is travelling, you don't need it.
+工作确实要迁移到其它执行环境、目录或仓库，交给协作者，或将支线交到独立会话时，使用 `handoff` 整理可携带的交接文件。它的价值是让接收方能够在别处继续；同一会话内的普通阶段推进无需因此生成交接文件。
 
-**4. Can the task be done AFK?** Is it scoped tightly enough to run with you away from the keyboard, no steering? Then send it to a **subagent** and leave this session untouched. Automated review is the standard case: the agent reads the diff and reports, and you aren't needed while it does.
+交接材料沿用[阶段交接约定](../../../docs/agents/change-workflow.md#阶段交接与可实施条件)，保留任务、来源、决定理由、版本与证据、授权和依赖，以及当前进度与下一步。恢复时核对变化及过期证据，再继续已授权工作。仅切换执行环境不会改变已有授权和确认状态。
 
-**5. Otherwise, `/compact`.** Relevant context, same harness, same directory, and you need to stay in the loop: this is where the tree lands, and it lands here often. Pass it an instruction (`/compact we're going to QA this area`) so the summary keeps what the next phase needs.
+### 4. 能交给子代理独立推进吗？
 
-`/compact` is the **default, not the first reach**. It sits at the bottom because the four questions above it are all cheaper or more precise. The failure mode when people start here is a fresh session that is confidently wrong about a decision the summary flattened.
+若工作边界明确，输入、预期结果和依赖足以让执行者独立推进，可以委派子代理，并保留主线会话。独立调查或审查通常适合这种方式；仍依赖用户关键取舍的工作，应先解决影响其正确性的缺口。
 
-## Primary and secondary sources
+子代理能看到多少历史取决于实际委派方式。提供任务所需的原始材料和来源位置；返回后结合证据接续主线，必要时读取原始产物，不把报告摘要当成全部上下文。
 
-Every move except **Continue** turns a **primary source** into a **secondary source**: the session as it happened, replaced by a summary of it. The trade is always the same shape:
+### 5. 是否需要压缩当前上下文？
 
-| Source                             | Information | Noise | Room to move |
-| ---------------------------------- | ----------- | ----- | ------------ |
-| Primary (Continue)                 | Full        | Lots  | Little       |
-| Secondary (`/compact`, `/handoff`) | Lossy       | Less  | Lots         |
+上下文仍相关、工作继续留在当前环境，且前述方式不适合解决实际的上下文压力时，使用环境提供的压缩能力。说明下一阶段要完成什么，让摘要保留所需决定、理由、未决事项和可回查的来源。
 
-This is why question 1 comes first. You only pay the lossiness when staying costs more than it saves.
+压缩是保留任务连续性的一种选择；只有确有需要时才采用。若环境自动压缩，恢复后沿用保存的目标和进度，并按需回查来源。
 
-## These are judgement calls
+## 原始材料与摘要的取舍
 
-The questions are not objective: each has taste in it, and the same boundary can go two ways on two days. The value is in asking them **in order**, at the boundary rather than in the middle of the work.
+原始讨论保留决定形成的过程，也可能包含大量已放弃的探索。交接文件和压缩摘要更集中，但会省略细节；子代理报告同样只是其工作结果的一种呈现，是否保留原始上下文要看实际材料。
+
+当下一阶段依赖某项决定的理由时，保留原文或具体来源指针；摘要应区分事实、已确认决定和待定推断。摘要与原始材料不一致时，回查原始材料及后续用户修正，避免把压缩后的表述当成新的决定。
+
+文中的继续、清空、交接、委派和压缩是操作类别。`/clear`、`/handoff`、`/compact` 等命令名只在当前环境确实提供时使用；没有对应能力时，选择可用的继续、保存交接材料或新会话方式。所有选择都沿用当前任务和工具的权限边界。

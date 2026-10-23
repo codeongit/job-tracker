@@ -1,28 +1,36 @@
 ---
 name: grilling
-description: Grill the user relentlessly about a plan, decision, or idea. Use when the user wants to stress-test their thinking, or uses any 'grill' trigger phrases.
+description: 当用户希望通过分轮追问检验计划、设计或决策时使用；查证事实、澄清关键取舍，并逐步形成明确共识。
 ---
 
-Interview the user relentlessly until you reach a shared understanding. Map this as a **design tree**: every decision branches into the decisions that hang off it.
+# 分轮追问
 
-Work the tree in **rounds**. The **frontier** is every decision whose prerequisites are already settled: the questions you can ask _now_ without guessing at answers you haven't heard yet. Ask the whole frontier in one round: number each question and give your recommended answer. Then wait for the user's answers before the next round.
+围绕本次目标持续追问，检验理由、替代方案和会改变结论的边界情况。用**决策树**整理关键决定及其依赖，沿用用户已明确的约束和选择。
 
-Format a round like so:
+## 按依赖分轮推进
 
+**当前可问的问题**是前置事实和决定已经明确、无需猜测其他未决答案的问题。每轮优先处理影响方案最大的事项；相互独立的问题可以一起问，问题较多时按重要性分批。
+
+如果一个问题依赖本轮尚未回答的问题，或仍在查证的事实，将它留到前提明确后再问。等待本轮用户回答，再更新决策树并选择下一轮问题；已经解决的事项无需重复确认。
+
+每题给出编号和清晰的问题；涉及取舍时列出可行选项，并附有依据的推荐及简短理由。证据不足以推荐时说明缺口，不把猜测当成结论。取舍问题可采用以下格式：
+
+```text
+❓ **Q1** — **问题标题**：问题及需要权衡的选项。
+
+➡️ 推荐选择及理由，或当前缺少的依据。
 ```
-❓ **Q1** - **<question title>**: <question body, might be multiple paragraphs, including multiple choices>
 
-➡️ <your recommended answer>
+## 查证事实与澄清取舍
 
----
+先自行核查允许访问的代码、文档和环境。彼此独立的调查适合并行时，委派给可用的子代理；调查期间继续处理不依赖结果的问题。
 
-❓ **Q2** - **<question title>**: <question body, might be multiple paragraphs, including multiple choices>
+需要用户提供、且无法从已有材料查证的信息，直接询问。只把尚未明确、确实需要用户权衡的决定交给用户，等待其回答；推荐答案不等于用户已经作出选择。
 
-➡️ <your recommended answer>
-```
+## 完成与实施
 
-Each round the user answers reshapes the tree: settled decisions push the frontier outward and unblock questions that depended on them. Recompute the frontier and ask the next round. A question whose answer depends on another question still open in this round belongs to a _later_ round, not this one.
+当前没有可问的问题时，检查是否仍有调查中的事实或等待用户决定的事项；存在这些依赖时，说明正在等待什么并继续查证或等待回答，讨论仍未完成。
 
-Finding _facts_ is your job, never the user's. When a frontier question needs a fact from the environment (filesystem, tools, etc.), dispatch a sub-agent to find it; don't ask the user for anything you could look up yourself. Don't block on it: a running exploration is an unsettled prerequisite, so only the questions downstream of it wait for the sub-agent to report; ask the rest of the frontier now. The _decisions_ are the user's: put each to them and wait.
+本次范围内会改变方案的事实和关键决定均已明确，才可宣布讨论完成。若用户选择缩小范围或接受某项不确定性，在总结中保留该选择及其影响。结束时汇总已确认结论、依据和保留的限制。
 
-The session is done when the frontier is empty: every branch of the design tree visited, nothing left silently assumed. Do not act on it until the user confirms you have reached a shared understanding.
+方案实施以用户的明确授权为准；已有确认和授权继续有效，仅在仍有缺口时询问。访谈期间可以继续开展已授权的调查、分析和记录。

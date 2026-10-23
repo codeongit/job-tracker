@@ -1,105 +1,66 @@
 ---
 name: to-tickets
-description: Break a plan, spec, or the current conversation into a set of tracer-bullet tickets, each declaring its blocking edges, published to the configured tracker (edges as text in one file per ticket locally, or native blocking links on a real tracker).
-disable-model-invocation: true
+description: 将计划、规格或已有讨论拆成可独立验证和交接的工单，明确来源、依赖及整体验收归属；按本次授权保存或发布，不自动实施。
 ---
 
-# To Tickets
+# 拆分工单
 
-Break a plan, spec, or conversation into a set of **tickets**: tracer-bullet vertical slices, each declaring the tickets that **block** it.
+把工作拆成可交接的实施单元，优先采用贯穿相关层次的纵向切片，并声明真正阻塞每项工作的依赖。明确的小改动可直接进入 [implement](../implement/SKILL.md)，无需为了使用技能而拆单。
 
-The issue tracker and triage label vocabulary should have been provided to you. If not, tell the user to run `/setup-matt-pocock-skills`.
+## 1. 承接目标与约束
 
-## Process
+读取已有讨论及用户指定的规格、计划或议题。来源是 GitHub Issue 时，按[议题跟踪约定](../../../docs/agents/issue-tracker.md)读取完整正文及相关评论。按 [AGENTS](../../../AGENTS.md) 核对领域术语和相关 ADR，必要时补查当前机制及测试先例。
 
-### 1. Gather context
+依[现状与目标依据](../../../docs/agents/change-workflow.md#现状与目标依据)承接原始来源、已确认决定、待验证假设、必须保留的行为和范围限制。可查证的缺口先核实；真正需要用户决定的范围或拆分取舍才集中提问，复用已有授权和确认。
 
-Work from whatever is already in the conversation context. If the user passes a reference (a spec path, an issue number or URL) as an argument, fetch it and read its full body and comments.
+**完成条件：** 能列出整体目标和验收条件，区分已确认与未决内容；直接从聊天拆单也保留足够来源供独立实施者核对。
 
-### 2. Explore the codebase (optional)
+## 2. 划分可验证的实施单元
 
-If you have not already explored the codebase, do so to understand the current state of the code. Ticket titles and descriptions should use the project's domain glossary vocabulary, and respect ADRs in the area you're touching.
+每张工单交付一条窄而完整的行为路径，贯穿实际受影响的数据、接口、界面和测试层，完成后可以独立演示或验证。规模适合一个新上下文内完成，正文以用户可观察的结果组织。确有必要的准备重构安排在依赖它的行为修改之前，并说明独立收益及验证方式。
 
-Look for opportunities to prefactor the code to make the implementation easier. "Make the change easy, then make the easy change."
+**广泛机械重构是例外。** 当重命名字段、改变共享类型等操作影响大量调用者，无法让一个纵向切片独立保持检查通过时，采用 expand–contract：先并存新旧形式，再按影响范围分批迁移，最后在全部迁移完成后删除旧形式。迁移批次依赖扩展工单，收缩工单依赖所有迁移批次。若连批次也无法独立通过检查，明确使用共同集成分支，并由最终“集成与验证”工单负责通过条件。
 
-### 3. Draft vertical slices
+为每张工单列出真正前置依赖和可交付结果。核对依赖无环、没有人为串行化独立工作；只有所有阻塞项已完成的工单才能进入实施。规格是否完整与依赖是否解除分别表达。
 
-Break the work into **tracer bullet** tickets.
+建立整体验收条件到工单的对应关系；跨工单连接、迁移完成及最终联动验证要有明确归属，可以由现有工单承担，必要时单列集成工单。
 
-<vertical-slice-rules>
+**完成条件：** 每个实施单元的结果、依赖与验证明确，整体目标和保留条件没有因拆分而遗漏，最终联动验收有承担者。
 
-- Each slice cuts a narrow but COMPLETE path through every layer (schema, API, UI, tests): vertical, NOT a horizontal slice of one layer
-- A completed slice is demoable or verifiable on its own
-- Each slice is sized to fit in a single fresh context window
-- Any prefactoring should be done first
+## 3. 编写并交付工单
 
-</vertical-slice-rules>
+按下方模板裁剪每张工单，用必要摘要加来源链接支持新上下文中的独立实施；不能只写“见上文”。实现约定描述职责和契约，避免把易变的具体文件路径或实现代码写成要求。原型中的状态机、reducer、schema 或类型片段若更准确地表达决定，可保留必要部分并注明来源及确认状态。
 
-Give each ticket its **blocking edges**: the other tickets that must complete before it can start. A ticket with no blockers can start immediately.
+```markdown
+# <编号与工单标题>
 
-**Wide refactors are the exception to vertical slicing.** A **wide refactor** is one mechanical change (rename a column, retype a shared symbol) whose **blast radius** fans across the whole codebase, so a single edit breaks thousands of call sites at once and no vertical slice can land green. Don't force it into a tracer bullet; sequence it as **expand–contract**. First expand: add the new form beside the old so nothing breaks. Then migrate the call sites over in batches sized by blast radius (per package, per directory), each batch its own ticket blocked by the expand, keeping CI green batch to batch because the old form still exists. Finally contract: delete the old form once no caller remains, in a ticket blocked by every migrate batch. When even the batches can't stay green alone, keep the sequence but let them share an integration branch that all block a final integrate-and-verify ticket; green is promised only there.
+## 来源与决定
 
-### 4. Quiz the user
+父议题、规格或原始要求链接；本工单所需的已确认决定及依据、待验证假设和关键未决事项。
 
-Present the proposed breakdown as a numbered list. For each ticket, show:
+## 交付结果与约束
 
-- **Title**: short descriptive name
-- **Blocked by**: which other tickets (if any) must complete first
-- **What it delivers**: the end-to-end behaviour this ticket makes work
+本工单使哪条完整行为路径成立；必须保留的行为和范围限制。
 
-Ask the user:
+## 验收条件与验证
 
-- Does the granularity feel right? (too coarse / too fine)
-- Are the blocking edges correct: does each ticket only depend on tickets that genuinely gate it?
-- Should any tickets be merged or split further?
+- [ ] 可观察结果、关键失败或边界场景。
+- [ ] 对应整体规格的哪些验收项；承担哪些跨工单连接或最终验证。
 
-Iterate until the user approves the breakdown.
+已有测试接缝、验证方式和人工验收安排。
 
-### 5. Publish the tickets to the configured tracker
+## 依赖与交接状态
 
-Publish the approved tickets. **How** depends on the tracker `/setup-matt-pocock-skills` configured; the tickets are the same either way, only the shape of the blocking edges changes:
+阻塞工单的编号或链接及依赖原因；无依赖时明确说明。是否达到可实施条件，尚缺哪些决定、证据或依赖。
+```
 
-- **Local files** → write one file per ticket under `.scratch/<feature-slug>/issues/<NN>-<slug>.md`, numbered from `01` in dependency order (blockers first). Each file's "Blocked by" lists the numbers/titles it depends on. Use the per-ticket file template below: one ticket per file, never a single combined file.
-- **A real issue tracker (GitHub, Linear, …)** → publish one issue per ticket in dependency order (blockers first) so each ticket's blocking edges can reference real identifiers. Use the platform's native blocking / sub-issue relationship where it has one; otherwise set each ticket's "Blocked by" to the blocking issues. Apply the `ready-for-agent` triage label unless instructed otherwise; the tickets are agent-grabbable by construction.
+按[阶段交接与可实施条件](../../../docs/agents/change-workflow.md#阶段交接与可实施条件)核对每张工单。关键未知尚未解决时保留草稿状态及具体缺口；设置 `ready-for-agent` 前，按[议题跟踪约定](../../../docs/agents/issue-tracker.md)核对授权和标签含义。
 
-Work the **frontier**: any ticket whose blockers are all done. For a purely linear chain that means top to bottom.
+交付位置沿用本次请求和已有授权；在聊天中给出标题、依赖及交付结果的简短总览，并说明尚需用户决定的取舍。生成或发布已获授权且关键取舍已明确时直接完成，不另设重复审批。
 
-Do NOT close or modify any parent issue.
+- **本地文件：** 每张工单一个文件，沿用指定目录；未指定时使用 `.scratch/<feature-slug>/issues/<NN>-<slug>.md`，按依赖顺序从 `01` 编号，正文用编号和标题标明依赖。
+- **GitHub Issues：** 按项目约定在已授权范围内逐张创建，前置工单先发布，以实际编号和链接表达依赖。平台支持且已获授权时可建立原生阻塞或子议题关系；否则用正文链接。仅对满足条件的工单设置 `ready-for-agent`。
 
-<local-ticket-template>
+仓库内文件交付按[文档交付规则](../../../docs/agents/change-workflow.md#文档影响与维护)完成适用检查、审查和提交，复用已有步骤；聊天中的拆分建议只需明确来源与状态。
 
-# <NN>: <Ticket title>
-
-**What to build:** the end-to-end behaviour this ticket makes work, from the user's perspective, not a layer-by-layer implementation list.
-
-**Blocked by:** the numbers/titles of the tickets that gate this one, or "None (can start immediately)".
-
-**Status:** ready-for-agent
-
-- [ ] Acceptance criterion 1
-- [ ] Acceptance criterion 2
-
-</local-ticket-template>
-
-<issue-template>
-
-## Parent
-
-A reference to the parent issue on the tracker (if the source was an existing issue, otherwise omit this section).
-
-## What to build
-
-The end-to-end behaviour this ticket makes work, from the user's perspective, not layer-by-layer implementation.
-
-## Acceptance criteria
-
-- [ ] Criterion 1
-- [ ] Criterion 2
-
-## Blocked by
-
-- A reference to each blocking ticket, or "None (can start immediately)".
-
-</issue-template>
-
-In either form, avoid specific file paths or code snippets: they go stale fast. Exception: if a prototype produced a snippet that encodes a decision more precisely than prose can (state machine, reducer, schema, type shape), inline it and note briefly that it came from a prototype. Trim to the decision-rich parts, not a working demo, just the important bits.
+**完成条件：** 返回每张工单的文件或议题链接、依赖顺序及整体覆盖关系，明确剩余缺口。拆单不自动修改父议题的正文、标签或状态，也不自动开始实施。
