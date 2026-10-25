@@ -1,71 +1,66 @@
 ---
 name: improve-codebase-architecture
-description: Scan a codebase for deepening opportunities, present them as a visual HTML report, then grill through whichever one you pick.
+description: 探索代码库中值得深化的模块，用可视化 HTML 报告呈现有依据的候选，再围绕用户选中的方向分轮讨论设计。
 disable-model-invocation: true
 ---
 
-# Improve Codebase Architecture
+# 改进代码库架构
 
-Surface architectural friction and propose **deepening opportunities**: refactors that turn shallow modules into deep ones. The aim is testability and AI-navigability.
+寻找能减少调用者负担、集中相关复杂度的**模块深化机会**，改善可测试性与代码导航。先确定值得解决的问题，再讨论具体接口。
 
-This command is _informed_ by the project's domain model and built on a shared design vocabulary:
+设计判断使用 [codebase-design](../codebase-design/SKILL.md) 的共享术语与原则；领域名称沿用 `CONTEXT.md`，项目已有的 API、服务和协议名称保留原义。按 [AGENTS.md](../../../AGENTS.md#任务路由) 读取领域术语、ADR 索引、相关决定及当前行为说明。
 
-- Read [codebase-design](../codebase-design/SKILL.md) for the shared architecture vocabulary and design principles. Use its current guidance to assess interfaces, seams, and test surfaces; keep project-specific technical and domain names in their established meanings.
-- The domain language in `CONTEXT.md` gives names to good seams; ADRs in `docs/adr/` record decisions this command should not re-litigate.
+## 1. 确定范围并探索
 
-## Process
+**先确定范围：YAGNI。** 用户指定模块、子系统或痛点时，直接以此为范围。否则查看一段近期提交及受影响路径，例如 `git log -n 60 --name-only --format=oneline`，优先探索反复变化的区域；没有明显热点时再扩大范围。修改频繁只是优先级线索，不能证明架构有问题。
 
-### 1. Explore
+将独立的探索范围交给可用子代理，提供相同的目标、约束和资料入口；主代理核对候选涉及的调用者、依赖与测试。无法委派时直接探索并说明覆盖范围。沿实际调用路径寻找摩擦，例如：
 
-**Scope before you scan: YAGNI.** Deepening a module pays off by making future changes to it easier, so put extra weight on the parts of the codebase that have recently changed. Decide _where_ to look before you look:
+- 理解一个概念需要在多处追踪同一规则或状态。
+- 调用者掌握的步骤、前提和失败恢复知识接近模块提供的能力。
+- 为测试拆出的函数分别通过，但调用组合缺少验证。
+- 本应由责任模块封装的知识泄漏到调用者。
+- 当前接口难以验证关键行为，或测试替身遮蔽了真实连接契约。
 
-- If the user named a direction (a module, a subsystem, a pain point), take it, and skip the inference below.
-- Otherwise, walk back a good stretch of the commit history (`git log --oneline`) to find the codebase's hot spots, the files and areas that keep coming up, and let those paths pull your attention first. If the changes are scattered with no clear hot spot, widen the net.
+对疑似浅模块应用[删除检验](../codebase-design/SKILL.md#删除检验)，在保留行为与兼容要求的前提下比较。评估职责与测试调整时阅读[模块深化](../codebase-design/DEEPENING.md)，用具体调用实例说明收益，并与保留现状或局部简化比较。
 
-Read the project's domain glossary (`CONTEXT.md`) and any ADRs in the area you're touching first.
+**完成条件：** 候选能定位到代码和调用路径，说明调用者需要减少的知识、必须保留的行为、迁移代价及未知项。没有足够收益时，允许得出“当前范围未发现值得推进的候选”。
 
-Then spawn a sub-agent to walk the codebase. Don't follow rigid heuristics; explore organically and note where you experience friction:
+## 2. 用 HTML 报告呈现候选
 
-- Where does understanding one concept require bouncing between many small modules?
-- Where are modules **shallow**, with an interface nearly as complex as the implementation?
-- Where have pure functions been extracted just for testability, but the real bugs hide in how they're called (no **locality**)?
-- Where do tightly-coupled modules leak across their seams?
-- Which parts of the codebase are untested, or hard to test through their current interface?
+按 [HTML 报告格式](HTML-REPORT.md) 生成中文单文件报告，使用内联 CSS/SVG，使正文和图示可以离线阅读。报告放在操作系统临时目录：优先使用 `$TMPDIR`，未设置时使用 `/tmp`；Windows 使用 `%TEMP%`。文件名为 `architecture-review-<时间戳>.html`，每次使用新路径。
 
-Apply the [deletion test](../codebase-design/SKILL.md#删除检验) to suspected shallow modules, preserving existing behaviour and compatibility in the comparison.
+每个候选包含：
 
-### 2. Present candidates as an HTML report
+- **位置与证据：** 文件、相关符号或行号，以及一个具体调用实例。
+- **问题与方案方向：** 当前摩擦、预期职责变化，以及减少的调用知识；此时只比较职责和调用关系，具体参数、签名与完整契约留到用户选定后讨论。
+- **保留条件与代价：** 兼容性、独立职责、迁移涉及的调用者与测试，以及主要风险。
+- **收益与验证：** 修改如何集中、哪些步骤由模块承接、从哪个层级验证行为，以及替身未覆盖的连接。
+- **调整前后图：** 展示当前结构和候选方向，明确“候选，未实施”。
+- **推荐程度与未知项：** 写明判断依据、尚缺的证据及如何核实。
 
-Write a self-contained HTML file to the OS temp directory so nothing lands in the repo. Resolve the temp dir from `$TMPDIR`, falling back to `/tmp` (or `%TEMP%` on Windows), and write to `<tmpdir>/architecture-review-<timestamp>.html` so each run gets a fresh file. Open it for the user (`xdg-open <path>` on Linux, `open <path>` on macOS, `start <path>` on Windows) and tell them the absolute path.
+推荐程度使用以下三档，不用文件数量或图形大小代替判断：
 
-The report uses **Tailwind via CDN** for layout and styling, and **Mermaid via CDN** for diagrams where a graph/flow/sequence reliably communicates the structure. Mix Mermaid with hand-crafted CSS/SVG visuals: use Mermaid when relationships are graph-shaped (call graphs, dependencies, sequences), and hand-built divs/SVG when you want something more editorial (mass diagrams, cross-sections, collapse animations). Each candidate gets a **before/after visualisation**. Be visual.
+| 程度     | 依据                                                                     |
+| -------- | ------------------------------------------------------------------------ |
+| 优先考虑 | 有具体摩擦与调用证据，预期收益足以覆盖已识别的迁移成本，关键约束已核对。 |
+| 值得探索 | 问题有依据，但方案收益或迁移成本仍有会影响选择的未知项。                 |
+| 待验证   | 只有初步迹象；说明缺少的证据，先调查再决定是否重构。                     |
 
-For each candidate, render a card with:
+候选涉及已有 ADR 时核对其理由和重新评估条件。只有实际摩擦足以支持复议时才呈现冲突方案，并在卡片中链接该 ADR、说明复议依据；重新讨论不表示旧决定已被替代。
 
-- **Files**: which files/modules are involved
-- **Problem**: why the current architecture is causing friction
-- **Solution**: plain English description of what would change
-- **Benefits**: explained in terms of locality and leverage, and how tests would improve
-- **Before / After diagram**: side-by-side, custom-drawn, illustrating the shallowness and the deepening
-- **Recommendation strength**: one of `Strong`, `Worth exploring`, `Speculative`, rendered as a badge
+结尾说明优先深入哪个候选及理由。没有候选时，报告已检查的范围、保留现状的依据与覆盖限制，结束本轮扫描。
 
-End the report with a **Top recommendation** section: which candidate you'd tackle first and why.
+交付报告的绝对路径和可点击链接，默认由用户打开；展示方式遵循 [D017](../../../docs/adr/0017-manual-browser-testing.md)，沿用已有的明确授权。存在候选时询问用户希望深入哪一项。
 
-**Use CONTEXT.md vocabulary for domain concepts and the shared design vocabulary for architectural roles.** Name the actual responsibility being discussed while preserving existing protocol, deployment, and domain terminology.
+**完成条件：** 报告中的判断可追溯到证据，已知事实与假设分开；用户能据此选择方向，或理解为何保留现状。
 
-**ADR conflicts**: if a candidate contradicts an existing ADR, only surface it when the friction is real enough to warrant revisiting the ADR. Mark it clearly in the card (e.g. a warning callout: _"contradicts ADR-0007, but worth reopening because…"_). Don't list every theoretical refactor an ADR forbids.
+## 3. 围绕选定候选分轮讨论
 
-See [HTML-REPORT.md](HTML-REPORT.md) for the full HTML scaffold, diagram patterns, and styling guidance.
+用户选定后，使用 [grilling](../grilling/SKILL.md) 沿决策依赖讨论约束、职责、接口、接缝位置及需要保留的测试。需要比较有意义的接口方案时，按[多方案接口设计](../codebase-design/DESIGN-IT-TWICE.md)推进。
 
-Do NOT propose interfaces yet. After the file is written, ask the user: "Which of these would you like to explore?"
+出现新的领域概念或原有术语歧义时，使用 [domain-modeling](../domain-modeling/SKILL.md) 核对含义与记录条件。已确认的领域概念按任务范围进入 `CONTEXT.md`；技术模块名称和实现选择归入相应架构说明；候选解释保留为待验证项。仅分析时交付建议，不因选定候选或命名模块自动写入正式文档。
 
-### 3. Grilling loop
+用户否决候选时，若理由是未来探索仍需遵守的长期约束，按仓库 ADR 约定处理；当前任务未包含记录授权时，可询问是否保存这项决定。“暂时不值得做”等阶段性理由无需形成 ADR。
 
-Once the user picks a candidate, call the Skill tool with "grilling" to walk the decision tree with them: constraints, dependencies, the shape of the deepened module, what sits behind the seam, what tests survive.
-
-Side effects happen inline as decisions crystallize; call the Skill tool with "domain-modeling" to keep the domain model current as you go:
-
-- **Naming a deepened module after a concept not in `CONTEXT.md`?** Add the term to `CONTEXT.md`. Create the file lazily if it doesn't exist.
-- **Sharpening a fuzzy term during the conversation?** Update `CONTEXT.md` right there.
-- **User rejects the candidate with a load-bearing reason?** Offer an ADR, framed as: _"Want me to record this as an ADR so future architecture reviews don't re-suggest it?"_ Only offer when the reason would actually be needed by a future explorer to avoid re-suggesting the same thing; skip ephemeral reasons ("not worth it right now") and self-evident ones.
-- **Want to explore alternative interfaces for the deepened module?** Follow [the interface comparison guide](../codebase-design/DESIGN-IT-TWICE.md), choosing meaningful alternatives and parallel exploration according to the problem and available tools.
+讨论的完成条件沿用 `grilling`。汇总已确认结论、依据和剩余限制；需要修改文档时沿用 `domain-modeling` 的交付规则。后续实施沿用已有授权和 [implement](../implement/SKILL.md) 流程，选择候选或确认方案本身不增加实施授权。
