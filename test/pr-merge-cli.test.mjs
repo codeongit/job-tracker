@@ -26,6 +26,8 @@ function remoteWrites(calls) {
 
 // Only the external executables are replaced: CLI parsing, process I/O, JSON
 // handling and result exit codes all run through the production entry point.
+// gh v2.102.0 exports valid checks JSON with exit 0 even for failed checks:
+// https://github.com/cli/cli/blob/v2.102.0/pkg/cmd/pr/checks/checks.go#L177-L179
 async function cliFixture(t, scenario = 'success') {
   const root = await mkdtemp(join(tmpdir(), 'job-tracker-pr-merge-cli-'));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -66,7 +68,7 @@ if (tool === 'gh' && args[0] === 'pr' && args[2] === '412' &&
     { name: 'verify', state: scenario === 'ci-failed' ? 'FAILURE' : 'SUCCESS',
       bucket: scenario === 'ci-failed' ? 'fail' : 'pass', workflow: 'CI', event: 'pull_request' },
     { name: 'verify', state: 'SUCCESS', bucket: 'pass', workflow: 'CI', event: 'push' },
-  ], scenario === 'ci-failed' ? 1 : 0);
+  ]);
 }
 if (tool === 'gh' && args[0] === 'api' &&
     args[args.indexOf('--hostname') + 1] === 'github.com') {
