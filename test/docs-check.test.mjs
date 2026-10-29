@@ -55,6 +55,7 @@ test('checks all workflows customized in this repository after the initial skill
     '.agents/skills/ask-matt/SKILL.md': '[写作参考](missing.md)\n',
     '.agents/skills/diagnosing-bugs/SKILL.md': '[诊断流程](missing.md)\n',
     '.agents/skills/implement/SKILL.md': '[实施流程](missing.md)\n',
+    '.agents/skills/pr/SKILL.md': '[正文要求](missing.md)\n',
   });
   assert.deepEqual(
     (await checkDocumentation(root)).map(({ file, code }) => ({ file, code })),
@@ -62,6 +63,7 @@ test('checks all workflows customized in this repository after the initial skill
       { file: '.agents/skills/ask-matt/SKILL.md', code: 'link_target_missing' },
       { file: '.agents/skills/diagnosing-bugs/SKILL.md', code: 'link_target_missing' },
       { file: '.agents/skills/implement/SKILL.md', code: 'link_target_missing' },
+      { file: '.agents/skills/pr/SKILL.md', code: 'link_target_missing' },
     ],
   );
 });

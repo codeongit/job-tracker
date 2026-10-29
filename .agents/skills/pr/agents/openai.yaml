@@ -1,3 +1,3 @@
 interface:
-  display_name: "PR"
-  short_description: "Write a PR body that's fast to review"
+  display_name: 'PR'
+  short_description: '依据目标、最终差异和已有证据，撰写便于审阅的 PR 正文与合并风险说明'

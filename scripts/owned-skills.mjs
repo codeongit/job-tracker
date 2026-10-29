@@ -11,6 +11,8 @@ export const ownedSkillDirectories = [
   '.agents/skills/grilling',
   '.agents/skills/implement',
   '.agents/skills/implement-spec',
+  '.agents/skills/improve-codebase-architecture',
+  '.agents/skills/pr',
   '.agents/skills/prototype',
   '.agents/skills/resolving-merge-conflicts',
   '.agents/skills/retro',

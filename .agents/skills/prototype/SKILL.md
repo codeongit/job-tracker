@@ -1,6 +1,6 @@
 ---
 name: prototype
-description: Build a throwaway prototype to answer a design question. Use when the user wants to sanity-check whether a state model or logic feels right, or explore what a UI should look like.
+description: 用可丢弃的原型验证设计问题，适用于试验状态模型、业务逻辑或界面方案。
 ---
 
 # Prototype
@@ -23,4 +23,4 @@ The two branches produce very different artifacts, so getting this wrong wastes 
 3. **No persistence by default.** State lives in memory. Persistence is the thing the prototype is _checking_, not something it should depend on. If the question explicitly involves a database, hit a scratch DB or a local file with a clear "PROTOTYPE, wipe me" name.
 4. **Skip the polish.** No tests, no error handling beyond what makes the prototype _runnable_, no abstractions. The point is to learn something fast.
 5. **Surface the state.** After every action (logic) or on every variant switch (UI), print or render the full relevant state so the user can see what changed.
-6. **记录结果并交回原任务。** 保存原型及运行方式，在已有任务记录中链接其位置或约定的临时分支，记录它回答的问题、观察结果、用户确认和仍未验证的部分。原型结果是设计证据，不自动成为已确认决定或正式实施授权。仅要求原型时，交付原型与结论；原任务已授权正式实施时，沿用授权进入 [implement](../implement/SKILL.md)，复用结论并按生产要求实现、验证与审查。原型资产保持可追溯，避免混入正式交付。
+6. **记录结果并交回原任务。** 保存原型及运行方式，在当前对话或相关 Issue／PR 中链接其位置或约定的临时分支，记录它回答的问题、观察结果、用户确认和仍未验证的部分。原型结果是设计证据，不自动成为已确认决定或正式实施授权。仅要求原型时，交付原型与结论；原任务已授权正式实施时，沿用授权进入 [implement](../implement/SKILL.md)，复用结论并按生产要求实现、验证与审查。原型资产保持可追溯，避免混入正式交付。

@@ -14,6 +14,7 @@ test('skill format CLI reports and fixes owned Markdown and YAML while preservin
   const files = {
     '.prettierignore': '.agents/\n',
     '.agents/skills/code-review/SKILL.md': '#  审查\n',
+    '.agents/skills/pr/SKILL.md': '#  正文\n',
     '.agents/skills/tdd/agents/openai.yaml': 'interface: {display_name: 测试}\n',
     '.agents/skills/external/SKILL.md': '#  外部技能\n',
   };
@@ -26,6 +27,7 @@ test('skill format CLI reports and fixes owned Markdown and YAML while preservin
   const failed = run('--check');
   assert.equal(failed.status, 1);
   assert.match(failed.stderr, /code-review\/SKILL\.md/);
+  assert.match(failed.stderr, /pr\/SKILL\.md/);
   assert.match(failed.stderr, /tdd\/agents\/openai\.yaml/);
   assert.doesNotMatch(failed.stderr, /external/);
   assert.equal(
@@ -42,6 +44,7 @@ test('skill format CLI reports and fixes owned Markdown and YAML while preservin
     await readFile(join(root, '.agents/skills/external/SKILL.md'), 'utf8'),
     '#  外部技能\n',
   );
+  assert.equal(await readFile(join(root, '.agents/skills/pr/SKILL.md'), 'utf8'), '# 正文\n');
   assert.equal(run('--check').status, 0);
 });
 
