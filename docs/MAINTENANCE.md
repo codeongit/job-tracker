@@ -22,7 +22,7 @@ pnpm service status
 
 系统结构与模块职责见[当前架构](ARCHITECTURE.md)。BOSS 变更按[文档影响与维护](agents/change-workflow.md#文档影响与维护)选择设计、实现或操作正文，在同次变更中更新受影响内容，或说明无需更新的核对依据；本次 BOSS 职责重构及保留条件见[重构记录](ARCHITECTURE_REFACTOR_PLAN.md)。
 
-代理实施按 [implement](../.agents/skills/implement/SKILL.md) 推进，独立审查按 [code-review](../.agents/skills/code-review/SKILL.md) 执行，检查范围随影响调整；[变更共用规则](agents/change-workflow.md)统一维护目标依据、阶段交接、验证覆盖、文档与交付记录要求。
+代理实施按 [implement](../.agents/skills/implement/SKILL.md) 推进，独立审查按 [code-review](../.agents/skills/code-review/SKILL.md) 执行，检查范围随影响调整；[变更共用规则](agents/change-workflow.md)统一维护目标依据、阶段交接、验证覆盖、文档与交付记录要求。正式仓库变更按[议题与 PR 约定](agents/issue-tracker.md)通过任务分支交付，Issue 按需，合并另行授权；PR 摘要复用有效证据，本机保留详细及私有材料。
 
 ```sh
 pnpm format

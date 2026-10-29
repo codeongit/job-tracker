@@ -1,168 +1,39 @@
 ---
 name: pr
-description: "Use when writing a PR body."
+description: 撰写或更新 PR 正文，将目标、最终差异和已有交付材料整理为变更摘要、验证依据与合并风险。
 metadata:
   credits:
     skill: show-me
     author: Dex Horthy
     organisation: Humanlayer
-    url: "https://github.com/humanlayer/skills/blob/main/plugins/show-me/skills/show-me/SKILL.md"
+    url: 'https://github.com/humanlayer/skills/blob/main/plugins/show-me/skills/show-me/SKILL.md'
 ---
 
-Use this template for writing the PR body:
+依据[项目 PR 模板](../../../.github/pull_request_template.md)整理正文，使用 [CONTEXT.md](../../../CONTEXT.md) 中的领域术语。面向未读过对话的审阅者说明最终改动，篇幅随实际影响调整，简单变更可以只用几句话。
 
-```markdown
-## Summary
+先核对原始目标及后续修正、最终差异，以及已有交付材料中的检查与独立审查结论。引用能定位目标的 Issue、规格及适用版本；没有对应材料时保留必要的需求摘要。正文随最终实现更新，移除过时方案和结论。
 
-<diagram, diff-sketch, or tree>
+检查、审查、证据版本及缺口处理沿用[变更共用规则](../../../docs/agents/change-workflow.md)，复用仍然有效的结果。Issue／PR 操作及授权遵循[议题跟踪约定](../../../docs/agents/issue-tracker.md)；本技能负责正文，不另设测试或发布流程。
 
-## Evidence
+## 变更摘要
 
-- **Before:** <screenshot/output/failing test run>
-  **After:** <screenshot/output/passing test run>
+先说明具体触发场景、原有问题与修改后的可观察行为，再按需要加入最小图示。纯文字能说明清楚时，无需图示。
 
-## Merge Danger
+- 逻辑或状态变化使用简短伪代码或差异示意；调用关系、数据流使用调用树或 Mermaid；职责调整使用浅层文件树。只保留解释变化所需的对象、顺序和边界，示意代码标明用途。
+- 交代文档影响：哪些正文随行为、技术契约或操作步骤更新；无需更新时说明核对依据。涉及关键决定时引用 ADR 及替代关系。
 
-**Door:** <one-way or two-way>
+## 验证依据
 
-<optional: description>
+引用实际命令或用例、结果、覆盖范围和受检版本，并注明相关规则 ID。被测版本使用 commit；有未提交修改时说明所测差异及新增文件。独立审查摘要保留 Spec、Standards 的结论、适用版本及剩余限制，结构检查不能替代内容审查。
 
-**Blast Radius:** <one-word description>
+按要证明的行为选择证据：界面可以引用已有人工截图和验收反馈；导入、同步与恢复可以引用合成输入输出、状态变化及失败恢复用例；文档和技能可以引用规则差异、结构检查及实际行为试验。证据形式没有固定高低排序。
 
-<optional: potential ramifications of merge>
-```
+只有实际观察过才写失败到通过的对比；缺少修改前运行记录时如实说明，以已取得的验证支持当前结论。伪代码用于解释，不能充当执行记录。分别交代本地检查、CI 与人工验收的状态、未验证范围和适用验收项，已有测试入口不等于本次执行通过。
 
-## Sections
+公开正文提供足以理解结果和限制的必要摘要；私有诊断材料留在本机，真实求职记录、简历、凭据和原始私有输出不进入 PR。本机私有路径不能作为公开审阅者必须打开的证据链接。
 
-Skip all preambles and keep prose brief. Use the user's domain language from `CONTEXT.md`.
+## 合并风险
 
-### Summary
+用具体对象及可能后果说明影响范围。说明是否涉及数据格式、迁移、备份恢复、同步或兼容性；无影响时注明。
 
-Pick the smallest view that makes the key point clear.
-
-- Show logic or an algorithm as pseudocode:
-
-```text
-on(save)
-  if content is unchanged
-    return cached result
-  write new content
-  return fresh result
-```
-
-- Show runtime control flow as a call tree:
-
-```text
-submitForm
-  createSession
-    persistPrompt
-    launchAgent
-  navigateToSession
-```
-
-- Show UI structure as a component tree, including state and module boundaries that matter:
-
-```tsx
-<SessionPage>(apps / example / src / routes / session.tsx);
-useSessionEvents() < SessionToolbar > <RunSkillButton>(packages / ui);
-```
-
-- Show file responsibility or a broad refactor as a shallow file tree:
-
-```text
-src/
-├── commands/       # parses user actions
-├── sessions/       # owns session state
-└── transport/      # sends API requests
-```
-
-- Show component interaction, control flow, or data flow with Mermaid:
-
-```mermaid
-sequenceDiagram
-    participant User
-    participant UI
-    participant Daemon
-    User->>UI: choose command
-    UI->>Daemon: send expanded prompt
-    Daemon-->>UI: stream result
-```
-
-- Use `diff` when the point is what changes and the surrounding shape already exists. Match the diff shape to the topic.
-
-For a component change:
-
-```diff
- <SessionPage>
-   useSessionEvents()
-   <SessionToolbar>
-+    <RunSkillButton />
-   <SessionTimeline>
-+    <SkillResultCard />
-```
-
-For a file-layout change:
-
-```diff
- src/
- ├── commands/
-+│   └── show-me.ts       # expands the slash command
- ├── sessions/
--└── transport.ts
-+└── transport/
-+    ├── client.ts
-+    └── stream.ts
-```
-
-For a call-tree or call-stack change:
-
-```diff
- submitForm
-   createSession
-     persistPrompt
-+    expandSkillMention
-     launchAgent
--  navigateToSession
-+  navigateToSession
-+    subscribeToEvents
-```
-
-For a state or control-flow change:
-
-```diff
- on(save)
--  write content
-+  if content is unchanged
-+    return cached result
-+  write new content
-+  invalidate cache
-```
-
-- Show the whole block when most of it is new, when omitted context would hide ownership or order, or when the user needs a copyable target shape:
-
-```ts
-function expandSkill(command: string): string {
-  const skillName = command.slice(1);
-  return `use the ${skillName} skill`;
-}
-```
-
-#### Guidance
-
-Place each visual next to the short text it supports. Keep only the calls, files, props, states, and boundaries needed to answer the user's current question or the options to resolve the current discussion point.
-
-You may use one of these, you may use several, it is unlikely you will use all of them. Use your judgement and don't overwhelm the user.
-
-### Evidence
-
-Concrete evidence that the change works. Show a before and after.
-
-Screenshots are S-tier - when the environment is set up for it and the change is visual.
-
-Execution-based evidence is A-tier. Test results, console output. Show the exact test that now fails and passes, using pseudocode.
-
-### Merge Danger
-
-Describe whether it's a one-way or two-way door. You can walk back through two-way doors, but not one-way doors. A PR that is cheap to roll back is lower risk. Changes that involve destructive actions or hard-to-reverse decisions are one-way doors.
-
-The blast radius is the potential impact or scope of the changes introduced by this PR. Consider all possibilities. Examples are layout shift, breakages for consumers, mobile responsiveness, etc.
+说明能否回退、回退所需条件及仍会保留的副作用。涉及数据变更时区分撤回代码与恢复数据；需要备份、补偿或无法逆转的结果应明确说明，避免只用“可回退”或单个风险词代替依据。

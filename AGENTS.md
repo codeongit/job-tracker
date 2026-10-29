@@ -8,7 +8,7 @@
 - **R002** 实施任务使用 [implement](.agents/skills/implement/SKILL.md)，缺陷诊断使用 [diagnosing-bugs](.agents/skills/diagnosing-bugs/SKILL.md)，独立审查使用 [code-review](.agents/skills/code-review/SKILL.md)；按任务选择入口，复用已完成步骤。代码改动前及审查时按[变更共用规则](docs/agents/change-workflow.md)分别核对现有机制与目标行为，证据范围随影响调整。实施决策前及 Standards 审查时读取相关[编码规范](CODING_STANDARDS.md)。
 - **R003** 用户的新指示优先于旧决定。改变关键决定时，新增下一编号的 ADR，写明来源并附替代关系链接，保留旧 ADR 并更新索引。
 - **R004** BOSS 变更按文档索引中的触发条件读取设计、实现或操作说明；同次更新受影响文档，或说明现有描述仍准确的依据。结论按[文档维护流程](docs/agents/change-workflow.md#文档影响与维护)接受独立审查。
-- **R028** 处理 GitHub Issue 时，按[议题跟踪约定](docs/agents/issue-tracker.md)读取正文及相关评论，核对最新需求；本项目议题仓库为 `codeongit/job-tracker`。
+- **R028** 正式仓库变更通过任务分支与 PR 交付，Issue 按需；按[议题跟踪约定](docs/agents/issue-tracker.md)核对最新需求、操作范围、发布状态及另行合并授权。项目仓库为 `codeongit/job-tracker`。
 
 ## 团队红线
 
