@@ -6,7 +6,7 @@
 
 用户要求降低现有任务套件的固定成本，同时保留复盘材料。每次交付仍需一条简短记录，但不强制任务 UUID 或起止时间；正式规格随 Git 保存，交付记录保存在被 Git 忽略的本机 Markdown。最新 S6 已覆盖早期保存位置选项，即使已有 Issue／PR，也不默认追加记录、规格或链接。
 
-拆单时的基线行为可从[任务记录试行](../../../docs/agents/change-workflow.md#任务记录试行)、[实施入口](../../../.agents/skills/implement/SKILL.md)、[诊断入口](../../../.agents/skills/diagnosing-bugs/SKILL.md)和[复盘入口](../../../.agents/skills/retro/SKILL.md)核对：当时固定登记 UUID、开始时间和较完整的交付字段，复盘与交接依赖这些记录。需改变的是默认填写负担，不是抹去可追溯性。没有阻断性的待决设计事项。
+拆单时的基线行为可从原任务记录试行（见提交 `f1a94a3` 的 `docs/agents/change-workflow.md`）、[实施入口](../../../.agents/skills/implement/SKILL.md)、[诊断入口](../../../.agents/skills/diagnosing-bugs/SKILL.md)和[复盘入口](../../../.agents/skills/retro/SKILL.md)核对：当时固定登记 UUID、开始时间和较完整的交付字段，复盘与交接依赖这些记录。需改变的是默认填写负担，不是抹去可追溯性。没有阻断性的待决设计事项。
 
 ## 交付结果与约束
 

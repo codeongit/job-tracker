@@ -1,5 +1,5 @@
 interface:
   display_name: 'Retro'
-  short_description: 'Conduct a retrospective on a coding session.'
+  short_description: '复盘编码会话，依据已有需求、提交与验证材料提出改进建议。'
 policy:
   allow_implicit_invocation: false

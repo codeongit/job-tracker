@@ -9,7 +9,7 @@ description: 将已有讨论、计划或材料整理为可交接的规格，保�
 
 ## 1. 核对来源与已有决定
 
-读取用户指定材料。来源是已有议题时，按[议题跟踪约定](../../../docs/agents/issue-tracker.md)读取正文及相关评论，核对后续修正。按 [AGENTS](../../../AGENTS.md) 查阅领域术语和相关 ADR，沿用已有任务记录。
+读取用户指定材料。来源是已有议题时，按[议题跟踪约定](../../../docs/agents/issue-tracker.md)读取正文及相关评论，核对后续修正。按 [AGENTS](../../../AGENTS.md) 查阅领域术语和相关 ADR，沿用已有需求来源。
 
 按[现状与目标依据](../../../docs/agents/change-workflow.md#现状与目标依据)分别核对当前机制与目标来源，承接上游的已确认决定、待验证假设和必须保留的约束。能从代码或材料查证的事实由代理核实；建议和未决事项保留其状态。
 
@@ -61,7 +61,7 @@ description: 将已有讨论、计划或材料整理为可交接的规格，保�
 
 按[阶段交接与可实施条件](../../../docs/agents/change-workflow.md#阶段交接与可实施条件)判断规格是否可交接；缺少关键决定时交付带明确未决事项的草稿。需要拆成多个实施单元时，可交给 [to-tickets](../to-tickets/SKILL.md)；单个明确目标可供 [implement](../implement/SKILL.md) 使用，不要求每次走完整技能链。
 
-按本次请求交付分析或草稿；用于实施或跨会话交接的正式规格默认保存为仓库 Markdown，随 Git 管理，并由本机交付记录引用。修订保留关键决定来源和变化说明，普通小任务无需另写规格。Issue／PR 引用规格及适用版本，不复制完整正文；正式文档修改按[文档交付规则](../../../docs/agents/change-workflow.md#文档影响与维护)和[议题与 PR 约定](../../../docs/agents/issue-tracker.md)交付。
+按本次请求交付分析或草稿；用于实施或跨会话交接的正式规格默认保存为仓库 Markdown，随 Git 管理，并由相关 Issue／PR 引用。修订保留关键决定来源和变化说明，普通小任务无需另写规格。Issue／PR 引用规格及适用版本，不复制完整正文；正式文档修改按[文档交付规则](../../../docs/agents/change-workflow.md#文档影响与维护)和[议题与 PR 约定](../../../docs/agents/issue-tracker.md)交付。
 
 远端操作沿用[议题跟踪约定](../../../docs/agents/issue-tracker.md)中的任务授权与显式例外；仅在满足可实施条件时设置 `ready-for-agent`，缺少条件时说明原因，不机械标记就绪。
 

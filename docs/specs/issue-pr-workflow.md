@@ -1,8 +1,10 @@
 # Issue 与 PR 工作流需求
 
-- **日期与状态：** 2026-10-29；默认 PR 范围、远端操作边界及人工验收合并门槛已确认，S8 已授权实施；实际交付与验证结果随任务记录保存。
+> 后续确认（2026-10-29）：用户授权取消常规 task／delivery 台账，改用本地候选 commit 固定审查版本，日志保持原位置，结果与反馈沿用 PR 或对话；证据工具退役是相应实施选择，详见 [D055](../adr/0055-git-pr-records.md)。本文保留此前需求及确认历史，冲突处以后续决定为准。
+
+- **日期与状态：** 2026-10-29；默认 PR 范围、远端操作边界及人工验收合并门槛已确认，S8 已授权实施；实际交付与验证结果随 PR 保存。
 - **授权沿革：** S4–S7 阶段仅整理需求，未推送或创建远端对象；S8 授权实施本规格。当前操作遵循 [D054](../adr/0054-issue-pr-delivery.md) 及相应规则，合并仍另行授权。
-- **现行依据：** [变更共用规则](../agents/change-workflow.md)、[议题跟踪约定](../agents/issue-tracker.md)、[实施技能](../../.agents/skills/implement/SKILL.md)及 [D051](../adr/0051-lightweight-development-records.md)。当前规则以 D054 和对应正文为准，本文保留原始需求及验收依据。
+- **现行依据：** [变更共用规则](../agents/change-workflow.md)、[议题跟踪约定](../agents/issue-tracker.md)、[实施技能](../../.agents/skills/implement/SKILL.md)及 [D051](../adr/0051-lightweight-development-records.md)。当前规则以 D054、D055 和对应正文为准，本文保留原始需求及验收依据。
 
 ## 问题与目标
 
