@@ -37,6 +37,25 @@
 
 后续改动使依据失效时按[证据版本规则](change-workflow.md#证据版本与检查配置)补查；合并范围超出已有授权时先明确范围。记录和 PR 约定只是流程要求，不代表仓库已配置受保护的技术门禁。现有 CI 与 [D017 浏览器分工](../adr/0017-manual-browser-testing.md)继续使用。
 
+### 合并脚本
+
+独立审查完成、适用人工验收已有结论且用户授权合并后，调用者沿用这些结果及对应提交，执行 `pnpm pr:merge`。合并阶段只核对已有结果的版本与当前状态；发生变化时回到原流程补查受影响部分。脚本参数表达预期版本，不证明审查、验收或用户授权。
+
+```sh
+# 只读检查；head 为已审查提交，base 为已核对的 main 提交，均使用完整 SHA
+pnpm pr:merge <PR编号> --head <headSHA> --base <baseSHA>
+# 已获本次合并授权后执行；可等待检查完成
+pnpm pr:merge <PR编号> --head <headSHA> --base <baseSHA> --wait 600 --execute
+```
+
+脚本固定处理 `github.com/codeongit/job-tracker` 中以 `main` 为目标的同仓 PR。核对开放状态、草稿、版本、平台合并与审查阻断，以及当前 `CI/verify` 的 `push` 和 `pull_request` 成功结果；其它已返回检查同样须成功。等待期间持续核对版本，缺失、失败、取消、跳过或未知结果均不算通过。脚本不解析 PR 正文来判断审查质量，也不运行第二轮代码审查；已有语义结论由原审查流程提供。
+
+执行使用 GitHub 合并 API 的 `sha` 条件锁定 head，保留 merge commit。base 在合并前核对；GitHub 此接口没有原子 base 条件，合并后另核对实际父提交。若在最后核对后 base 前进，结果明确为“已合并但需核对”，不能声称该竞态已被阻止。API 要求与字段见 [GitHub 合并接口](https://docs.github.com/en/rest/pulls/pulls#merge-a-pull-request)。
+
+成功依据为回读到 `MERGED` 和有效 merge commit；请求失败或响应未知时先回读，本次不重发。已合并的同一 PR/head 再次调用只核对已有结果；默认只读，执行模式可刷新匹配仓库的 `origin/main`，工作树及本地分支保持原状。合并状态直接使用 GitHub 原生记录，正文继续由 [pr](../../.agents/skills/pr/SKILL.md) 按实际需要维护。
+
+输出 JSON 区分 `ready`、`blocked`、`unconfirmed` 和 `merged`，时间使用北京时间。合并父提交未能确认或引用刷新失败时，保留 `merged` 及提交号，并列出待处理项。参数与退出码见 `pnpm pr:merge --help`；检查就绪只表示机械条件满足，响应未知先回查，合并后的附属失败单独处理。
+
 ## 分流与标签
 
 进行议题分流，或设置、调整分流标签前，读取[标签映射](triage-labels.md)，使用约定的五种默认状态名称，并核对远端实际标签。当前外部拉取请求（PR）不作为需求分流入口。
