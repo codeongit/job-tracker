@@ -39,7 +39,7 @@ pnpm format:check
 
 每次交付按[交付与验收记录](agents/change-workflow.md#交付与验收记录)在 PR 中说明来源与结果、适用规则和验证依据、被测提交及未验证项；仅本地交付在本次回复中说明。原始日志引用原位置，不额外创建 task 目录或交付台账。结果使用“通过、失败、未运行、需补查、待人工验收、不适用（附理由）”，随版本和场景保存，不把一次通过写成永久保障。
 
-直接运行适用的非浏览器检查，以任务分支的候选 commit 固定最终审查版本；按[证据版本规则](agents/change-workflow.md#证据版本与检查配置)核对执行前后版本、检查配置和覆盖范围，变化后补查。历史 `task:evidence` 工具已[退役](agents/task-evidence.md)，已有材料保留，不作为新任务要求。流程语义变化按[流程回归案例](agents/workflow-regressions.md)选择受影响场景进行独立试验。
+直接运行适用的非浏览器检查，以任务分支的候选 commit 固定最终审查版本；按[证据版本规则](agents/change-workflow.md#证据版本与检查配置)核对执行前后版本、检查配置和覆盖范围，变化后补查。流程语义变化按[流程回归案例](agents/workflow-regressions.md)选择受影响场景进行独立试验。
 
 本机工作区客户端与服务接口的联动回归可运行 `node --test test/local-workspace-http.test.mjs`：真实客户端经回环 HTTP 调用真实服务，读写临时目录中的 `WorkspaceStore`，使用合成数据；客户端缓存和本机模式身份标记（authority）使用内存替身。它不启动浏览器，不访问真实平台或用户的 `.local`，已由文件命名自动纳入 `pnpm test` 及 CI 的非浏览器步骤。真实浏览器存储和页面交互仍按 [D017](adr/0017-manual-browser-testing.md) 由人工验收。
 
