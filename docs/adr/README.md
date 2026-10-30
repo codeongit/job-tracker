@@ -32,7 +32,7 @@
 | [D014](0014-editable-next-action-suggestions.md)           | 下一步表单提供可编辑的状态建议                     | 有效                                             | 用户要求行动和计划日期默认选项             |
 | [D015](0015-date-based-daily-record.md)                    | 每日记录按业务日期查询，不还原历史快照             | 已替代（日期语义保留于 D016）                    | 用户确认综合日记录及日期含义               |
 | [D016](0016-two-entries-unified-detail.md)                 | 两个业务入口与统一岗位详情保留浏览上下文           | 有效（看板安排由 D018 调整）                     | 用户确认导航、日期筛选与详情整理方案       |
-| [D017](0017-manual-browser-testing.md)                     | 真实浏览器相关测试由人工负责                       | 有效                                             | 用户明确要求                               |
+| [D017](0017-manual-browser-testing.md)                     | 真实浏览器相关测试由人工负责                       | 有效；Archify 生成物由 D057 补充例外             | 用户明确要求                               |
 | [D018](0018-simplified-status-paginated-jobs.md)           | 精简消息与招聘状态，岗位只保留分页列表             | 有效                                             | 用户确认状态归并和删除看板                 |
 | [D019](0019-boss-resume-status-link.md)                    | BOSS 简历发送联动消息和招聘阶段                    | 有效                                             | 用户提出 BOSS 跟进规则                     |
 | [D020](0020-same-company-hint.md)                          | 新增岗位时非阻断提示同公司记录                     | 有效                                             | 用户确认匹配和提示方式                     |
@@ -72,6 +72,7 @@
 | [D054](0054-issue-pr-delivery.md)                          | 按需 Issue 与正式变更的 PR 交付                    | 由 D055 部分替代；保留原决定与来源               | 用户确认规格并授权继续，要求技能描述中文   |
 | [D055](0055-git-pr-records.md)                             | 以 Git 与 PR 承接研发记录                          | 说明组织由 D056 调整；记录决定有效               | 用户确认由 Git／PR 承接记录并授权继续      |
 | [D056](0056-review-results-in-pr.md)                       | 审查结论直接交付                                   | 有效；实际验证随 PR 记录                         | 用户确认简化并要求说明仅保留现行操作       |
+| [D057](0057-archify-browser-exception.md)                  | 允许 Archify 在隔离浏览器中检查生成物              | 已获用户授权                                     | 用户明确放开该技能的浏览器限制             |
 
 ## 新决策模板
 
