@@ -15,7 +15,8 @@
     "format:check": "prettier --check . && node scripts/format-skills.mjs --check",
     "verify": "pnpm test && pnpm check && pnpm format:check && pnpm test:browser",
     "doctor": "node scripts/doctor.mjs",
-    "pr:merge": "node scripts/pr-merge.mjs"
+    "pr:merge": "node scripts/pr-merge.mjs",
+    "uml": "node scripts/uml.mjs"
   },
   "engines": {
     "node": ">=24 <25"
