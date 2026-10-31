@@ -18,7 +18,7 @@
 
 ## 运行方式
 
-源码层级和静态依赖可通过独立的 `pnpm uml` 桌面工具浏览，使用与边界见[维护手册](MAINTENANCE.md#独立-uml-源码浏览器)。它只读取公开源码，运行依赖与生成图留在 `.local/uml-viewer/`，不属于应用运行链路或网页部署内容。
+源码层级和静态依赖可通过独立的 `pnpm uml` 桌面工具浏览，使用与边界见[UML 工具说明](UML_VIEWER.md)。它只读取公开源码，运行依赖与生成图留在 `.local/uml-viewer/`，不属于应用运行链路或网页部署内容。
 
 界面使用静态 HTML/CSS/ES modules；`dist/` 是直接维护的公开源码，也是唯一公开部署目录，没有构建阶段。Node 24 运行本机服务和采集子进程，pnpm 与依赖版本由 `package.json` 和锁文件固定。运行代码没有第三方包依赖，Prettier 和 Playwright 用于开发检查。
 
