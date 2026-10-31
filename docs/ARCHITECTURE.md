@@ -18,7 +18,7 @@
 
 ## 运行方式
 
-源码层级和静态依赖可通过独立的 `pnpm uml` 桌面工具浏览，使用与边界见[维护手册](MAINTENANCE.md#独立-uml-源码浏览器)。它只读取公开源码，运行依赖与生成图留在 `.local/uml-viewer/`，不属于应用运行链路或网页部署内容。
+源码层级和静态依赖可通过独立的 `pnpm uml` 桌面工具浏览，使用与边界见[UML 工具说明](UML_VIEWER.md)。它只读取公开源码，运行依赖与生成图留在 `.local/uml-viewer/`，不属于应用运行链路或网页部署内容。
 
 界面使用静态 HTML/CSS/ES modules；`dist/` 是直接维护的公开源码，也是唯一公开部署目录，没有构建阶段。Node 24 运行本机服务和采集子进程，pnpm 与依赖版本由 `package.json` 和锁文件固定。运行代码没有第三方包依赖，Prettier 和 Playwright 用于开发检查。
 
@@ -90,14 +90,18 @@ BOSS 的目录边界如下：
 | `scripts/boss/delivery/`         | 已保存材料校验、转换、入队和交付检查点           |
 | `scripts/boss/shared/`           | 固定源码及私有路径、脱敏诊断                     |
 
-`collectHistory / settleSaved`、`collectDetails` 和 `deliverSaved / recoverSaved` 分别收敛历史、详情和本机交付。基础 contracts/rules 的传递依赖仅限 contracts/rules 和纯叶 `dist/source-identity.js`；application 可使用共享 model，Node 服务复用 application，不导入 client。`batch-validation.mjs` 用 Node 哈希核验批次，不操作文件；`inbox.mjs` 负责队列保存。`shared/paths.mjs` 以源码仓库为根计算 CLI、采集器及私有路径，不依赖调用时的工作目录。`app.js` 仍编排岗位编辑、详情导航及手动同步。
+`collectHistory / settleSaved`、`collectDetails` 和 `deliverSaved / recoverSaved` 分别收敛历史、详情和本机交付。依赖边界见下节；Node 服务复用 application。`batch-validation.mjs` 用 Node 哈希核验批次，不操作文件；`inbox.mjs` 负责队列保存。`shared/paths.mjs` 以源码仓库为根计算 CLI、采集器及私有路径，不依赖调用时的工作目录。`app.js` 仍编排岗位编辑、详情导航及手动同步。
 
 ### 依赖与写入约束
 
 - 页面调用渲染、纯规则与工作区 interface；本机正式修改经 `storage.js` / `local-workspace.js` 交付，不直接写磁盘、操作 Git 或改写来源账本。
-- 纯规则处理传入数据并返回结果；DOM、网络、文件和进程操作放在相应 adapter。浏览器加载的模块须位于可公开部署的 `dist/`，不能依赖 Node 文件系统。
+- 纯规则处理传入数据并返回结果；DOM、网络、文件和进程操作放在相应 adapter。`dist/` 中的模块及其全部传递依赖须留在 `dist/`，不能依赖 Node 内置模块或外部包。
 - 采集适配器负责真实平台字段与请求，归属及业务判断使用共用规则；controller 负责生命周期和编排，不能自行解释卡片含义。
 - `WorkspaceStore` 是本机正式写者；消费器和 HTTP 命令都经它提交。队列、采集进度、正式数据和浏览器缓存各自维护，不能以某一层的完成状态代替另一层确认。
+
+BOSS 基础 contracts/rules 的传递依赖仅限 contracts/rules 和纯叶 `dist/source-identity.js`，不引入 application、client、共享 model/storage 或界面模块；application 可以使用 model。采集器不能导入 control/delivery，只允许共用 Node 诊断叶模块；Node 服务及其传递依赖不能导入浏览器 client。
+
+[生产依赖检查器](../scripts/module-check.mjs) 静态解析 dist、scripts、collector 的公开 `.js/.mjs`，检查文件存在、大小写、目录及父路径符号链接、循环和依赖层级，不链接或执行模块。扫描排除测试、私有材料、依赖及第三方技能；旧采集目录的 data/profile 等私有材料按路径排除，不排除其他公开目录中的同名源码。动态 import、require、importScripts、Worker、eval 和 Function 写法被保守拒绝；词法检测不能覆盖任意计算、间接别名或运行时生成代码，静态依赖合法不证明运行行为纯净。命令入口见[维护检查](MAINTENANCE.md#每次改动)。
 
 ## 数据所有者
 
@@ -189,7 +193,7 @@ flowchart LR
 
 打开、关闭、编辑或恢复草稿后保持筛选与来源位置；结果减少时收敛页码，关闭详情恢复滚动和焦点。渲染保留展开状态及未提交输入，不能替换中文组合输入控件。下一步建议只是可编辑预填，任务仍须明确保存。原始表单基线与草稿版本用于并发核对，清理只删除已提交的精确版本，清理失败不把正式保存变为失败。
 
-本机页面目前约每 30 秒读取 BOSS 接入状态；页面可见且服务管理消费时，约每 15 秒读取正式工作区。焦点及可见状态变化也可刷新。它们更新缓存和展示，不启动平台采集；后台消费由服务独立运行。间隔不是完成时限，服务短暂失联时保留最近状态并标记待更新。具体交互与故障验收见[维护手册](MAINTENANCE.md)。
+本机页面目前约每 30 秒读取 BOSS 接入状态；页面可见且服务管理消费时，约每 15 秒读取正式工作区。焦点及可见状态变化也可刷新。它们更新缓存和展示，不启动平台采集；后台消费由服务独立运行。间隔不是完成时限，服务短暂失联时保留最近状态并标记待更新。具体交互与故障验收见[BOSS 人工验收](boss/OPERATIONS.md#人工验收)及[恢复与迁移验收](DATA_AND_RECOVERY.md#恢复与迁移验收)。
 
 ## 持久化、隐私与外部接口
 
@@ -203,4 +207,4 @@ flowchart LR
 
 改动前按[现状与目标核对](agents/change-workflow.md)追踪实际调用者；新业务规则放入对应共用模块，测试预期从原始要求独立确定。规则、应用决定、持久化交付及页面反馈各自核对，成功计数或回执不能代替结果验证。
 
-本次 BOSS 职责重构已完成，范围及历史依据见[重构记录](ARCHITECTURE_REFACTOR_PLAN.md)。`pnpm check` 以 Node 24 的静态模块解析检查生产依赖、层级、循环和 dist 独立部署，并递归检查采集器语法；它不执行被检查模块，也不证明运行时纯度。具体范围和动态写法限制见[维护检查](MAINTENANCE.md#每次改动)。后续改动继续保留稳定身份、业务结果、人工保护、冲突与恢复语义；发布前运行完整 `pnpm test`、`pnpm check` 和 `pnpm format:check`。浏览器及真实平台验收由用户完成，服务更新不自动恢复跟踪或同步 GitHub。
+本次 BOSS 职责重构已完成，范围及历史依据见[重构记录](ARCHITECTURE_REFACTOR_PLAN.md)。生产依赖的检查范围与限制见[依赖与写入约束](#依赖与写入约束)，执行入口见[维护检查](MAINTENANCE.md#每次改动)。后续改动继续保留稳定身份、业务结果、人工保护、冲突与恢复语义；发布前运行完整 `pnpm test`、`pnpm check` 和 `pnpm format:check`。浏览器及真实平台验收由用户完成，服务更新不自动恢复跟踪或同步 GitHub。
