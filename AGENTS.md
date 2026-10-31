@@ -47,7 +47,7 @@
 - **R023** 项目应用的真实浏览器测试由用户或人工测试者负责（[D017](docs/adr/0017-manual-browser-testing.md)），包括 Playwright 和 headless 浏览器。除非用户后续明确委托，代理不得启动或控制浏览器、安装浏览器依赖或申请浏览器测试权限。Archify 生成物的浏览器检查、预览与导出已获授权，按 [D057](docs/adr/0057-archify-browser-exception.md) 在隔离浏览器中执行，无需逐次重新确认。
 - **R024** 代理运行相关非浏览器测试、`pnpm check` 和 `pnpm format:check`，使用 `pnpm format` 格式化；发布前运行完整 `pnpm test`。交付简短人工验收清单，用户确认前标明浏览器验收待完成。
 - **R025** 代理本地不运行 `pnpm verify`，因为它包含 `pnpm test:browser`。既有浏览器脚本和 CI 保持可用且不改动，CI 结果不能替代人工验收。项目应用的浏览器回归使用临时 profile、仅服务 `dist/` 的静态服务器及模拟外部 API，不得指向用户正在运行的工作区或私有 GitHub 数据。
-- **R026** 使用 Node 24、固定版本的 pnpm 和锁文件。`package.json` 与 `dist/version.js` 同步更新，行为变化记录在 `CHANGELOG.md`。
+- **R026** 使用 Node 24、固定版本的 pnpm 和锁文件，保持 `package.json` 与 `dist/version.js` 的应用版本一致。日常变更记录在 PR；用户主动发起版本发布时，按[发布流程](docs/MAINTENANCE.md#发布)更新双版本与 `CHANGELOG.md`，合并后标记版本 tag。
 - **R027** `dist/` 是直接维护的源码，不是生成的构建产物；仅部署 `dist/`。发布源码与发布个人记录是两项独立操作。
 
 ## 文档索引
