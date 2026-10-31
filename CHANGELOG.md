@@ -13,7 +13,7 @@
 
 ### 变更
 
-- 来源事实与应用决定分开保存，按账号、会话和岗位核对归属；同步和后台导入按受影响岗位隔离冲突，保留独立编辑、人工字段与删除标记。
+- 来源事实与应用决定分开保存，按账号、会话和岗位核对归属；本机模式下，同步和后台导入按受影响岗位隔离冲突，保留独立编辑、人工字段与删除标记。
 - 正式变更经 PR 交付，用户主动发起版本发布；新增合并脚本，复用已有审查与授权并回读合并结果（[PR #2](https://github.com/codeongit/job-tracker/pull/2)、[#3](https://github.com/codeongit/job-tracker/pull/3)、[#4](https://github.com/codeongit/job-tracker/pull/4)、[#5](https://github.com/codeongit/job-tracker/pull/5)、[#6](https://github.com/codeongit/job-tracker/pull/6)）。
 
 ### 修复
