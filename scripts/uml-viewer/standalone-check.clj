@@ -1,6 +1,8 @@
 (ns job-tracker.uml-viewer-check
   (:require [clojure.java.io :as io]
+            [clojure.string :as str]
             [quil.core :as q]
+            [uml-viewer.adapters.draw :as draw]
             [uml-viewer.adapters.sketch :as sketch]
             [uml-viewer.adapters.source-window :as source-window]
             [uml-viewer.application.detail :as detail]
@@ -19,6 +21,9 @@
     (ensure! (seq boxes) "A reachable hierarchy view is empty")
     (reduce
       (fn [total box]
+        (when (and (:file box) (not (:drill? box)))
+          (ensure! (= (.getName (io/file (:file box))) (:name box))
+                   "A reachable source box exposes an encoded filename"))
         (if-not (:drill? box)
           (update total :modules conj (:id box))
           (let [child (events/drill state (:id box))
@@ -51,6 +56,119 @@
 
 (defn- private-fn [name]
   (var-get (job-tracker.uml-viewer/upstream-var 'uml-viewer.adapters.sketch name)))
+
+(defn check-file-labels! []
+  (let [classes (mapv (fn [[id filename]]
+                        {:id id :name filename :ns (str "test." (name id))
+                         :file (str "/synthetic/" filename) :lang :typescript})
+                      [[:dist.integration%2Ejs "integration.js"]
+                       [:dist.observations%2Ejs "observations.js"]
+                       [:dist.foo%2Emjs "foo.mjs"]
+                       [:dist.foo.main%2Emjs "main.mjs"]
+                       [:dist.foo%2Emain%2Emjs "foo.main.mjs"]
+                       [:dist.literal%252Ejs "literal%2Ejs"]])
+        doc {:hierarchical true :prefix "test" :classes classes
+             :edges [{:from :dist.integration%2Ejs :to :dist.observations%2Ejs
+                      :kind :dependency}
+                     {:from :dist.foo.main%2Emjs :to :dist.integration%2Ejs
+                      :kind :dependency}]}
+        scene (document/compile-view doc "/synthetic" [:dist] false)
+        boxes (:classes scene)
+        model (detail/model scene :dist.integration%2Ejs)]
+    (doseq [class (remove #(= :dist.foo.main%2Emjs (:id %)) classes)]
+      (ensure! (= (:name class) (:name (first (filter #(= (:id class) (:id %)) boxes))))
+               (str "File label lost its original spelling: " (:name class))))
+    (ensure! (:drill? (first (filter #(= :dist.foo (:id %)) boxes)))
+             "A file label collided with a directory")
+    (ensure! (= "main.mjs" (get-in (hierarchy/view-at doc [:dist :foo])
+                                    [:packages 0 :classes 0 :name]))
+             "Nested file labels changed")
+    (ensure! (= "integration.js" (get-in (hierarchy/view-at doc [:dist :foo])
+                                         [:packages 0 :classes 0 :out-deps 0 :name]))
+             "A dependency port exposes an encoded filename")
+    (ensure! (= "observations.js" (get-in model [:rels 0 :name]))
+             "Relationship labels expose encoded IDs")
+    (ensure! (= "integration.js" (:text (first (filter :module (detail/rows model)))))
+             "The module link exposes an encoded namespace")
+    (ensure! (= {:ns "test.dist.integration%2Ejs" :file "/synthetic/integration.js"
+                 :lang :typescript}
+                (detail/member-ident model))
+             "Display labels changed source identity")))
+
+(defn- detail-image [model inspect!]
+  ;; Exercise Quil/Processing's real drawing code on an owned raster. Only
+  ;; allocating a desktop surface is replaced; no window or browser starts.
+  (let [image (java.awt.image.BufferedImage. detail/width detail/height
+                                             java.awt.image.BufferedImage/TYPE_INT_ARGB)
+        graphics (proxy [processing.awt.PGraphicsJava2D] []
+                   (checkImage [] (.createGraphics image)))]
+    (.setParent graphics (processing.core.PApplet.))
+    (.setSize graphics detail/width detail/height)
+    (set! (.-image graphics) image)
+    (with-redefs [q/internal-state (constantly (atom {:current-fill 255}))]
+      (q/with-graphics graphics
+        (q/text-font (processing.core.PFont. (java.awt.Font. "SansSerif" java.awt.Font/PLAIN 14) true))
+        (draw/draw-detail model 0)
+        (inspect! graphics)))
+    image))
+
+(defn check-long-labels! []
+  (let [dir (.toFile (java.nio.file.Files/createTempDirectory
+                      "job-tracker-uml-display-" (make-array java.nio.file.attribute.FileAttribute 0)))
+        file (io/file dir "integration.js")
+        diagram (io/file dir "diagram.edn")
+        long-name "rejectMisattributedResumeObservation"
+        longer-name (apply str (repeat 3 long-name))
+        doc {:hierarchical true :prefix "test" :edges []
+             :classes [{:id :dist.integration%2Ejs :name "integration.js"
+                        :ns "test.dist.integration%2Ejs" :lang :typescript :file (.getPath file)}]}
+        shown (atom nil)
+        bridge (var-get (job-tracker.uml-viewer/upstream-var 'uml-viewer.adapters.sketch '!bridge))
+        previous @bridge]
+    (try
+      (spit file (str "export function " long-name "() {}\n"
+                      "export function " longer-name "() {}\n"
+                      "export function after() {}\n"))
+      (spit diagram (pr-str doc))
+      (let [state (document/load-path (.getPath diagram))
+            model (detail/model (events/card-scene state) :dist.integration%2Ejs)
+            rows (detail/rows model)]
+        (ensure! model "The synthetic module did not load")
+        (detail-image model
+          (fn [graphics]
+            (doseq [row (filter :text rows)]
+              (q/text-size (if (= :name (:kind row)) 20 13))
+              (let [lines (str/split (:text row) #"\n" -1)]
+                (ensure! (every? #(<= (q/text-width %) 226) lines)
+                         (str "Detail label overflows its 226px column: " (:text row)))
+                (ensure! (>= (:h row) (+ (q/text-ascent) (q/text-descent)
+                                        (* (dec (count lines)) (.-textLeading graphics))))
+                         "Detail label is vertically clipped")))))
+        (doseq [name [long-name longer-name "after"]]
+          (let [row (first (filter #(= name (:op-name %)) rows))]
+            (ensure! (= (str "+ " name) (str/replace (:text row) "\n" ""))
+                     "Wrapping removed characters from a member label")
+            (reset! bridge {:model model})
+            (with-redefs-fn
+              {(job-tracker.uml-viewer/upstream-var
+                 'uml-viewer.adapters.source-window 'show-member-window!)
+               (fn [title body line] (reset! shown {:title title :body body :line line}))}
+              (fn []
+                (doseq [y [(:y row) (+ (:y row) (:h row) -1)]]
+                  (reset! shown nil)
+                  ((private-fn 'detail-mouse-pressed) {:scroll 40} {:y (- y 40)})
+                  (ensure! (= (inc (.indexOf [long-name longer-name "after"] name)) (:line @shown))
+                           "Clicking a wrapped/scrolled member opened the wrong source line")
+                  (ensure! (= (slurp file) (:body @shown)) "The source window opened different contents"))))))
+        (ensure! (every? (fn [[a b]] (<= (+ (:y a) (:h a)) (:y b))) (partition 2 1 rows))
+                 "Wrapped rows overlap")
+        (ensure! (>= (detail/content-h rows) (+ (:y (last rows)) (:h (last rows))))
+                 "The scroll extent excludes the last row"))
+      (finally
+        (reset! bridge previous)
+        (.delete diagram)
+        (.delete file)
+        (.delete dir)))))
 
 (defn- check-member-refresh! []
   (let [dir (.toFile (java.nio.file.Files/createTempDirectory
@@ -140,6 +258,8 @@
 
 (defn check! [path]
   (job-tracker.uml-viewer/install-standalone! path)
+  (check-file-labels!)
+  (check-long-labels!)
   (let [started (System/nanoTime)
         state (document/load-path path)
         load-ms (quot (- (System/nanoTime) started) 1000000)
