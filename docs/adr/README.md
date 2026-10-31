@@ -74,6 +74,7 @@
 | [D056](0056-review-results-in-pr.md)                       | 审查结论直接交付                                   | 有效；实际验证随 PR 记录                         | 用户确认简化并要求说明仅保留现行操作       |
 | [D057](0057-archify-browser-exception.md)                  | 允许 Archify 在隔离浏览器中检查生成物              | 已获用户授权                                     | 用户明确放开该技能的浏览器限制             |
 | [D058](0058-manual-version-releases.md)                    | 用户主动发起版本发布与关键变更摘要                 | 已确认；验证随 PR 记录                           | 用户确认按 PR 汇总并主动打标签发布         |
+| [D059](0059-standalone-uml-viewer.md)                      | 独立接入本地 UML 源码浏览器                        | 已决定；检查与桌面验收随 PR 记录                 | 用户明确要求独立接入                       |
 
 ## 新决策模板
 
