@@ -6,6 +6,7 @@ import {
 } from './boss/application/observations.js';
 import { createSyncConflictUI } from './sync-conflict-ui.js';
 import { bossConflictTargets } from './settings-guidance.js';
+import { bossWaitingItems } from './source-ledger.js';
 import { RESUME_STATES } from './boss/rules/resume-rules.js';
 import { createDraftManager } from './drafts.js';
 import { createDiskBackup } from './disk-backup.js';
@@ -89,7 +90,7 @@ let filteredRows = [],
   detailOrigin = null,
   renderedView = '';
 const settingsDisclosures = new Map();
-const bossIgnoreSelected = new Set();
+let bossIgnoreSelected = new Set();
 let bossIgnoreBusy = false;
 let bossFeedback = null,
   bossConfirmation = null,
@@ -1318,6 +1319,10 @@ document.addEventListener('click', async (e) => {
     if (b.dataset.bossRefresh) {
       await bossQueue?.run();
       state = await readState();
+      bossIgnoreSelected = reconcileBossIgnoreSelection(
+        bossIgnoreSelected,
+        bossWaitingItems(state.data),
+      );
       render(true);
       return;
     }
@@ -1358,6 +1363,12 @@ document.addEventListener('click', async (e) => {
       } finally {
         bossIgnoreBusy = false;
         state = await readState();
+        // A rejected batch must stay rejected. Only clean up its now-hidden
+        // selections for a later, explicitly reviewed attempt.
+        bossIgnoreSelected = reconcileBossIgnoreSelection(
+          bossIgnoreSelected,
+          bossWaitingItems(state.data),
+        );
         render(true);
       }
       return;
@@ -1627,9 +1638,7 @@ async function startWorkspace() {
     },
     onStatus: (next) => {
       if (next.waitingItems && !next.connectionStale && !next.inspectionPending) {
-        const retained = reconcileBossIgnoreSelection(bossIgnoreSelected, next.waitingItems);
-        bossIgnoreSelected.clear();
-        for (const id of retained) bossIgnoreSelected.add(id);
+        bossIgnoreSelected = reconcileBossIgnoreSelection(bossIgnoreSelected, next.waitingItems);
       }
       bossStatus = next;
       if (view === 'settings' && state) render(true);

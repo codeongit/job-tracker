@@ -4,6 +4,8 @@ import { createLocalWorkspaceClient } from '../dist/local-workspace.js';
 import { initialWorkspace } from '../dist/workspace.js';
 import * as bossClient from '../dist/boss/client.js';
 import { bossApplicationId, bossFactId, bossFactType } from '../dist/source-identity.js';
+import { bossWaitingItems } from '../dist/source-ledger.js';
+import { reconcileBossIgnoreSelection } from '../dist/settings-view.js';
 
 const copy = (value) => structuredClone(value);
 const response = (value, status = 200) => ({
@@ -795,6 +797,70 @@ test('忽略核对中任一所选观察不再等待时整批停止，不缩小�
       assert.equal(f.cache.data.sourceApplications[0].status, 'waiting');
     });
   }
+});
+
+test('忽略失效选择整批停止后刷新选择，再次确认仅提交仍等待的观察', async () => {
+  const original = waitingBossWorkspace();
+  const invalidId = original.data.sourceApplications[0].id;
+  const waitingId = addBossObservation(original, { messageId: 'synthetic-still-waiting' });
+  const selected = new Set([invalidId, waitingId]);
+  const latest = copy(original);
+  latest.generation = 1;
+  latest.data.sourceApplications[0].status = 'protected';
+  latest.data.sourceApplications[0].reason = 'user_ignored_unresolved_observation';
+  const committed = copy(latest);
+  committed.generation = 2;
+  committed.data.sourceApplications[1].status = 'protected';
+  committed.data.sourceApplications[1].reason = 'user_ignored_unresolved_observation';
+  let advanced = false;
+  let confirmations = 0;
+  const f = fixture({
+    initial: original,
+    cached: original,
+    custom: (call, { publish }) => {
+      if (call.path === './__local/workspace' && advanced)
+        return response(publish({ workspace: latest, revision: 2 }));
+      if (call.method === 'POST') return response(publish({ workspace: committed, revision: 3 }));
+    },
+  });
+  await f.client.read();
+  advanced = true;
+  // The 15-second refresh may hide the resolved observation before the failed action.
+  let state = await f.client.read();
+  assert.deepEqual(
+    bossWaitingItems(state.data).map((item) => item.applicationId),
+    [waitingId],
+  );
+  assert.deepEqual([...selected], [invalidId, waitingId]);
+  const ignoreSelected = () =>
+    bossClient.reviewAndIgnoreBossObservations({
+      applicationIds: [...selected],
+      readWorkspaceForReview: f.client.readForReview,
+      confirm: () => {
+        confirmations++;
+        return true;
+      },
+      ignoreObservations: f.client.ignoreBossObservations,
+    });
+  await assert.rejects(ignoreSelected(), { code: 'BOSS_IGNORE_UNSAFE' });
+  assert.equal(confirmations, 0);
+  assert.equal(f.calls.filter((call) => call.method === 'POST').length, 0);
+  assert.deepEqual([...selected], [invalidId, waitingId]);
+
+  // After the rejected attempt, refresh and reconcile even if state already matches.
+  state = await f.client.read();
+  const retained = reconcileBossIgnoreSelection(selected, bossWaitingItems(state.data));
+  selected.clear();
+  for (const id of retained) selected.add(id);
+  assert.deepEqual([...selected], [waitingId]);
+  const result = await ignoreSelected();
+  assert.equal(confirmations, 1);
+  const commands = f.calls.filter((call) => call.method === 'POST');
+  assert.equal(commands.length, 1);
+  assert.equal(commands[0].parsed.expectedRevision, 2);
+  assert.deepEqual(commands[0].parsed.payload.applicationIds, [waitingId]);
+  assert.equal(result.ignored, 1);
+  assert.deepEqual(result.state, committed);
 });
 
 test('忽略核对拒绝缺失或无效正式版本，不把旧缓存作为写入依据', async (t) => {
