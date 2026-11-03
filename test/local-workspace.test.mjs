@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createLocalWorkspaceClient } from '../dist/local-workspace.js';
 import { initialWorkspace } from '../dist/workspace.js';
+import * as bossClient from '../dist/boss/client.js';
+import { bossApplicationId, bossFactId, bossFactType } from '../dist/source-identity.js';
 
 const copy = (value) => structuredClone(value);
 const response = (value, status = 200) => ({
@@ -562,6 +564,378 @@ test('忽略命令绑定已核对版本，丢失回复重用同一请求，不�
   const commands = f.calls.filter((call) => call.path === './__local/workspace/commands');
   assert.equal(commands.length, 2);
   assert.deepEqual(commands[0].parsed, commands[1].parsed);
+});
+
+function waitingBossWorkspace() {
+  const state = initialWorkspace();
+  const stamp = '2026-10-20T08:00:00.000Z';
+  const accountNamespace = `boss-geek:${'a'.repeat(64)}`;
+  state.data.sourceBindings.push({
+    id: `boss-account-${'a'.repeat(64)}`,
+    kind: 'account',
+    platform: 'boss',
+    accountNamespace,
+    workspaceSourceId: '00000000-0000-4000-8000-000000000001',
+    createdAt: stamp,
+  });
+  const event = {
+    id: `boss-event-${'b'.repeat(64)}`,
+    batchId: `boss-batch-${'c'.repeat(64)}`,
+    platform: 'boss',
+    accountNamespace,
+    conversationKey: 'd'.repeat(64),
+    friendId: 'synthetic-friend',
+    friendSource: 'synthetic-source',
+    uniqueId: 'synthetic-friend-synthetic-source',
+    eventType: 'conversation_observed',
+    messageId: 'synthetic-message',
+    messageDirection: 'unknown',
+    receiptStatus: 'unknown',
+    receiptSource: '',
+    summary: '合成待核对观察',
+    company: '合成旧公司',
+    jobName: '合成旧岗位',
+    nameSource: 'loaded_jobName',
+    linkConfirmation: 'unverified',
+    observedAt: stamp,
+    appliedAtSource: '',
+    sourceSnapshot: `synthetic.json#sha256:${'e'.repeat(64)}`,
+    sourceSequence: '1',
+    status: 'review',
+    importPolicy: 'boss-manual-check-v1',
+    createdAt: stamp,
+  };
+  event.factId = bossFactId(event);
+  state.data.sourceEvents.push(event);
+  state.data.sourceFacts.push({
+    id: event.factId,
+    platform: 'boss',
+    accountNamespace,
+    conversationKey: event.conversationKey,
+    messageId: event.messageId,
+    factType: 'message_observed',
+    observedAt: stamp,
+    createdAt: stamp,
+  });
+  state.data.sourceApplications.push({
+    id: bossApplicationId(event.factId),
+    factId: event.factId,
+    ruleVersion: 'boss-application-v17',
+    action: 'link',
+    status: 'waiting',
+    reason: 'missing_job_details',
+    updatedAt: stamp,
+  });
+  return state;
+}
+
+function addBossObservation(state, { messageId, receiptStatus = 'unknown', status = 'waiting' }) {
+  const event = {
+    ...copy(state.data.sourceEvents[0]),
+    id: `boss-event-${String(state.data.sourceEvents.length).repeat(64)}`,
+    messageId,
+    receiptStatus,
+    messageDirection: receiptStatus === 'unknown' ? 'unknown' : 'outbound',
+    receiptSource: receiptStatus === 'unknown' ? '' : 'list_receipt_label',
+  };
+  event.factId = bossFactId(event);
+  const fact = {
+    ...copy(state.data.sourceFacts[0]),
+    id: event.factId,
+    messageId,
+    factType: bossFactType(event),
+  };
+  const application = {
+    ...copy(state.data.sourceApplications[0]),
+    id: bossApplicationId(fact.id),
+    factId: fact.id,
+    status,
+    reason: status === 'review' ? 'attribution_message_multiple_jobs' : 'missing_job_details',
+  };
+  state.data.sourceEvents.push(event);
+  state.data.sourceFacts.push(fact);
+  state.data.sourceApplications.push(application);
+  return application.id;
+}
+
+test('忽略核对从正式快照显示最新观察，并将同一版本绑定到所选等待项命令', async () => {
+  const original = waitingBossWorkspace();
+  const latest = copy(original);
+  latest.generation = 8;
+  latest.data.sourceEvents[0].company = '合成最新公司';
+  latest.data.sourceEvents[0].jobName = '合成最新岗位';
+  const applicationId = latest.data.sourceApplications[0].id;
+  const committed = copy(latest);
+  committed.generation = 9;
+  committed.data.sourceApplications[0].status = 'protected';
+  committed.data.sourceApplications[0].reason = 'user_ignored_unresolved_observation';
+  let refreshed = false;
+  const f = fixture({
+    initial: original,
+    cached: original,
+    custom: (call, { publish }) => {
+      if (call.path === './__local/workspace' && refreshed)
+        return response(publish({ workspace: latest, revision: 8 }));
+      if (call.method === 'POST') return response(publish({ workspace: committed, revision: 9 }));
+    },
+  });
+  assert.equal((await f.client.read()).data.sourceEvents[0].company, '合成旧公司');
+  refreshed = true;
+  let confirmation;
+  const result = await bossClient.reviewAndIgnoreBossObservations({
+    applicationIds: [applicationId],
+    readWorkspaceForReview: f.client.readForReview,
+    confirm: (reviewed) => {
+      confirmation = reviewed;
+      return true;
+    },
+    ignoreObservations: f.client.ignoreBossObservations,
+  });
+  assert.equal(confirmation.revision, 8);
+  assert.equal(confirmation.state.generation, 8);
+  assert.equal(confirmation.messageCount, 1);
+  assert.deepEqual(confirmation.items, [
+    {
+      applicationId,
+      reason: 'missing_job_details',
+      candidate: '合成最新岗位',
+      candidateCompany: '合成最新公司',
+    },
+  ]);
+  const commands = f.calls.filter((call) => call.method === 'POST');
+  assert.equal(commands.length, 1);
+  assert.equal(commands[0].parsed.type, 'ignore_boss_observations');
+  assert.equal(commands[0].parsed.expectedRevision, 8);
+  assert.deepEqual(commands[0].parsed.payload.applicationIds, [applicationId]);
+  assert.deepEqual(result, { state: committed, ignored: 1, applicationIds: [applicationId] });
+});
+
+test('忽略核对取消后保留等待观察，不提交命令', async () => {
+  const state = waitingBossWorkspace();
+  const f = fixture({ initial: state, cached: state });
+  let confirmed = 0;
+  const result = await bossClient.reviewAndIgnoreBossObservations({
+    applicationIds: [state.data.sourceApplications[0].id],
+    readWorkspaceForReview: f.client.readForReview,
+    confirm: () => {
+      confirmed++;
+      return false;
+    },
+    ignoreObservations: f.client.ignoreBossObservations,
+  });
+  assert.equal(result, null);
+  assert.equal(confirmed, 1);
+  assert.deepEqual(f.cache, state);
+  assert.equal(f.calls.filter((call) => call.method === 'POST').length, 0);
+});
+
+test('忽略核对发现正式同步冲突时停止，不显示确认或提交命令', async () => {
+  const original = waitingBossWorkspace();
+  const latest = copy(original);
+  latest.pending = {
+    data: copy(latest.data),
+    remote: copy(latest.data),
+    conflicts: [],
+    generation: latest.generation,
+  };
+  const f = fixture({
+    initial: latest,
+    cached: original,
+    authorityValue: JSON.stringify({ workspaceId: '00000000-0000-4000-8000-000000000001' }),
+  });
+  await assert.rejects(
+    bossClient.reviewAndIgnoreBossObservations({
+      applicationIds: [original.data.sourceApplications[0].id],
+      readWorkspaceForReview: f.client.readForReview,
+      confirm: () => assert.fail('同步冲突时不能确认忽略'),
+      ignoreObservations: f.client.ignoreBossObservations,
+    }),
+    { code: 'SYNC_CONFLICT' },
+  );
+  assert.equal(f.calls.filter((call) => call.method === 'POST').length, 0);
+  assert.equal(f.cache.data.sourceApplications[0].status, 'waiting');
+});
+
+test('忽略核对中任一所选观察不再等待时整批停止，不缩小选择继续提交', async (t) => {
+  for (const status of ['review', 'protected', 'no_effect', 'removed', 'deletedAt']) {
+    await t.test(status, async () => {
+      const original = waitingBossWorkspace();
+      const changedId = addBossObservation(original, { messageId: 'synthetic-changed-message' });
+      const latest = copy(original);
+      if (status === 'removed') {
+        latest.data.sourceEvents.pop();
+        latest.data.sourceFacts.pop();
+        latest.data.sourceApplications.pop();
+      } else if (status === 'deletedAt') {
+        latest.data.sourceApplications[1].deletedAt = '2026-10-21T08:00:00.000Z';
+      } else {
+        latest.data.sourceApplications[1].status = status;
+        latest.data.sourceApplications[1].reason =
+          status === 'protected'
+            ? 'user_ignored_unresolved_observation'
+            : status === 'review'
+              ? 'attribution_message_multiple_jobs'
+              : 'observation_only';
+      }
+      const f = fixture({
+        initial: latest,
+        cached: original,
+        authorityValue: JSON.stringify({ workspaceId: '00000000-0000-4000-8000-000000000001' }),
+      });
+      await assert.rejects(
+        bossClient.reviewAndIgnoreBossObservations({
+          applicationIds: [original.data.sourceApplications[0].id, changedId],
+          readWorkspaceForReview: f.client.readForReview,
+          confirm: () => assert.fail('选择失效时不能确认部分忽略'),
+          ignoreObservations: f.client.ignoreBossObservations,
+        }),
+        { code: 'BOSS_IGNORE_UNSAFE' },
+      );
+      assert.equal(f.calls.filter((call) => call.method === 'POST').length, 0);
+      assert.equal(f.cache.data.sourceApplications[0].status, 'waiting');
+    });
+  }
+});
+
+test('忽略核对拒绝缺失或无效正式版本，不把旧缓存作为写入依据', async (t) => {
+  for (const revision of [undefined, 0, 1.5]) {
+    await t.test(`revision=${revision}`, async () => {
+      const state = waitingBossWorkspace();
+      const f = fixture({
+        initial: state,
+        cached: state,
+        custom: (call, { envelope }) =>
+          call.path === './__local/workspace' ? response({ ...envelope(), revision }) : undefined,
+      });
+      await assert.rejects(
+        bossClient.reviewAndIgnoreBossObservations({
+          applicationIds: [state.data.sourceApplications[0].id],
+          readWorkspaceForReview: f.client.readForReview,
+          confirm: () => assert.fail('无正式版本时不能确认忽略'),
+          ignoreObservations: f.client.ignoreBossObservations,
+        }),
+        { code: revision === 0 ? 'BOSS_IGNORE_UNSAFE' : 'LOCAL_WORKSPACE_PROTOCOL' },
+      );
+      assert.deepEqual(f.cache, state);
+      assert.equal(f.calls.filter((call) => call.method === 'POST').length, 0);
+    });
+  }
+});
+
+test('忽略核对确认后版本前进或服务拒绝冲突时，不换版本自动重放', async (t) => {
+  for (const conflictAt of ['before-post', 'server']) {
+    await t.test(conflictAt, async () => {
+      const original = waitingBossWorkspace();
+      const latest = copy(original);
+      latest.generation = 2;
+      latest.data.sourceEvents[0].company = '合成并发更新公司';
+      let confirmed = 0;
+      let rejected = false;
+      const f = fixture({
+        initial: original,
+        cached: original,
+        custom: (call, { publish }) => {
+          if (
+            call.path === './__local/workspace' &&
+            ((confirmed && conflictAt === 'before-post') || rejected)
+          )
+            return response(publish({ workspace: latest, revision: 2 }));
+          if (call.method === 'POST') {
+            rejected = true;
+            return response({ code: 'WORKSPACE_REVISION_CONFLICT', message: '合成版本冲突' }, 409);
+          }
+        },
+      });
+      await assert.rejects(
+        bossClient.reviewAndIgnoreBossObservations({
+          applicationIds: [original.data.sourceApplications[0].id],
+          readWorkspaceForReview: f.client.readForReview,
+          confirm: ({ state, revision }) => {
+            assert.equal(revision, 1);
+            assert.equal(state.data.sourceEvents[0].company, '合成旧公司');
+            confirmed++;
+            return true;
+          },
+          ignoreObservations: f.client.ignoreBossObservations,
+        }),
+        { code: 'WORKSPACE_REVISION_CONFLICT' },
+      );
+      assert.equal(confirmed, 1);
+      const commands = f.calls.filter((call) => call.method === 'POST');
+      assert.equal(commands.length, conflictAt === 'before-post' ? 0 : 1);
+      if (commands.length) {
+        assert.equal(commands[0].parsed.expectedRevision, 1);
+        assert.deepEqual(commands[0].parsed.payload.applicationIds, [
+          original.data.sourceApplications[0].id,
+        ]);
+      }
+      assert.equal(f.cache.data.sourceApplications[0].status, 'waiting');
+      assert.equal(f.cache.data.sourceEvents[0].company, '合成并发更新公司');
+    });
+  }
+});
+
+test('忽略核对合并同一消息的等待观察，只提交所选等待项并保留关联核对项', async () => {
+  const state = waitingBossWorkspace();
+  const firstId = state.data.sourceApplications[0].id;
+  const deliveredId = addBossObservation(state, {
+    messageId: 'synthetic-message',
+    receiptStatus: 'delivered',
+  });
+  const reviewId = addBossObservation(state, {
+    messageId: 'synthetic-message',
+    receiptStatus: 'read',
+    status: 'review',
+  });
+  const otherId = addBossObservation(state, { messageId: 'synthetic-other-message' });
+  const committed = copy(state);
+  committed.generation = 1;
+  for (const application of committed.data.sourceApplications.slice(0, 2)) {
+    application.status = 'protected';
+    application.reason = 'user_ignored_unresolved_observation';
+  }
+  const f = fixture({
+    initial: state,
+    cached: state,
+    custom: (call, { publish }) =>
+      call.method === 'POST' ? response(publish({ workspace: committed, revision: 2 })) : undefined,
+  });
+  let confirmed = 0;
+  const result = await bossClient.reviewAndIgnoreBossObservations({
+    applicationIds: [firstId, deliveredId],
+    readWorkspaceForReview: f.client.readForReview,
+    confirm: ({ items, messageCount }) => {
+      confirmed++;
+      assert.equal(messageCount, 1);
+      assert.equal(items.length, 2);
+      assert.deepEqual(
+        new Set(items.map((item) => item.applicationId)),
+        new Set([firstId, deliveredId]),
+      );
+      return true;
+    },
+    ignoreObservations: f.client.ignoreBossObservations,
+  });
+  assert.equal(confirmed, 1);
+  const commands = f.calls.filter((call) => call.method === 'POST');
+  assert.equal(commands.length, 1);
+  assert.equal(commands[0].parsed.expectedRevision, 1);
+  assert.deepEqual(
+    new Set(commands[0].parsed.payload.applicationIds),
+    new Set([firstId, deliveredId]),
+  );
+  assert.equal(result.ignored, 2);
+  assert.deepEqual(new Set(result.applicationIds), new Set([firstId, deliveredId, reviewId]));
+  assert.equal(
+    result.state.data.sourceApplications.find((item) => item.id === reviewId).status,
+    'review',
+  );
+  assert.equal(
+    result.state.data.sourceApplications.find((item) => item.id === otherId).status,
+    'waiting',
+  );
+  assert.deepEqual(result.state.data.sourceEvents, state.data.sourceEvents);
+  assert.deepEqual(result.state.data.sourceFacts, state.data.sourceFacts);
 });
 
 test('资料确认命令使用已核对版本，丢失回复精确重试同一幂等请求', async () => {

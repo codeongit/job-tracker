@@ -159,7 +159,7 @@ test('本机消费进度与跟踪授权分开显示，旧清单不宣称已刷�
   assert.match(html, /本机录入中/);
   assert.match(html, /跟踪已停止/);
   assert.match(html, /保存正式记录 · 已检查 1 \/ 3 个批次/);
-  assert.match(html, /待核对清单将在处理结束后刷新/);
+  assert.match(html, /完整检查结果将在处理结束后刷新/);
   assert.match(html, /新入队材料将在当前检查后继续处理/);
   assert.match(html, /&lt;synthetic-batch&gt;/);
   assert.doesNotMatch(html, /暂无需要处理的问题|<synthetic-batch>/);
@@ -531,6 +531,56 @@ function mixedObservationData() {
   }
   return data;
 }
+
+test('后台持续处理时仍可核对并忽略已加载的等待项，保留其他禁用条件', () => {
+  const data = mixedObservationData();
+  const selected = new Set([data.sourceApplications[0].id]);
+  const status = {
+    available: true,
+    serverManaged: true,
+    inspectionPending: true,
+    tracking: { inbox: { progress: { running: true, phase: 'checking', total: 500 } } },
+  };
+  const retained = bossIntegrationView(
+    {
+      ...status,
+      waitingItems: data.sourceApplications.map((row) => ({
+        applicationId: row.id,
+        status: row.status,
+        reason: row.reason,
+      })),
+    },
+    { data, selected },
+  );
+  assert.match(retained, /data-boss-ignore="true" >忽略所选观察/);
+  const html = bossIntegrationView(status, { data, selected });
+  assert.match(html, /待核对 1 条消息 · 2 项观察/);
+  assert.match(html, /已选 <strong>1<\/strong> 条消息 \/ <strong>1<\/strong> 项观察/);
+  assert.match(html, /data-boss-ignore="true" >忽略所选观察/);
+  assert.match(html, /忽略前会读取最新记录/);
+  assert.doesNotMatch(html, /当前不可确认或忽略/);
+  for (const options of [
+    {},
+    { offline: true, selected },
+    { pendingConflict: true, selected },
+    { busy: true, selected },
+  ]) {
+    assert.match(
+      bossIntegrationView(status, { data, ...options }),
+      /data-boss-ignore="true" disabled/,
+    );
+  }
+  for (const patch of [
+    { serverManaged: false },
+    { connectionStale: true },
+    { error: 'synthetic error' },
+  ]) {
+    assert.match(
+      bossIntegrationView({ ...status, ...patch }, { data, selected }),
+      /data-boss-ignore="true" disabled/,
+    );
+  }
+});
 
 test('混合消息只勾选等待子项，冲突保留且显示消息与观察两种单位', () => {
   const data = mixedObservationData();
