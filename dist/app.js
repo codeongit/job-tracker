@@ -1,12 +1,12 @@
 import { parseBossJobUrl } from './boss/contracts/job-url.js';
 import { runAppStartup } from './app-startup.js';
 import {
-  groupBossObservations,
   bossObservationGroups,
   bossJobDetailsConfirmation,
 } from './boss/application/observations.js';
 import { createSyncConflictUI } from './sync-conflict-ui.js';
 import { bossConflictTargets } from './settings-guidance.js';
+import { bossWaitingItems } from './source-ledger.js';
 import { RESUME_STATES } from './boss/rules/resume-rules.js';
 import { createDraftManager } from './drafts.js';
 import { createDiskBackup } from './disk-backup.js';
@@ -61,7 +61,7 @@ import {
 import { githubClient, syncWorkspace, validateConfig } from './github.js';
 import { discoverLocalSsh, localSshClient } from './local-ssh.js';
 import { bindCommittedTextInput, trackComposition } from './text-input.js';
-import { createBossQueueConsumer } from './boss/client.js';
+import { createBossQueueConsumer, reviewAndIgnoreBossObservations } from './boss/client.js';
 import {
   bossWaitingReviewTarget,
   bossWaitingReviewCandidates,
@@ -90,7 +90,7 @@ let filteredRows = [],
   detailOrigin = null,
   renderedView = '';
 const settingsDisclosures = new Map();
-const bossIgnoreSelected = new Set();
+let bossIgnoreSelected = new Set();
 let bossIgnoreBusy = false;
 let bossFeedback = null,
   bossConfirmation = null,
@@ -1319,6 +1319,10 @@ document.addEventListener('click', async (e) => {
     if (b.dataset.bossRefresh) {
       await bossQueue?.run();
       state = await readState();
+      bossIgnoreSelected = reconcileBossIgnoreSelection(
+        bossIgnoreSelected,
+        bossWaitingItems(state.data),
+      );
       render(true);
       return;
     }
@@ -1327,41 +1331,44 @@ document.addEventListener('click', async (e) => {
         bossIgnoreBusy ||
         storageStatus().offline ||
         bossStatus.connectionStale ||
-        bossStatus.inspectionPending ||
         bossStatus.error ||
         !bossStatus.serverManaged ||
         state.pending
       )
         throw new Error('请先刷新本机状态并处理同步冲突。');
-      const items = (bossStatus.waitingItems || []).filter((item) =>
-        bossIgnoreSelected.has(item.applicationId),
-      );
-      if (!items.length) return;
-      const revision = bossStatus.revision;
-      const allApplicationIds = bossObservationGroups(state.data)
-        .filter((group) => group.waitingApplicationIds.some((id) => bossIgnoreSelected.has(id)))
-        .flatMap((group) => group.applicationIds);
-      if (
-        !confirm(
-          `确认忽略以下 ${groupBossObservations(items, state.data).length} 条消息 / ${items.length} 项观察？同一事实后续不再自动应用，原始观察保留。\n\n${items.map((item) => `${item.candidateCompany || '未知公司'} / ${item.candidate || '未取得岗位'} · ${bossObservationReason(item)} · ${item.applicationId.slice(-8)}`).join('\n')}`,
-        )
-      )
-        return;
+      const applicationIds = [...bossIgnoreSelected];
+      if (!applicationIds.length) return;
       bossIgnoreBusy = true;
       render(true);
       try {
-        state = await ignoreBossObservations(
-          items.map((item) => item.applicationId),
-          revision,
-        );
-        beginBossCheck(allApplicationIds, `已忽略 ${items.length} 项等待观察`, false);
+        const result = await reviewAndIgnoreBossObservations({
+          applicationIds,
+          readWorkspaceForReview: readStateForReview,
+          ignoreObservations: ignoreBossObservations,
+          confirm: (reviewed) => {
+            state = reviewed.state;
+            render(true);
+            return confirm(
+              `确认忽略以下 ${reviewed.messageCount} 条消息 / ${reviewed.items.length} 项观察？同一事实后续不再自动应用，原始观察保留。\n\n${reviewed.items.map((item) => `${item.candidateCompany || '未知公司'} / ${item.candidate || '未取得岗位'} · ${bossObservationReason(item)} · ${item.applicationId.slice(-8)}`).join('\n')}`,
+            );
+          },
+        });
+        if (!result) return;
+        state = result.state;
+        beginBossCheck(result.applicationIds, `已忽略 ${result.ignored} 项等待观察`, false);
         bossIgnoreSelected.clear();
         channel?.postMessage('changed');
         await bossQueue?.run();
-        notify(`已忽略 ${items.length} 条观察。`);
+        notify(`已忽略 ${result.ignored} 项观察。`);
       } finally {
         bossIgnoreBusy = false;
         state = await readState();
+        // A rejected batch must stay rejected. Only clean up its now-hidden
+        // selections for a later, explicitly reviewed attempt.
+        bossIgnoreSelected = reconcileBossIgnoreSelection(
+          bossIgnoreSelected,
+          bossWaitingItems(state.data),
+        );
         render(true);
       }
       return;
@@ -1631,9 +1638,7 @@ async function startWorkspace() {
     },
     onStatus: (next) => {
       if (next.waitingItems && !next.connectionStale && !next.inspectionPending) {
-        const retained = reconcileBossIgnoreSelection(bossIgnoreSelected, next.waitingItems);
-        bossIgnoreSelected.clear();
-        for (const id of retained) bossIgnoreSelected.add(id);
+        bossIgnoreSelected = reconcileBossIgnoreSelection(bossIgnoreSelected, next.waitingItems);
       }
       bossStatus = next;
       if (view === 'settings' && state) render(true);

@@ -7,6 +7,7 @@ import {
 import { clone, equal, live } from '../model.js';
 import { sourceReviewCounts, bossWaitingItems } from '../source-ledger.js';
 import { bossAttributionSummary } from './rules/attribution.js';
+import { bossObservationGroups } from './application/observations.js';
 
 const BATCH_ID = /^boss-batch-[a-f0-9]{64}$/;
 const ACCOUNT_NAMESPACE = /^boss-geek:[a-f0-9]{64}$/;
@@ -17,6 +18,45 @@ function integrationError(message, code) {
   const error = new Error(message);
   error.code = code;
   return error;
+}
+
+export async function reviewAndIgnoreBossObservations({
+  applicationIds,
+  readWorkspaceForReview,
+  confirm,
+  ignoreObservations,
+}) {
+  if (
+    !Array.isArray(applicationIds) ||
+    !applicationIds.length ||
+    applicationIds.length > 100 ||
+    new Set(applicationIds).size !== applicationIds.length
+  )
+    throw integrationError('请选择 1 至 100 项等待观察。', 'BOSS_IGNORE_INVALID');
+  const selected = new Set(applicationIds);
+  // A queue scan can run for minutes. Review against one authoritative snapshot
+  // instead of waiting for its progress/index snapshot to become idle.
+  const current = await readWorkspaceForReview();
+  const { state, revision } = current;
+  if (!Number.isSafeInteger(revision) || revision < 1)
+    throw integrationError('未取得有效的本机记录版本，请刷新后重新核对。', 'BOSS_IGNORE_UNSAFE');
+  if (state.pending) throw integrationError('请先核对同步冲突，再忽略观察。', 'SYNC_CONFLICT');
+  const items = bossWaitingItems(state.data).filter((item) => selected.has(item.applicationId));
+  if (items.length !== selected.size)
+    throw integrationError(
+      '所选观察已变化，请刷新后重新核对；本次未忽略任何观察。',
+      'BOSS_IGNORE_UNSAFE',
+    );
+  const groups = bossObservationGroups(state.data).filter((group) =>
+    group.waitingApplicationIds.some((id) => selected.has(id)),
+  );
+  const affectedApplicationIds = groups.flatMap((group) => group.applicationIds);
+  const ids = items.map((item) => item.applicationId);
+  if (!(await confirm({ state, revision, items, messageCount: groups.length }))) return null;
+  // Keep the reviewed revision. The command layer rejects races and only retries
+  // an uncertain response with the identical command, never a newer decision.
+  const saved = await ignoreObservations(ids, revision);
+  return { state: saved, ignored: ids.length, applicationIds: affectedApplicationIds };
 }
 
 export function getBossWorkspaceSourceId(
