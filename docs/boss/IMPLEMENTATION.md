@@ -302,6 +302,8 @@ runtime 串行平台轮次，生命周期命令有调用顺序屏障。start/res
 
 `collectDetails` 在零额度、阻断或无目标时不访问页面操作函数；游标沿用完成结果中的 attemptedJobs 计算，不按选中目标提前推进。保留既有 catch 分支的计数语义，未在本轮另行修改。采用失败抛出异常并保留已取得的导航用量；状态候选计算失败返回材料及 `stateError`，候选不可提交。独立详情入口先保存成功材料或导出，再抛出状态错误；正常轮次在最终快照前抛出。两者均不确认失败的运行进度。
 
+详情导航响应不表示新文档已经就绪。CDP adapter 在主动导航前保存旧文档的 URL、document.URL 和 timeOrigin；导航后只有三者仍精确一致时才返回 `navigationPending: true`，保留实际 URL。首次观察到任一不同值后，该次旧文档宽限失效。详情读取先检查登录/验证，再在既有 `maxReads / pollMs` 内等待旧文档离开，期间重置标题稳定计数；耗尽返回 `DETAIL_NAVIGATION_TIMEOUT` 并停止当批，不重复导航或继续下一个岗位。目标文档仍须 URL 与 document.URL 精确匹配目标、readyState 为 complete、timeOrigin 已更新及标题连续稳定，才能形成证据。其它网址变化仍返回 `DETAIL_TAB_UNEXPECTED_URL`；查询和片段不在本次等待规则中放宽。注入 adapter 可省略 `navigationPending`（视为 false），提供时必须为布尔值；该字段只描述本次主动导航的旧文档过渡。
+
 #### 5. 保存、恢复与导出
 
 | 文件                                                                    | 负责什么                                                                                                      | 主要关系                                                                                                                                                                           |
@@ -336,6 +338,7 @@ runtime 串行平台轮次，生命周期命令有调用顺序屏障。start/res
 | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
 | [tracker.test.mjs](../../collector/boss/tracker.test.mjs)                       | 参数、目标选择和汇总；两种历史入口、请求用量、检查点恢复、平台版本检查及保存/导出失败 |
 | [cdp-browser.test.mjs](../../collector/boss/cdp-browser.test.mjs)               | 绑定与任务页复用、列表就绪等待、账号/浏览器/目标变化、受控详情标签操作                |
+| [detail-navigation.test.mjs](../../collector/boss/detail-navigation.test.mjs)   | CDP adapter 到详情阶段的导航过渡、真实网址漂移、有限等待及超时后的资料/退避/游标保留  |
 | [extract.test.mjs](../../collector/boss/extract.test.mjs)                       | 已加载列表、稳定会话身份、回执和覆盖统计，异常字段与页面结构                          |
 | [receipt.test.mjs](../../collector/boss/receipt.test.mjs)                       | 已读/送达标签与样式匹配；缺失、隐藏或矛盾保持未知                                     |
 | [change-history.test.mjs](../../collector/boss/change-history.test.mjs)         | 初始化与变化排队、旧任务指纹、失败等待/隔离和其他任务继续                             |

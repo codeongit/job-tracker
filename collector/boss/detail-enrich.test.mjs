@@ -230,6 +230,22 @@ test('legacy injected reads remain compatible, while a provided readiness flag m
   }
 });
 
+test('a provided navigation-pending flag must be boolean', async () => {
+  const { adapter } = adapterFixture([
+    {
+      url: url('aaa'),
+      title: '「平台工程师招聘」_示例公司招聘-BOSS直聘',
+      navigationPending: 'true',
+    },
+  ]);
+  const result = await collectDetailTitleEvidence({
+    ...runOptions(adapter),
+    candidates: [candidate('conversation-a', 'aaa', '示例公司')],
+  });
+  assert.equal(result.observations.length, 0);
+  assert.equal(result.halted.code, 'DETAIL_TAB_READ_INVALID');
+});
+
 test('waits for the configured human-paced interval before navigating to another detail', async () => {
   const pages = [
     { url: url('aaa'), title: '「平台工程师招聘」_公司甲招聘-BOSS直聘' },

@@ -126,11 +126,17 @@ function normalizeRead(value, handle) {
   if (
     typeof value.url !== 'string' ||
     typeof value.title !== 'string' ||
-    (Object.hasOwn(value, 'documentReady') && typeof value.documentReady !== 'boolean')
+    (Object.hasOwn(value, 'documentReady') && typeof value.documentReady !== 'boolean') ||
+    (Object.hasOwn(value, 'navigationPending') && typeof value.navigationPending !== 'boolean')
   ) {
     throw Object.assign(new Error('DETAIL_TAB_READ_INVALID'), { code: 'DETAIL_TAB_READ_INVALID' });
   }
-  return { url: value.url, title: value.title, documentReady: value.documentReady !== false };
+  return {
+    url: value.url,
+    title: value.title,
+    documentReady: value.documentReady !== false,
+    navigationPending: value.navigationPending === true,
+  };
 }
 
 function groupCandidates(candidates) {
@@ -199,6 +205,11 @@ async function stableEvidence({
         owned: true,
       };
     }
+    if (state.navigationPending) {
+      previousTitle = null;
+      repeats = 0;
+      continue;
+    }
     if (state.url !== targetUrl) {
       if (state.url === 'about:blank') continue;
       return {
@@ -239,6 +250,13 @@ async function stableEvidence({
         owned: true,
       };
     }
+  }
+  if (lastState?.navigationPending) {
+    return {
+      halt: { code: 'DETAIL_NAVIGATION_TIMEOUT', stage: 'read' },
+      state: lastState,
+      owned: true,
+    };
   }
   return {
     failure: { code: 'DETAIL_TITLE_NOT_READY', stage: 'read' },
