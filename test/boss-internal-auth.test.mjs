@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { lstat, mkdtemp, readdir, rm } from 'node:fs/promises';
+import { lstat, mkdtemp, readdir, rm, appendFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -140,4 +140,53 @@ test('定点票据拒绝额外平台范围或错配数量并支持最大合法�
     now: () => START,
   });
   assert.deepEqual(consumed.request, maximum);
+});
+
+test('人工停止集合精确签入票据，漏传和换账号都不能消费', async (t) => {
+  const root = await fixture(t);
+  const detailPolicy = {
+    accountNamespace: `boss-geek:${'a'.repeat(64)}`,
+    excludedJobIds: ['stop_a', 'stop_b'],
+  };
+  for (const changed of [
+    undefined,
+    { ...detailPolicy, excludedJobIds: ['stop_a'] },
+    { ...detailPolicy, accountNamespace: `boss-geek:${'b'.repeat(64)}` },
+  ]) {
+    const request = { ...REQUEST, detailPolicy };
+    const authorization = await issueBossInternalAuthorization(root, request, { now: () => START });
+    await assert.rejects(
+      consumeBossInternalAuthorization(
+        root,
+        authorization.token,
+        { ...REQUEST, ...(changed ? { detailPolicy: changed } : {}) },
+        { now: () => START },
+      ),
+      { code: 'BOSS_INTERNAL_AUTH_SCOPE_MISMATCH' },
+    );
+  }
+  const large = {
+    ...REQUEST,
+    detailPolicy: {
+      ...detailPolicy,
+      excludedJobIds: Array.from({ length: 900 }, (_, i) => `job_${i}`.padEnd(60, 'a')),
+    },
+  };
+  const authorization = await issueBossInternalAuthorization(root, large, { now: () => START });
+  const ticket = await consumeBossInternalAuthorization(root, authorization.token, large, {
+    now: () => START,
+  });
+  assert.deepEqual(ticket.request, large);
+});
+
+test('票据按最终文件字节拒绝超过80KiB的完整包络', async (t) => {
+  const root = await fixture(t);
+  const authorization = await issueBossInternalAuthorization(root, REQUEST, { now: () => START });
+  const path = join(root, 'controller-authorizations', `${authorization.token}.json`);
+  const size = (await lstat(path)).size;
+  await appendFile(path, ' '.repeat(80 * 1024 + 1 - size));
+  await assert.rejects(
+    consumeBossInternalAuthorization(root, authorization.token, REQUEST, { now: () => START }),
+    { code: 'BOSS_INTERNAL_AUTH_INVALID' },
+  );
 });

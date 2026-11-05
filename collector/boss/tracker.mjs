@@ -1,3 +1,4 @@
+import { normalizeDetailPolicy } from '../../dist/boss/contracts/detail-policy.js';
 import { readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -96,7 +97,8 @@ export function parseArguments(argv) {
     pages = 2,
     timeLabel = null,
     jobId = null,
-    retryJobIds = null;
+    retryJobIds = null,
+    detailPolicy = null;
   let historyRequests = 20,
     domLimit = 0,
     detailLimit = MAX_DETAIL_ENRICH_JOBS,
@@ -116,6 +118,7 @@ export function parseArguments(argv) {
         '--detail-limit',
         '--history-mode',
         '--retry-job-ids',
+        '--detail-policy',
       ].includes(flag) ||
       seen.has(flag) ||
       !input.length
@@ -133,6 +136,12 @@ export function parseArguments(argv) {
     } else if (flag === '--pages') {
       pages = Number(value);
       if (!Number.isInteger(pages) || pages < 1 || pages > 20) throw new Error('ARGUMENTS_INVALID');
+    } else if (flag === '--detail-policy') {
+      try {
+        detailPolicy = normalizeDetailPolicy(JSON.parse(value));
+      } catch {
+        throw new Error('ARGUMENTS_INVALID');
+      }
     } else if (flag === '--retry-job-ids') {
       retryJobIds = normalizeDetailRetryJobIds(value.split(','));
     } else if (flag === '--job-id') {
@@ -179,6 +188,7 @@ export function parseArguments(argv) {
     throw new Error('ARGUMENTS_INVALID');
   }
   if (mode === 'enrich' && limit > MAX_DETAIL_ENRICH_JOBS) throw new Error('ARGUMENTS_INVALID');
+  if (detailPolicy && !['run', 'enrich'].includes(mode)) throw new Error('ARGUMENTS_INVALID');
   if (retryJobIds && (mode !== 'enrich' || timeLabel !== null || limit !== retryJobIds.length))
     throw new Error('ARGUMENTS_INVALID');
   return {
@@ -194,6 +204,7 @@ export function parseArguments(argv) {
     detailLimit,
     historyMode,
     ...(retryJobIds ? { retryJobIds } : {}),
+    ...(detailPolicy ? { detailPolicy } : {}),
   };
 }
 
@@ -339,6 +350,7 @@ export async function main(
     resumeIdentity = resumeBrowser,
     collectDetailPhase = collectDetails,
     createDetailAdapter = createCdpDetailAdapter,
+    captureList = capture,
   } = {},
 ) {
   const options = parseArguments(argv);
@@ -375,7 +387,9 @@ export async function main(
     detailLimit,
     historyMode,
     retryJobIds = null,
+    detailPolicy = null,
   } = options;
+  const excludedJobIds = detailPolicy?.excludedJobIds ?? [];
   const directory = accountDataDirectory(account);
   let release;
   const failureUsage = {
@@ -589,6 +603,12 @@ export async function main(
     const saved = await latest(directory);
     if (mode === 'init' && saved) throw new Error('BASELINE_ALREADY_EXISTS');
     if (mode !== 'init' && !saved) throw new Error('BASELINE_REQUIRED');
+    if (
+      detailPolicy &&
+      (detailPolicy.accountNamespace !== saved?.envelope.accountNamespace ||
+        detailPolicy.accountNamespace !== storedConnection?.connection.accountNamespace)
+    )
+      throw new Error('DETAIL_POLICY_ACCOUNT_MISMATCH');
     if (!storedConnection) throw new Error('CONNECTION_REQUIRED');
     const activeConnection = storedConnection.connection;
     let runtime = sharedRuntime;
@@ -599,7 +619,12 @@ export async function main(
         throw new Error('V2_CHECK_REQUIRED');
       let detailRetryReport = null;
       if (retryJobIds) {
-        const preflight = fairDetailInputs(saved.envelope, { runtime, limit, retryJobIds });
+        const preflight = fairDetailInputs(saved.envelope, {
+          runtime,
+          limit,
+          retryJobIds,
+          excludedJobIds,
+        });
         if (preflight.blocked) throw new Error('DETAIL_ENRICHMENT_BLOCKED');
         detailRetryReport = await createDetailRetryReport(directory, {
           accountNamespace: saved.envelope.accountNamespace,
@@ -637,6 +662,7 @@ export async function main(
         timeLabel,
         adapter: createDetailAdapter(activeConnection),
         retryJobIds,
+        excludedJobIds,
         beforeCleanup: detailRetryReport?.beforeCleanup ?? null,
       });
       const { input, collected, applied } = phase;
@@ -806,7 +832,9 @@ export async function main(
       return;
     }
 
-    const result = await retryReport(() => capture(activeConnection, expression, identityOptions));
+    const result = await retryReport(() =>
+      captureList(activeConnection, expression, identityOptions),
+    );
     runtime = sharedRuntime;
     if (!result.ok) {
       const connectionCleared = invalidConnectionReport(result.report)
@@ -970,7 +998,8 @@ export async function main(
           envelope,
           runtime,
           limit: detailLimit,
-          adapter: createCdpDetailAdapter(activeConnection),
+          adapter: createDetailAdapter(activeConnection),
+          excludedJobIds,
         });
         detailCollected = phase.collected;
         detailApplied = phase.applied;
@@ -1008,7 +1037,8 @@ export async function main(
         },
       };
       const finalDetailSummary =
-        detailCollected.detailEnrichment ?? currentDetailSummary(envelope, runtime, finishedAt);
+        detailCollected.detailEnrichment ??
+        currentDetailSummary(envelope, runtime, { now: finishedAt, excludedJobIds });
       runtime = completeRun(runtime, {
         runId,
         startedAt,

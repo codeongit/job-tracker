@@ -1,3 +1,4 @@
+import { normalizeDetailPolicy } from '../../../dist/boss/contracts/detail-policy.js';
 import { normalizeDetailRetryJobIds } from '../../../dist/boss/contracts/detail-retry.js';
 import {
   projectRoot,
@@ -712,6 +713,15 @@ export async function statusCommand(config, inbox) {
 }
 
 function parseArguments(argv) {
+  let detailPolicy;
+  if (argv[0] === 'collect-cycle' && argv.at(-2) === '--detail-policy') {
+    try {
+      detailPolicy = normalizeDetailPolicy(JSON.parse(argv.at(-1)));
+    } catch {
+      integrationFail('BOSS_ARGUMENTS_INVALID');
+    }
+    argv = argv.slice(0, -2);
+  }
   if (argv[0] === 'check') integrationFail('BOSS_USE_UNIFIED_RUNTIME');
   if (
     [9, 11].includes(argv.length) &&
@@ -734,6 +744,7 @@ function parseArguments(argv) {
       detailLimit: Number(argv[4]),
       domLimit: Number(argv[6]),
       historyMode: argv[8],
+      ...(detailPolicy ? { detailPolicy } : {}),
       ...(argv.length === 11
         ? { retryDetailJobIds: normalizeDetailRetryJobIds(argv[10].split(',')) }
         : {}),
@@ -799,6 +810,7 @@ export async function main(
     domLimit,
     historyMode,
     retryDetailJobIds,
+    detailPolicy,
   } = parseArguments(argv);
   if (command === 'collect-cycle')
     await consumeBossInternalAuthorization(
@@ -811,6 +823,7 @@ export async function main(
         domLimit,
         historyMode,
         ...(retryDetailJobIds ? { retryDetailJobIds } : {}),
+        ...(detailPolicy ? { detailPolicy } : {}),
       },
       { now },
     );
@@ -984,18 +997,21 @@ export async function main(
             now,
             runner,
             trackerMode: retryDetailJobIds ? 'enrich' : 'run',
-            trackerArguments: retryDetailJobIds
-              ? ['--limit', String(detailLimit), '--retry-job-ids', retryDetailJobIds.join(',')]
-              : [
-                  '--history-requests',
-                  String(historyRequests),
-                  '--detail-limit',
-                  String(detailLimit),
-                  '--dom-limit',
-                  String(domLimit),
-                  '--history-mode',
-                  historyMode,
-                ],
+            trackerArguments: [
+              ...(retryDetailJobIds
+                ? ['--limit', String(detailLimit), '--retry-job-ids', retryDetailJobIds.join(',')]
+                : [
+                    '--history-requests',
+                    String(historyRequests),
+                    '--detail-limit',
+                    String(detailLimit),
+                    '--dom-limit',
+                    String(domLimit),
+                    '--history-mode',
+                    historyMode,
+                  ]),
+              ...(detailPolicy ? ['--detail-policy', JSON.stringify(detailPolicy)] : []),
+            ],
             onStage: (value) => {
               checkStep = value;
             },

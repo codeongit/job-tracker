@@ -700,3 +700,40 @@ test('explicit retry rejects stale or non-isolated targets before accessing its 
     /DETAIL_RETRY_BUDGET_UNAVAILABLE/,
   );
 });
+
+test('人工停止集合在真实详情选择和摘要中生效，原技术失败保持', async () => {
+  const envelope = envelopeFixture(['job_a', 'job_b', 'job_c']);
+  let runtime = runtimeFixture('job_c');
+  for (let i = 0; i < 4; i++) runtime = fail(runtime, 'job_b');
+  const originalFailure = structuredClone(runtime.detail.tasks[0]);
+  const { adapter, calls } = adapterFixture();
+  const phase = await collectDetails(
+    options(envelope, runtime, adapter, {
+      excludedJobIds: ['job_a', 'job_b'],
+    }),
+  );
+  assert.deepEqual(phase.input.selectedIds, ['job_c']);
+  assert.equal(phase.collected.counts.attemptedJobs, 1);
+  assert.equal(
+    calls.some((call) => call.includes(url('job_a')) || call.includes(url('job_b'))),
+    false,
+  );
+  assert.deepEqual(phase.detailRuntime.tasks, [originalFailure]);
+  assert.equal(phase.detailEnrichment.pending, 0);
+  assert.equal(phase.detailEnrichment.isolated, 0);
+  assert.equal(phase.detailEnrichment.lastError, null);
+  assert.equal(
+    currentDetailSummary(envelope, runtime, { excludedJobIds: ['job_b'], now: NOW }).isolated,
+    0,
+  );
+  await assert.rejects(
+    collectDetails(
+      options(envelope, runtime, forbiddenAdapter, {
+        limit: 1,
+        retryJobIds: ['job_b'],
+        excludedJobIds: ['job_b'],
+      }),
+    ),
+    /DETAIL_RETRY_TARGETS_INVALID/,
+  );
+});

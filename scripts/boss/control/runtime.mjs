@@ -2,9 +2,17 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { chmod, lstat, mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { normalizeDetailRetryJobIds } from '../../../dist/boss/contracts/detail-retry.js';
+import { normalizeDetailDecisionCommand } from '../../../dist/boss/contracts/detail-decision.js';
+import {
+  emptyDetailDecisions,
+  normalizeDetailDecisions,
+  appendDetailDecision,
+  detailCommandDigest,
+} from './detail-decisions.mjs';
 
 export const BOSS_RUNTIME_FORMAT = 'job-tracker-boss-runtime';
-export const BOSS_RUNTIME_VERSION = 1;
+export const BOSS_RUNTIME_VERSION = 2;
+export const BOSS_RUNTIME_MAX_BYTES = 5 * 1024 * 1024;
 export const DEFAULT_RUNTIME_INTERVAL_MS = 2 * 60 * 1_000;
 export const DEFAULT_MANUAL_DEBOUNCE_MS = 10 * 1_000;
 
@@ -61,6 +69,9 @@ const initialHistory = () => ({
 function validateHistory(value) {
   if (
     !value ||
+    typeof value !== 'object' ||
+    Array.isArray(value) ||
+    Object.keys(value).some((key) => !Object.hasOwn(initialHistory(), key)) ||
     !['change', 'backfill'].includes(value.mode) ||
     (value.backfillCursor !== undefined &&
       value.backfillCursor !== null &&
@@ -126,12 +137,19 @@ function initialState(now = new Date()) {
     detailEnrichment: initialDetailEnrichment(),
     history: initialHistory(),
     actions: [],
+    detailDecisions: emptyDetailDecisions(),
   };
 }
 
 export function validateBossRuntimeState(input) {
   const value = structuredClone(input);
+  const legacy = value?.version === 1;
+  if (value?.version === 1 && !Object.hasOwn(value, 'detailDecisions')) {
+    value.version = 2;
+    value.detailDecisions = emptyDetailDecisions();
+  }
   if (
+    legacy &&
     value &&
     typeof value === 'object' &&
     !Array.isArray(value) &&
@@ -139,6 +157,7 @@ export function validateBossRuntimeState(input) {
   )
     value.detailEnrichment = initialDetailEnrichment();
   if (
+    legacy &&
     value &&
     typeof value === 'object' &&
     !Array.isArray(value) &&
@@ -160,6 +179,7 @@ export function validateBossRuntimeState(input) {
     'detailEnrichment',
     'history',
     'actions',
+    'detailDecisions',
   ];
   if (
     !value ||
@@ -193,6 +213,7 @@ export function validateBossRuntimeState(input) {
     throw new BossRuntimeError('BOSS_RUNTIME_STATE_INVALID');
   value.detailEnrichment = validateDetailEnrichment(value.detailEnrichment);
   value.history = validateHistory(value.history);
+  value.detailDecisions = normalizeDetailDecisions(value.detailDecisions);
   for (const action of value.actions) {
     if (
       !action ||
@@ -231,38 +252,120 @@ async function syncDirectory(path) {
 }
 
 export class BossRuntimeStateStore {
-  constructor(path) {
+  constructor(path, { afterRename = async () => {}, sync = syncDirectory } = {}) {
     this.path = path;
+    this.afterRename = afterRename;
+    this.sync = sync;
+    this.writerFault = false;
+  }
+
+  assertWritable() {
+    if (this.writerFault) throw new BossRuntimeError('BOSS_RUNTIME_WRITER_FAULT');
+  }
+
+  async raw() {
+    const info = await lstat(this.path);
+    if (!info.isFile() || info.isSymbolicLink() || info.size > BOSS_RUNTIME_MAX_BYTES)
+      throw new BossRuntimeError('BOSS_RUNTIME_PATH_INVALID');
+    const bytes = await readFile(this.path);
+    if (bytes.length > BOSS_RUNTIME_MAX_BYTES)
+      throw new BossRuntimeError('BOSS_RUNTIME_PATH_INVALID');
+    return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
   }
 
   async read(now = new Date()) {
+    let original;
     try {
-      const info = await lstat(this.path);
-      if (!info.isFile() || info.isSymbolicLink() || info.size > 128_000)
-        throw new BossRuntimeError('BOSS_RUNTIME_PATH_INVALID');
-      return validateBossRuntimeState(JSON.parse(await readFile(this.path, 'utf8')));
+      original = await this.raw();
     } catch (error) {
       if (error.code === 'ENOENT') return initialState(now);
       if (error instanceof BossRuntimeError) throw error;
       throw new BossRuntimeError('BOSS_RUNTIME_STATE_INVALID');
     }
+    try {
+      const parsed = JSON.parse(original),
+        value = validateBossRuntimeState(parsed);
+      if (parsed.version === 1) {
+        this.assertWritable();
+        const backup = `${this.path}.v1.json`;
+        let handle;
+        try {
+          handle = await open(backup, 'wx', 0o600);
+          await handle.writeFile(original, 'utf8');
+          await handle.sync();
+        } catch (error) {
+          if (error.code !== 'EEXIST') throw error;
+          const info = await lstat(backup);
+          if (
+            !info.isFile() ||
+            info.isSymbolicLink() ||
+            (await readFile(backup, 'utf8')) !== original
+          )
+            throw new BossRuntimeError('BOSS_RUNTIME_MIGRATION_INVALID');
+        } finally {
+          await handle?.close();
+        }
+        await this.sync(dirname(this.path));
+        return await this.write(value);
+      }
+      // A restarted writer confirms the on-disk state and persistence barriers
+      // before an old command receipt can be reported as durable again.
+      try {
+        await this.barrier();
+      } catch {
+        this.writerFault = true;
+        throw new BossRuntimeError('BOSS_RUNTIME_WRITE_UNCONFIRMED');
+      }
+      return value;
+    } catch (error) {
+      if (error instanceof BossRuntimeError || error?.code?.startsWith('DETAIL_')) throw error;
+      throw new BossRuntimeError('BOSS_RUNTIME_STATE_INVALID');
+    }
+  }
+
+  async barrier() {
+    await chmod(this.path, 0o600);
+    const handle = await open(this.path, 'r');
+    try {
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    await this.sync(dirname(this.path));
   }
 
   async write(input) {
+    this.assertWritable();
     const value = validateBossRuntimeState(input),
+      serialized = `${JSON.stringify(value, null, 2)}\n`,
       directory = dirname(this.path),
       temporary = join(directory, `.runtime-${randomUUID()}`);
+    if (Buffer.byteLength(serialized, 'utf8') > BOSS_RUNTIME_MAX_BYTES)
+      throw new BossRuntimeError('BOSS_RUNTIME_TOO_LARGE');
     await ensurePrivateDirectory(directory);
-    let handle;
+    let handle,
+      replacementAttempted = false;
     try {
       handle = await open(temporary, 'wx', 0o600);
-      await handle.writeFile(`${JSON.stringify(value, null, 2)}\n`, 'utf8');
+      await handle.writeFile(serialized, 'utf8');
       await handle.sync();
       await handle.close();
       handle = null;
+      replacementAttempted = true;
       await rename(temporary, this.path);
-      await chmod(this.path, 0o600);
-      await syncDirectory(directory);
+      await this.afterRename();
+      await this.barrier();
+    } catch (error) {
+      if (!replacementAttempted) throw error;
+      // A lost post-rename acknowledgement is not evidence that the write failed.
+      // Only confirmed bytes plus repeated persistence barriers can advance memory.
+      try {
+        if ((await this.raw()) !== serialized) throw error;
+        await this.barrier();
+      } catch {
+        this.writerFault = true;
+        throw new BossRuntimeError('BOSS_RUNTIME_WRITE_UNCONFIRMED');
+      }
     } finally {
       await handle?.close().catch(() => {});
       await unlink(temporary).catch(() => {});
@@ -324,10 +427,11 @@ export class BossRuntime {
     intervalMs = DEFAULT_RUNTIME_INTERVAL_MS,
     manualDebounceMs = DEFAULT_MANUAL_DEBOUNCE_MS,
     limits = DEFAULT_LIMITS,
+    storeOptions,
   }) {
     if (typeof executeCycle !== 'function')
       throw new BossRuntimeError('BOSS_RUNTIME_EXECUTOR_REQUIRED');
-    this.store = new BossRuntimeStateStore(statePath);
+    this.store = new BossRuntimeStateStore(statePath, storeOptions);
     this.executeCycle = executeCycle;
     this.prepareStart = prepareStart;
     this.verifyResume = verifyResume;
@@ -353,13 +457,19 @@ export class BossRuntime {
   }
 
   enqueueLifecycle(operation) {
-    const result = this.lifecycleTail.then(operation);
+    const result = this.lifecycleTail.then(() => {
+      this.store.assertWritable();
+      return operation();
+    });
     this.lifecycleTail = result.catch(() => undefined);
     return result;
   }
 
   enqueueState(operation) {
-    const result = this.stateTail.then(operation);
+    const result = this.stateTail.then(() => {
+      this.store.assertWritable();
+      return operation();
+    });
     this.stateTail = result.catch(() => undefined);
     return result;
   }
@@ -801,6 +911,42 @@ export class BossRuntime {
     });
   }
 
+  resolveDetail(input, { verifyAccount, verifyTask, summarize }) {
+    const command = normalizeDetailDecisionCommand(input);
+    if (this.cycle) return Promise.reject(new BossRuntimeError('BOSS_CYCLE_IN_PROGRESS'));
+    return this.enqueueLifecycle(() =>
+      this.enqueueState(async () => {
+        await this.initializeState();
+        if (this.state.lifecycle !== 'stopped')
+          throw new BossRuntimeError('DETAIL_DECISION_REQUIRES_STOPPED');
+        await verifyAccount(command);
+        const prior = this.state.detailDecisions.commands.find(
+          (row) => row.commandId === command.commandId,
+        );
+        if (prior) {
+          if (prior.digest !== detailCommandDigest(command))
+            throw new BossRuntimeError('DETAIL_DECISION_COMMAND_CONFLICT');
+          return { ...structuredClone(prior), replayed: true };
+        }
+        if (command.expectedRevision !== this.state.detailDecisions.revision)
+          throw new BossRuntimeError('DETAIL_DECISION_REVISION_CONFLICT');
+        await verifyTask(command);
+        const detailDecisions = appendDetailDecision(
+          this.state.detailDecisions,
+          command,
+          this.now().toISOString(),
+        );
+        await this.persistState({
+          detailDecisions,
+          ...(summarize
+            ? { detailEnrichment: validateDetailEnrichment(await summarize(detailDecisions)) }
+            : {}),
+        });
+        return { ...structuredClone(detailDecisions.commands.at(-1)), replayed: false };
+      }),
+    );
+  }
+
   runWhileStopped(operation) {
     if (typeof operation !== 'function')
       throw new BossRuntimeError('BOSS_RUNTIME_ARGUMENT_INVALID');
@@ -949,10 +1095,19 @@ export class BossRuntime {
     });
   }
 
+  detailDecisionState() {
+    this.store.assertWritable();
+    if (!this.state) throw new BossRuntimeError('BOSS_RUNTIME_NOT_INITIALIZED');
+    return structuredClone(this.state.detailDecisions);
+  }
+
   status() {
     if (!this.state) throw new BossRuntimeError('BOSS_RUNTIME_NOT_INITIALIZED');
+    const { detailDecisions, ...state } = structuredClone(this.state);
     return {
-      ...structuredClone(this.state),
+      ...state,
+      detailDecisionRevision: detailDecisions.revision,
+      writerFault: this.store.writerFault,
       runningCycle: Boolean(this.cycle),
       tickPending: false,
       budget: this.budget(),
