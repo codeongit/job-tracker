@@ -1,4 +1,5 @@
 import { BossRuntimeError } from './runtime.mjs';
+import { normalizeDetailRetryJobIds } from '../../../dist/boss/contracts/detail-retry.js';
 
 const ACTIONS = new Set([
   'start',
@@ -7,6 +8,7 @@ const ACTIONS = new Set([
   'pause',
   'resume',
   'resume-details',
+  'retry-details',
   'stop',
   'recover-page',
   'recover-saved',
@@ -63,7 +65,7 @@ export async function handleBossControllerApi(req, res, { controller }) {
     const chunks = [];
     for await (const chunk of req) {
       size += chunk.length;
-      if (size > 1024) throw new BossRuntimeError('BOSS_RUNTIME_ARGUMENT_INVALID');
+      if (size > 8192) throw new BossRuntimeError('BOSS_RUNTIME_ARGUMENT_INVALID');
       chunks.push(chunk);
     }
     let body;
@@ -72,15 +74,18 @@ export async function handleBossControllerApi(req, res, { controller }) {
     } catch {
       throw new BossRuntimeError('BOSS_RUNTIME_ARGUMENT_INVALID');
     }
+    if (!body || typeof body !== 'object' || Array.isArray(body) || !ACTIONS.has(body.action))
+      throw new BossRuntimeError('BOSS_RUNTIME_ARGUMENT_INVALID');
+    const retry = body.action === 'retry-details';
     if (
-      !body ||
-      typeof body !== 'object' ||
-      Array.isArray(body) ||
-      Object.keys(body).length !== 1 ||
-      !ACTIONS.has(body.action)
+      JSON.stringify(Object.keys(body).sort()) !==
+      JSON.stringify(retry ? ['action', 'jobIds'] : ['action'])
     )
       throw new BossRuntimeError('BOSS_RUNTIME_ARGUMENT_INVALID');
-    send(200, { protocolVersion: 1, status: await controller.action(body.action) });
+    const status = retry
+      ? await controller.action(body.action, { jobIds: normalizeDetailRetryJobIds(body.jobIds) })
+      : await controller.action(body.action);
+    send(200, { protocolVersion: 1, status });
   } catch (error) {
     const known = error instanceof BossRuntimeError || /^[A-Z][A-Z0-9_]{2,100}$/.test(error?.code);
     send(known ? 409 : 500, {

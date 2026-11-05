@@ -5,6 +5,7 @@ import {
   defaultTrackerDataRoot,
 } from '../shared/paths.mjs';
 import { bossAttributionSummary } from '../../../dist/boss/rules/attribution.js';
+import { normalizeDetailRetryJobIds } from '../../../dist/boss/contracts/detail-retry.js';
 import { latest as latestCollectorSnapshot } from '../../../collector/boss/persistence/storage.mjs';
 import { execFile as execFileCallback } from 'node:child_process';
 import { lstat } from 'node:fs/promises';
@@ -131,7 +132,7 @@ export function createBossController({
       await executeJson(integrationScript, ['resume'], runner);
     },
     recoverPage: () => trackerAction('recover-page'),
-    executeCycle: async ({ budget, historyMode = 'change' }) => {
+    executeCycle: async ({ budget, historyMode = 'change', retryDetailJobIds }) => {
       try {
         await requireWorkspace();
       } catch (error) {
@@ -144,6 +145,7 @@ export function createBossController({
           detailLimit: budget.detailActions,
           domLimit: budget.domActions,
           historyMode,
+          ...(retryDetailJobIds ? { retryDetailJobIds } : {}),
         },
         authorization = await issueBossInternalAuthorization(inboxRoot, request, { now }),
         args = [
@@ -156,6 +158,7 @@ export function createBossController({
           String(budget.domActions),
           '--history-mode',
           historyMode,
+          ...(retryDetailJobIds ? ['--retry-job-ids', retryDetailJobIds.join(',')] : []),
         ];
       let output;
       try {
@@ -205,8 +208,15 @@ export function createBossController({
       await runtime.initialize();
       return this.status();
     },
-    async action(action) {
+    async action(action, { jobIds } = {}) {
+      if (action !== 'retry-details' && jobIds !== undefined)
+        throw new BossRuntimeError('BOSS_RUNTIME_ARGUMENT_INVALID');
       if (action === 'start') return runtime.start();
+      if (action === 'retry-details') {
+        const retryDetailJobIds = normalizeDetailRetryJobIds(jobIds);
+        const result = await runtime.requestCycle({ retryDetailJobIds });
+        return { ...runtime.status(), result };
+      }
       if (action === 'run') {
         const result = await runtime.requestCycle({ scheduled: false });
         return { ...runtime.status(), result };

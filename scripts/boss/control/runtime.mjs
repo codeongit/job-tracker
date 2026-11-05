@@ -1,6 +1,7 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import { chmod, lstat, mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { normalizeDetailRetryJobIds } from '../../../dist/boss/contracts/detail-retry.js';
 
 export const BOSS_RUNTIME_FORMAT = 'job-tracker-boss-runtime';
 export const BOSS_RUNTIME_VERSION = 1;
@@ -340,6 +341,7 @@ export class BossRuntime {
     this.state = null;
     this.timer = null;
     this.cycle = null;
+    this.cycleIsDetailRetry = false;
     this.stopRequested = false;
     // Lifecycle commands retain their call order, while durable state writes
     // use a separate queue. A cycle only holds the state queue while it
@@ -512,11 +514,15 @@ export class BossRuntime {
     });
   }
 
-  async runCycle({ scheduled = false, historyMode = 'change' } = {}) {
+  async runCycle({ scheduled = false, historyMode = 'change', retryDetailJobIds } = {}) {
+    const retryIds =
+      retryDetailJobIds === undefined ? null : normalizeDetailRetryJobIds(retryDetailJobIds);
     const admission = await this.enqueueState(async () => {
       await this.initializeState();
-      if (scheduled && this.state.lifecycle !== 'running') return null;
+      if (!retryIds && scheduled && this.state.lifecycle !== 'running') return null;
       if (this.state.lifecycle === 'paused') throw new BossRuntimeError('BOSS_INTEGRATION_PAUSED');
+      if (retryIds && (scheduled || historyMode !== 'change' || this.state.lifecycle !== 'stopped'))
+        throw new BossRuntimeError('DETAIL_RETRY_REQUIRES_STOPPED');
       const started = this.now(),
         previousTick = this.state.lastTickAt ? Date.parse(this.state.lastTickAt) : NaN,
         elapsedSincePrevious = started.getTime() - previousTick;
@@ -525,6 +531,7 @@ export class BossRuntime {
       // bypass this guard, and an in-flight cycle is joined in requestCycle.
       if (
         !scheduled &&
+        !retryIds &&
         historyMode !== 'backfill' &&
         Number.isFinite(previousTick) &&
         elapsedSincePrevious >= 0 &&
@@ -538,7 +545,17 @@ export class BossRuntime {
             usage: { historyRequests: 0, domSwitches: 0, detailNavigations: 0 },
           },
         };
-      const budget = this.budget(started),
+      const availableBudget = this.budget(started);
+      if (retryIds && availableBudget.detailActions < retryIds.length)
+        throw new BossRuntimeError('DETAIL_RETRY_BUDGET_UNAVAILABLE');
+      const budget = retryIds
+          ? {
+              ...availableBudget,
+              historyRequests: 0,
+              domActions: 0,
+              detailActions: retryIds.length,
+            }
+          : availableBudget,
         baseActions = currentActions(this.state, started),
         reservedUsage = {
           history: budget.historyRequests,
@@ -567,7 +584,12 @@ export class BossRuntime {
     const { started, budget, baseActions, reservedUsage, controlRevision } = admission;
     let result;
     try {
-      result = await this.executeCycle({ budget, scheduled, historyMode });
+      result = await this.executeCycle({
+        budget,
+        scheduled,
+        historyMode,
+        ...(retryIds ? { retryDetailJobIds: retryIds } : {}),
+      });
       const trustedUsage = reportedUsage(result, budget);
       if (!trustedUsage) throw new BossRuntimeError('BOSS_USAGE_INVALID');
       await this.enqueueState(async () => {
@@ -647,15 +669,24 @@ export class BossRuntime {
   }
 
   requestCycle(options = {}) {
+    const retryIds =
+      options.retryDetailJobIds === undefined
+        ? null
+        : normalizeDetailRetryJobIds(options.retryDetailJobIds);
     // Timer and manual triggers join the in-flight cycle. They never enqueue a
     // catch-up run, including after sleep or repeated CLI invocations.
-    if (this.cycle) return this.cycle;
+    if (this.cycle) {
+      if (retryIds || this.cycleIsDetailRetry)
+        return Promise.reject(new BossRuntimeError('BOSS_CYCLE_IN_PROGRESS'));
+      return this.cycle;
+    }
     // Lifecycle commands invoked before this trigger complete first. This
     // prevents a request from slipping between pause/start validation and its
     // durable state transition without making pause wait for platform I/O.
     const lifecycleBarrier = this.lifecycleTail;
     let tracked;
-    const execution = lifecycleBarrier.then(() => this.runCycle(options));
+    const cycleOptions = { ...options, ...(retryIds ? { retryDetailJobIds: retryIds } : {}) };
+    const execution = lifecycleBarrier.then(() => this.runCycle(cycleOptions));
     tracked = execution.finally(async () => {
       try {
         await this.enqueueState(async () => {
@@ -663,10 +694,14 @@ export class BossRuntime {
             await this.scheduleState(this.intervalMs);
         });
       } finally {
-        if (this.cycle === tracked) this.cycle = null;
+        if (this.cycle === tracked) {
+          this.cycle = null;
+          this.cycleIsDetailRetry = false;
+        }
       }
     });
     this.cycle = tracked;
+    this.cycleIsDetailRetry = Boolean(retryIds);
     return tracked;
   }
 

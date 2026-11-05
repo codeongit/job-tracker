@@ -1,6 +1,7 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import { chmod, lstat, mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
 import { isAbsolute, join } from 'node:path';
+import { normalizeDetailRetryJobIds } from '../../../dist/boss/contracts/detail-retry.js';
 
 const TOKEN = /^[a-f0-9]{64}$/;
 const FORMAT = 'job-tracker-boss-internal-authorization';
@@ -44,13 +45,21 @@ async function syncDirectory(path) {
 }
 
 function validateRequest(value) {
+  const hasRetryTargets = value != null && Object.hasOwn(value, 'retryDetailJobIds');
   if (
     !value ||
     typeof value !== 'object' ||
     Array.isArray(value) ||
     JSON.stringify(Object.keys(value).sort()) !==
       JSON.stringify(
-        ['command', 'detailLimit', 'domLimit', 'historyRequests', 'historyMode'].sort(),
+        [
+          'command',
+          'detailLimit',
+          'domLimit',
+          'historyRequests',
+          'historyMode',
+          ...(hasRetryTargets ? ['retryDetailJobIds'] : []),
+        ].sort(),
       ) ||
     value.command !== 'collect-cycle' ||
     !['change', 'backfill'].includes(value.historyMode) ||
@@ -65,6 +74,21 @@ function validateRequest(value) {
     value.domLimit > 1
   )
     fail('BOSS_INTERNAL_AUTH_INVALID');
+  if (hasRetryTargets) {
+    let jobIds;
+    try {
+      jobIds = normalizeDetailRetryJobIds(value.retryDetailJobIds);
+    } catch {
+      fail('BOSS_INTERNAL_AUTH_INVALID');
+    }
+    if (
+      value.historyRequests !== 0 ||
+      value.domLimit !== 0 ||
+      value.historyMode !== 'change' ||
+      value.detailLimit !== jobIds.length
+    )
+      fail('BOSS_INTERNAL_AUTH_INVALID');
+  }
   return structuredClone(value);
 }
 
@@ -89,7 +113,7 @@ function validateTicket(value, token) {
 
 async function regularTicket(path) {
   const info = await lstat(path);
-  if (!info.isFile() || info.isSymbolicLink() || info.size > 4096)
+  if (!info.isFile() || info.isSymbolicLink() || info.size > 8192)
     fail('BOSS_INTERNAL_AUTH_INVALID');
 }
 

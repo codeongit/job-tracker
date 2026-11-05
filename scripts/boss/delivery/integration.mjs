@@ -1,3 +1,4 @@
+import { normalizeDetailRetryJobIds } from '../../../dist/boss/contracts/detail-retry.js';
 import {
   projectRoot,
   defaultConfigPath,
@@ -285,7 +286,12 @@ function requestedUsage(trackerMode, trackerArguments) {
   return normalizedUsage({
     historyRequests: trackerMode === 'run' ? argument('--history-requests') : 0,
     domSwitches: trackerMode === 'run' ? argument('--dom-limit') : 0,
-    detailNavigations: trackerMode === 'run' ? argument('--detail-limit') : 0,
+    detailNavigations:
+      trackerMode === 'run'
+        ? argument('--detail-limit')
+        : trackerMode === 'enrich'
+          ? argument('--limit')
+          : 0,
     cdpReconnects: 0,
   });
 }
@@ -662,6 +668,9 @@ export async function checkCommand(
       trackerOutput.partial === true ? safeErrorCode({ code: trackerOutput.error }) : '',
     failureScope: trackerOutput.failureScope,
     detailEnrichment: trackerOutput.detailEnrichment,
+    ...(trackerOutput.detailRetryAttemptId
+      ? { detailRetryAttemptId: trackerOutput.detailRetryAttemptId }
+      : {}),
     history: trackerOutput.history,
     usage: trackerOutput.usage ?? {
       historyRequests: 0,
@@ -700,7 +709,7 @@ export async function statusCommand(config, inbox) {
 function parseArguments(argv) {
   if (argv[0] === 'check') integrationFail('BOSS_USE_UNIFIED_RUNTIME');
   if (
-    argv.length === 9 &&
+    [9, 11].includes(argv.length) &&
     argv[0] === 'collect-cycle' &&
     argv[1] === '--history-requests' &&
     /^(?:[0-9]|1[0-9]|20)$/.test(argv[2]) &&
@@ -709,7 +718,9 @@ function parseArguments(argv) {
     argv[5] === '--dom-limit' &&
     /^[0-1]$/.test(argv[6]) &&
     argv[7] === '--history-mode' &&
-    ['change', 'backfill'].includes(argv[8])
+    ['change', 'backfill'].includes(argv[8]) &&
+    (argv.length === 9 ||
+      (argv[9] === '--retry-job-ids' && argv[8] === 'change' && argv[2] === '0' && argv[6] === '0'))
   )
     return {
       command: argv[0],
@@ -718,6 +729,9 @@ function parseArguments(argv) {
       detailLimit: Number(argv[4]),
       domLimit: Number(argv[6]),
       historyMode: argv[8],
+      ...(argv.length === 11
+        ? { retryDetailJobIds: normalizeDetailRetryJobIds(argv[10].split(',')) }
+        : {}),
     };
   if (
     argv.length === 3 &&
@@ -768,16 +782,31 @@ export async function main(
     initialIdentity = APPROVED_INITIAL,
     inboxFactory = (root) => new BossInbox(root),
     configReader = readBossConfig,
+    runner = execFile,
     internalAuthorization = process.env.JOB_TRACKER_BOSS_INTERNAL_AUTHORIZATION || '',
   } = {},
 ) {
-  const { command, evidenceDate, historyRequests, detailLimit, domLimit, historyMode } =
-    parseArguments(argv);
+  const {
+    command,
+    evidenceDate,
+    historyRequests,
+    detailLimit,
+    domLimit,
+    historyMode,
+    retryDetailJobIds,
+  } = parseArguments(argv);
   if (command === 'collect-cycle')
     await consumeBossInternalAuthorization(
       inboxRoot,
       internalAuthorization,
-      { command, historyRequests, detailLimit, domLimit, historyMode },
+      {
+        command,
+        historyRequests,
+        detailLimit,
+        domLimit,
+        historyMode,
+        ...(retryDetailJobIds ? { retryDetailJobIds } : {}),
+      },
       { now },
     );
   const started = now();
@@ -947,17 +976,20 @@ export async function main(
         const result = await withProducerLock(inbox, id, () =>
           checkCommand(config, inbox, {
             now,
-            trackerMode: 'run',
-            trackerArguments: [
-              '--history-requests',
-              String(historyRequests),
-              '--detail-limit',
-              String(detailLimit),
-              '--dom-limit',
-              String(domLimit),
-              '--history-mode',
-              historyMode,
-            ],
+            runner,
+            trackerMode: retryDetailJobIds ? 'enrich' : 'run',
+            trackerArguments: retryDetailJobIds
+              ? ['--limit', String(detailLimit), '--retry-job-ids', retryDetailJobIds.join(',')]
+              : [
+                  '--history-requests',
+                  String(historyRequests),
+                  '--detail-limit',
+                  String(detailLimit),
+                  '--dom-limit',
+                  String(domLimit),
+                  '--history-mode',
+                  historyMode,
+                ],
             onStage: (value) => {
               checkStep = value;
             },
@@ -999,6 +1031,12 @@ export async function main(
               failureScope: result.failureScope,
               detailEnrichment: result.detailEnrichment,
               history: result.history,
+              ...(retryDetailJobIds
+                ? {
+                    retryAttempted: result.checked && result.usage?.detailNavigations > 0,
+                    detailRetryAttemptId: result.detailRetryAttemptId ?? null,
+                  }
+                : {}),
               paused: result.control.paused,
               counts,
               usage: result.usage,

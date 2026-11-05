@@ -363,7 +363,7 @@ test('URL halt retains successful material and advances the cursor only through 
   );
 });
 
-test('caught read halt preserves the existing reported-attempt cursor behavior', async () => {
+test('caught read halt counts only the attempted job and preserves unvisited targets', async () => {
   const envelope = envelopeFixture();
   const { adapter, calls } = adapterFixture({
     read: () => {
@@ -371,15 +371,13 @@ test('caught read halt preserves the existing reported-attempt cursor behavior',
     },
   });
   const phase = await collectDetails(options(envelope, runtimeFixture(), adapter));
-  // The existing collector counts the next loop entry after a caught halt.
-  // This extraction preserves that historical usage/cursor behavior.
-  assert.equal(phase.collected.counts.attemptedJobs, 2);
-  assert.equal(phase.detailCursor, 'job_b');
+  assert.equal(phase.collected.counts.attemptedJobs, 1);
+  assert.equal(phase.detailCursor, 'job_a');
   assert.equal(phase.collected.halted.jobId, 'job_a');
   assert.equal(calls.filter((call) => call[0] === 'read').length, 1);
   assert.deepEqual(
     phase.collected.remaining.map((item) => item.jobId),
-    ['job_c'],
+    ['job_b', 'job_c'],
   );
   assert.deepEqual(
     phase.detailRuntime.tasks.map((task) => task.jobId),
@@ -647,4 +645,58 @@ test('blocked enrichment summary retains the requested snapshot time-label scope
   assert.deepEqual(phase.detailRuntime, runtime.detail);
   assert.equal(phase.stateError, null);
   assert.equal(currentDetailSummary(envelope, runtime, NOW).pending, 2);
+});
+
+test('explicit retry visits only selected isolated jobs and keeps the ordinary cursor', async () => {
+  const envelope = envelopeFixture();
+  let runtime = runtimeFixture('job_c');
+  for (let i = 0; i < 4; i += 1) {
+    runtime = fail(runtime, 'job_a');
+    runtime = fail(runtime, 'job_b');
+  }
+  const { adapter, calls } = adapterFixture({
+    read: (currentUrl) => (currentUrl === url('job_b') ? { title: '加载中' } : {}),
+  });
+  const phase = await collectDetails(
+    options(envelope, runtime, adapter, {
+      retryJobIds: ['job_a', 'job_b'],
+      limit: 2,
+    }),
+  );
+  assert.equal(phase.applied.report.counts.accepted, 1);
+  assert.equal(phase.collected.counts.attemptedJobs, 2);
+  assert.equal(phase.detailCursor, 'job_c');
+  assert.deepEqual(
+    phase.detailRuntime.tasks.map(({ jobId, status, attempts }) => ({ jobId, status, attempts })),
+    [{ jobId: 'job_b', status: 'isolated', attempts: 4 }],
+  );
+  assert.equal(
+    calls.some((call) => call.includes(url('job_c'))),
+    false,
+  );
+  assert.deepEqual(
+    runtime.detail.tasks.map((task) => task.attempts),
+    [4, 4],
+  );
+});
+
+test('explicit retry rejects stale or non-isolated targets before accessing its adapter', async () => {
+  const envelope = envelopeFixture();
+  let runtime = runtimeFixture();
+  for (let i = 0; i < 4; i += 1) runtime = fail(runtime, 'job_a');
+  for (const retryJobIds of [['job_a', 'job_c'], ['job_missing'], ['job_a', 'job_a'], []]) {
+    await assert.rejects(
+      collectDetails(options(envelope, runtime, forbiddenAdapter, { retryJobIds })),
+      /DETAIL_RETRY_TARGETS_INVALID/,
+    );
+  }
+  await assert.rejects(
+    collectDetails(
+      options(envelope, runtime, forbiddenAdapter, {
+        retryJobIds: ['job_a'],
+        limit: 0,
+      }),
+    ),
+    /DETAIL_RETRY_BUDGET_UNAVAILABLE/,
+  );
 });

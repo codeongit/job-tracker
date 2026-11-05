@@ -3,6 +3,7 @@ import {
   listEnrichmentTargetsV2,
   validateEnvelope,
 } from '../materials/model-v2.mjs';
+import { normalizeDetailRetryJobIds } from '../../../dist/boss/contracts/detail-retry.js';
 import {
   collectDetailTitleEvidence,
   DETAIL_NAVIGATION_DELAY_MS,
@@ -76,6 +77,7 @@ export function fairDetailInputs(
     timeLabel = null,
     runtime = null,
     now = new Date().toISOString(),
+    retryJobIds = null,
   } = {},
 ) {
   const checked = validateEnvelope(envelope);
@@ -100,8 +102,22 @@ export function fairDetailInputs(
       runtime ? detailTaskDisposition(runtime, item.jobId, now) : 'ready',
     ]),
   );
+  const requested = retryJobIds === null ? null : normalizeDetailRetryJobIds(retryJobIds);
+  if (requested && !runtime?.detail?.blocked) {
+    if (
+      requested.some(
+        (id) =>
+          !jobs.some((job) => job.jobId === id) ||
+          runtime?.detail?.tasks.find((task) => task.jobId === id)?.status !== 'isolated',
+      )
+    )
+      throw new Error('DETAIL_RETRY_TARGETS_INVALID');
+    if (limit < requested.length) throw new Error('DETAIL_RETRY_BUDGET_UNAVAILABLE');
+  }
   const selectable = jobs.filter((item) => dispositions.get(item.jobId) === 'ready');
-  const fair = selectFair(selectable, { cursor, limit, key: (item) => item.jobId });
+  const fair = requested
+    ? { cursor, selected: runtime?.detail?.blocked ? [] : requested.map((jobId) => ({ jobId })) }
+    : selectFair(selectable, { cursor, limit, key: (item) => item.jobId });
   const selectedIds = fair.selected.map((item) => item.jobId);
   return {
     cursor: fair.cursor,
@@ -235,6 +251,8 @@ export async function collectDetails({
   maxReads,
   pollMs,
   stableReads,
+  retryJobIds = null,
+  beforeCleanup = null,
 }) {
   if (!Number.isInteger(limit) || limit < 0 || limit > MAX_DETAIL_ENRICH_JOBS)
     throw new TypeError(`limit must be an integer from 0 to ${MAX_DETAIL_ENRICH_JOBS}`);
@@ -244,7 +262,8 @@ export async function collectDetails({
   const startedAt = now();
   let input = fairDetailInputs(checked, {
     cursor: current.cursors.detail,
-    limit: Math.max(1, limit),
+    limit: retryJobIds === null ? Math.max(1, limit) : limit,
+    retryJobIds,
     timeLabel,
     runtime: current,
     now: startedAt,
@@ -292,6 +311,7 @@ export async function collectDetails({
     maxReads,
     pollMs,
     stableReads,
+    beforeCleanup,
   });
   let applied;
   try {
@@ -317,7 +337,10 @@ export async function collectDetails({
     collected,
     applied,
     detailRuntime: detailUpdate?.detail ?? null,
-    detailCursor: completedDetailCursor(input, collected, current.cursors.detail),
+    detailCursor:
+      retryJobIds === null
+        ? completedDetailCursor(input, collected, current.cursors.detail)
+        : current.cursors.detail,
     detailEnrichment: detailUpdate?.summary ?? null,
     updatedAt,
     skippedReason: null,

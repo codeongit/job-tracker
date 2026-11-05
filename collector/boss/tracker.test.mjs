@@ -1476,3 +1476,171 @@ test('standalone detail saves successful adopted material before reporting a fai
     'Synthetic recovered role',
   );
 });
+
+for (const outcome of ['partial', 'failed', 'success', 'export_failed'])
+  test(`targeted retry validates before identity access and durably saves ${outcome} details`, async (t) => {
+    const { loadRuntimeState } = await import('./persistence/runtime-state.mjs');
+    const { collectDetails } = await import('./details/detail-phase.mjs');
+    const root = await mkdtemp(join(privateTemporaryRoot, 'boss-detail-retry-'));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const directory = join(root, 'main');
+    await mkdir(directory, { mode: 0o700 });
+    const source = changedHistoryFixture().envelope.snapshot;
+    source.records = source.records.slice(0, 1).flatMap((record, index) =>
+      ['retry_a', 'retry_b'].map((jobId, i) => {
+        const friendId = String(801 + i);
+        return {
+          ...record,
+          key: conversationKeyV2(source.accountNamespace, friendId, '0'),
+          platformIdentity: { friendId, friendSource: '0', uniqueId: `${friendId}-0` },
+          jobAssociation: { jobId, detailUrl: `https://www.zhipin.com/job_detail/${jobId}.html` },
+          observedJobName: null,
+        };
+      }),
+    );
+    source.coverage = {
+      loadedRows: 2,
+      loadedDataRows: 2,
+      renderedRows: 2,
+      offscreenRows: 0,
+      unresolvedRows: 0,
+      truncated: false,
+    };
+    const { envelope } = compareLoadedSnapshotsV2(null, source);
+    const original = await saveEnvelope(directory, envelope);
+    await saveSyntheticDetailConnection(directory, envelope);
+    const { saveRuntimeState } = await import('./persistence/runtime-state.mjs');
+    let runtime = normalizeRuntimeState({
+      version: 1,
+      cursors: { resume: null, detail: null },
+      lastRun: null,
+      updatedAt: null,
+    });
+    for (let i = 0; i < 4; i += 1)
+      for (const jobId of ['retry_a', 'retry_b'])
+        runtime = recordDetailFailure(runtime, {
+          jobId,
+          error: 'DETAIL_TITLE_NOT_READY',
+          stage: 'read',
+          at: '2026-11-01T00:00:00.000Z',
+        });
+    await saveRuntimeState(directory, runtime);
+    const oldRoot = process.env.JOB_TRACKER_BOSS_DATA_ROOT,
+      oldExit = process.exitCode,
+      oldLog = console.log;
+    const reports = [],
+      visited = [];
+    let identities = 0,
+      currentUrl;
+    const adapter = {
+      async createOwnedTab({ ownerToken, initialUrl }) {
+        currentUrl = initialUrl;
+        visited.push(initialUrl);
+        return { ownerToken, tabId: 'detail', windowId: 'window' };
+      },
+      async readOwnedTab(handle) {
+        return {
+          ...handle,
+          url: currentUrl,
+          documentReady: true,
+          title:
+            ['success', 'export_failed'].includes(outcome) ||
+            (outcome === 'partial' && currentUrl.endsWith('/retry_a.html'))
+              ? '「合成岗位招聘」_合成公司招聘-BOSS直聘'
+              : '加载中',
+        };
+      },
+      async navigateOwnedTab(_handle, { nextUrl }) {
+        currentUrl = nextUrl;
+        visited.push(nextUrl);
+      },
+      async closeOwnedTab() {},
+    };
+    const dependencies = {
+      resumeIdentity: async () => {
+        identities++;
+        return { ok: true, report: { identityVerified: true } };
+      },
+      createDetailAdapter: () => adapter,
+      collectDetailPhase: (options) =>
+        collectDetails({ ...options, wait: async () => {}, maxReads: 2, pollMs: 0 }),
+    };
+    try {
+      process.env.JOB_TRACKER_BOSS_DATA_ROOT = root;
+      console.log = (value) => reports.push(JSON.parse(value));
+      await main(['enrich', '--limit', '1', '--retry-job-ids', 'missing'], dependencies);
+      assert.equal(reports.at(-1).error, 'DETAIL_RETRY_TARGETS_INVALID');
+      assert.equal(identities, 0);
+      await saveRuntimeState(directory, {
+        ...runtime,
+        detail: {
+          ...runtime.detail,
+          blocked: true,
+          blockCode: 'DETAIL_TAB_OWNERSHIP_MISMATCH',
+          blockedAt: '2026-11-01T00:00:00.000Z',
+        },
+      });
+      await main(['enrich', '--limit', '2', '--retry-job-ids', 'retry_a,retry_b'], dependencies);
+      assert.equal(reports.at(-1).error, 'DETAIL_ENRICHMENT_BLOCKED');
+      assert.equal(identities, 0);
+      await saveRuntimeState(directory, runtime);
+      if (outcome === 'export_failed') {
+        await rm(join(directory, 'jobs.md'));
+        await mkdir(join(directory, 'jobs.md'));
+      }
+      await main(['enrich', '--limit', '2', '--retry-job-ids', 'retry_a,retry_b'], dependencies);
+    } finally {
+      console.log = oldLog;
+      process.exitCode = oldExit;
+      if (oldRoot === undefined) delete process.env.JOB_TRACKER_BOSS_DATA_ROOT;
+      else process.env.JOB_TRACKER_BOSS_DATA_ROOT = oldRoot;
+    }
+    const report = reports.at(-1);
+    assert.equal(report.saved, true);
+    if (outcome === 'export_failed') {
+      assert.equal(report.partial, true);
+      assert.equal(report.error, 'JOB_EXPORT_FAILED');
+      assert.equal(report.usage.detailNavigations, 2);
+      assert.equal(identities, 1);
+      assert.deepEqual((await loadRuntimeState(directory)).detail.tasks, runtime.detail.tasks);
+      assert.ok(
+        (await latest(directory)).envelope.jobs.evidence.some((item) => item.jobId === 'retry_a'),
+      );
+      return;
+    }
+    assert.equal(report.partial, outcome !== 'success');
+    assert.equal(report.failureScope, outcome === 'success' ? 'none' : 'detail');
+    assert.equal(report.error, outcome === 'success' ? '' : 'DETAIL_TITLE_NOT_READY');
+    assert.deepEqual(report.usage, {
+      historyRequests: 0,
+      domSwitches: 0,
+      detailNavigations: 2,
+      cdpReconnects: 0,
+    });
+    assert.notEqual(report.file, original.file);
+    assert.equal(identities, 2);
+    assert.deepEqual(
+      visited.map((value) => value.split('/').at(-1)),
+      ['retry_a.html', 'retry_b.html'],
+    );
+    const saved = await latest(directory);
+    assert.equal(
+      saved.envelope.jobs.evidence.some(
+        (item) => item.jobId === 'retry_a' && item.name === '合成岗位',
+      ),
+      outcome !== 'failed',
+    );
+    const after = await loadRuntimeState(directory);
+    assert.deepEqual(
+      after.detail.tasks.map((task) => [task.jobId, task.attempts, task.status]),
+      outcome === 'success'
+        ? []
+        : outcome === 'partial'
+          ? [['retry_b', 4, 'isolated']]
+          : [
+              ['retry_a', 4, 'isolated'],
+              ['retry_b', 4, 'isolated'],
+            ],
+    );
+    assert.match(report.detailRetryAttemptId, /^[a-f0-9-]{36}$/);
+  });

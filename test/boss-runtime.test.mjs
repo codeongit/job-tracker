@@ -829,3 +829,147 @@ test('详情和 DOM 动作跨轮次保留最小间隔', async () => {
     await f.cleanup();
   }
 });
+
+test('定点详情重试只预留指定目标额度且完成后保持停止', async () => {
+  let request;
+  const f = await fixture({
+    executeCycle: async (value) => {
+      request = value;
+      return { usage: { historyRequests: 0, domSwitches: 0, detailNavigations: 2 } };
+    },
+  });
+  try {
+    await f.runtime.requestCycle({ retryDetailJobIds: ['job_a', 'job_b'] });
+    assert.deepEqual(request.retryDetailJobIds, ['job_a', 'job_b']);
+    assert.equal(request.budget.historyRequests, 0);
+    assert.equal(request.budget.domActions, 0);
+    assert.equal(request.budget.detailActions, 2);
+    assert.equal(f.runtime.status().lifecycle, 'stopped');
+    assert.equal(f.runtime.status().budget.navigationUsed, 2);
+    assert.equal(f.runtime.status().budget.historyUsed, 0);
+    assert.equal(f.timers.length, 0);
+  } finally {
+    await f.runtime.stop();
+    await f.cleanup();
+  }
+});
+
+test('定点详情重试拒绝运行中、暂停及计划触发且不改变预算', async () => {
+  let calls = 0;
+  const f = await fixture({
+    executeCycle: async () => {
+      calls++;
+      return { usage: {} };
+    },
+  });
+  try {
+    await f.runtime.start();
+    await assert.rejects(f.runtime.requestCycle({ retryDetailJobIds: ['job_a'] }), {
+      code: 'DETAIL_RETRY_REQUIRES_STOPPED',
+    });
+    await f.runtime.pause('TEST_PAUSED');
+    await assert.rejects(f.runtime.requestCycle({ retryDetailJobIds: ['job_a'] }), {
+      code: 'BOSS_INTEGRATION_PAUSED',
+    });
+    assert.equal(f.runtime.status().lifecycle, 'paused');
+    await f.runtime.stop();
+    await assert.rejects(
+      f.runtime.requestCycle({ scheduled: true, retryDetailJobIds: ['job_a'] }),
+      { code: 'DETAIL_RETRY_REQUIRES_STOPPED' },
+    );
+    await assert.rejects(
+      f.runtime.requestCycle({ historyMode: 'backfill', retryDetailJobIds: ['job_a'] }),
+      { code: 'DETAIL_RETRY_REQUIRES_STOPPED' },
+    );
+    assert.equal(calls, 0);
+    assert.equal(f.runtime.status().budget.navigationUsed, 0);
+  } finally {
+    await f.runtime.stop();
+    await f.cleanup();
+  }
+});
+
+test('定点详情重试必须整批有额度且不清空已用预算', async () => {
+  const used = [20, 20, 19];
+  const f = await fixture({
+    executeCycle: async () => ({
+      usage: { historyRequests: 0, domSwitches: 0, detailNavigations: used.shift() },
+    }),
+  });
+  try {
+    for (let count = 0; count < 3; count++) {
+      await f.runtime.requestCycle();
+      f.advance(11_000);
+    }
+    const before = f.runtime.status();
+    await assert.rejects(f.runtime.requestCycle({ retryDetailJobIds: ['job_a', 'job_b'] }), {
+      code: 'DETAIL_RETRY_BUDGET_UNAVAILABLE',
+    });
+    assert.equal(f.runtime.status().budget.navigationUsed, 59);
+    assert.equal(f.runtime.status().lastTickAt, before.lastTickAt);
+  } finally {
+    await f.runtime.stop();
+    await f.cleanup();
+  }
+});
+
+test('定点重试不合并任意在途周期，目标也不会在等待期间改变', async () => {
+  let release, entered, request;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const started = new Promise((resolve) => {
+    entered = resolve;
+  });
+  const f = await fixture({
+    executeCycle: async (value) => {
+      request = value;
+      entered();
+      await gate;
+      return { usage: { historyRequests: 0, domSwitches: 0, detailNavigations: 1 } };
+    },
+  });
+  try {
+    const ids = ['job_a'];
+    const pending = f.runtime.requestCycle({ retryDetailJobIds: ids });
+    ids[0] = 'job_other';
+    await started;
+    assert.deepEqual(request.retryDetailJobIds, ['job_a']);
+    await assert.rejects(f.runtime.requestCycle({ retryDetailJobIds: ['job_b'] }), {
+      code: 'BOSS_CYCLE_IN_PROGRESS',
+    });
+    await assert.rejects(f.runtime.requestCycle(), { code: 'BOSS_CYCLE_IN_PROGRESS' });
+    release();
+    await pending;
+    f.advance(11_000);
+    const ordinary = f.runtime.requestCycle();
+    await assert.rejects(f.runtime.requestCycle({ retryDetailJobIds: ['job_b'] }), {
+      code: 'BOSS_CYCLE_IN_PROGRESS',
+    });
+    await ordinary;
+  } finally {
+    release();
+    await f.runtime.stop();
+    await f.cleanup();
+  }
+});
+
+test('定点详情结果未知时保留整批详情预留且不会增加其他动作预算', async () => {
+  const f = await fixture({
+    executeCycle: async () => {
+      throw Object.assign(new Error('SYNTHETIC_INTERRUPTION'), { code: 'SYNTHETIC_INTERRUPTION' });
+    },
+  });
+  try {
+    await assert.rejects(f.runtime.requestCycle({ retryDetailJobIds: ['job_a', 'job_b'] }), {
+      code: 'SYNTHETIC_INTERRUPTION',
+    });
+    assert.equal(f.runtime.status().budget.navigationUsed, 2);
+    assert.equal(f.runtime.status().budget.historyUsed, 0);
+    assert.equal(f.runtime.status().lifecycle, 'stopped');
+    assert.equal(f.timers.length, 0);
+  } finally {
+    await f.runtime.stop();
+    await f.cleanup();
+  }
+});
