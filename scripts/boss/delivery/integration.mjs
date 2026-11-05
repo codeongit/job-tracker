@@ -635,49 +635,54 @@ export async function checkCommand(
     integrationFail('BOSS_CHECK_TOO_SOON', { nextAllowedAt: duplicateUntil.toISOString() });
   onStage('execute_tracker');
   const trackerOutput = await invokeTracker(config, runner, trackerMode, trackerArguments);
-  onStage('record_loaded_list_read');
-  control = reserveCheckAttempt(control, now());
-  await inbox.writeControl(control);
-  onStage('read_saved_snapshot');
-  const current = await readTrackerSnapshot(fixedOutputSnapshot(config, trackerOutput));
-  const previous = await readCheckpointSnapshot(config, control);
-  const applied = await deliverSaved({
-    mode: 'incremental',
-    inbox,
-    control,
-    previous,
-    current,
-    onStage,
-    initialIdentity,
-  });
-  const successful = validateBossControl({
-    ...applied.control,
-    lastSuccessAt: now().toISOString(),
-    paused: false,
-    pauseCode: '',
-  });
-  onStage('commit_success');
-  await inbox.writeControl(successful);
-  return {
-    recovered,
-    control: successful,
-    checked: true,
-    batch: applied.batch,
-    partial: trackerOutput.partial === true,
-    trackerError:
-      trackerOutput.partial === true ? safeErrorCode({ code: trackerOutput.error }) : '',
-    failureScope: trackerOutput.failureScope,
-    detailEnrichment: trackerOutput.detailEnrichment,
-    ...(trackerOutput.detailRetryAttemptId
-      ? { detailRetryAttemptId: trackerOutput.detailRetryAttemptId }
-      : {}),
-    history: trackerOutput.history,
-    usage: trackerOutput.usage ?? {
-      historyRequests: 0,
-      domSwitches: 0,
-      detailNavigations: 0,
-    },
-  };
+  try {
+    onStage('record_loaded_list_read');
+    control = reserveCheckAttempt(control, now());
+    await inbox.writeControl(control);
+    onStage('read_saved_snapshot');
+    const current = await readTrackerSnapshot(fixedOutputSnapshot(config, trackerOutput));
+    const previous = await readCheckpointSnapshot(config, control);
+    const applied = await deliverSaved({
+      mode: 'incremental',
+      inbox,
+      control,
+      previous,
+      current,
+      onStage,
+      initialIdentity,
+    });
+    const successful = validateBossControl({
+      ...applied.control,
+      lastSuccessAt: now().toISOString(),
+      paused: false,
+      pauseCode: '',
+    });
+    onStage('commit_success');
+    await inbox.writeControl(successful);
+    return {
+      recovered,
+      control: successful,
+      checked: true,
+      batch: applied.batch,
+      partial: trackerOutput.partial === true,
+      trackerError:
+        trackerOutput.partial === true ? safeErrorCode({ code: trackerOutput.error }) : '',
+      failureScope: trackerOutput.failureScope,
+      detailEnrichment: trackerOutput.detailEnrichment,
+      ...(trackerOutput.detailRetryAttemptId
+        ? { detailRetryAttemptId: trackerOutput.detailRetryAttemptId }
+        : {}),
+      history: trackerOutput.history,
+      usage: trackerOutput.usage,
+    };
+  } catch (error) {
+    // Preserve the tracker's usage report across later local write, validation
+    // or delivery failures; those failures cannot undo issued platform actions.
+    const failure =
+      error instanceof Error ? error : new BossIntegrationError('BOSS_INTEGRATION_FAILED');
+    failure.usage = trackerOutput.usage;
+    throw failure;
+  }
 }
 
 export async function statusCommand(config, inbox) {
@@ -817,6 +822,7 @@ export async function main(
   let config;
   let step = 'read_config';
   let beforeControl = null;
+  let cycleUsage;
   try {
     config = await configReader(configPath);
     if (command === 'preview') {
@@ -995,6 +1001,7 @@ export async function main(
             },
           }),
         );
+        cycleUsage = result.usage;
         const events = result.batch?.events.length ?? result.recovered.events;
         const counts = {
           browserChecks: result.checked ? 1 : 0,
@@ -1048,6 +1055,7 @@ export async function main(
           ),
         );
       } catch (error) {
+        cycleUsage = error?.usage ?? cycleUsage;
         const latest = (await inbox.readControl()) ?? before;
         const progress = await snapshotProgress(config, before, latest);
         const failed = await recordFailure({
@@ -1076,7 +1084,7 @@ export async function main(
               error: safeErrorCode(error),
               paused: failed?.paused ?? false,
               nextAllowedAt: error?.nextAllowedAt || failed?.nextAllowedAt || '',
-              usage: normalizedUsage(error?.usage),
+              usage: cycleUsage,
               incidents: inbox.incidents,
             },
             null,
@@ -1182,8 +1190,11 @@ export async function main(
     const result = await statusCommand(config, inbox);
     console.log(JSON.stringify({ ok: true, command, ...result, root: inbox.root }, null, 2));
   } catch (error) {
+    cycleUsage = error?.usage ?? cycleUsage;
     if (!(error instanceof BossIntegrationError || error instanceof BossInboxError)) {
-      error = new BossIntegrationError('BOSS_INTEGRATION_FAILED');
+      error = new BossIntegrationError('BOSS_INTEGRATION_FAILED', 'BOSS_INTEGRATION_FAILED', {
+        usage: cycleUsage,
+      });
     }
     let incidentRecorded = false;
     let latest = null;
@@ -1251,7 +1262,7 @@ export async function main(
           error: safeErrorCode(error),
           step,
           incidentRecorded,
-          ...(command === 'collect-cycle' ? { usage: normalizedUsage(error?.usage) } : {}),
+          ...(command === 'collect-cycle' && cycleUsage !== undefined ? { usage: cycleUsage } : {}),
           incidents: inbox.incidents,
         },
         null,

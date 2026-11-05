@@ -304,7 +304,7 @@ runtime 串行平台轮次，生命周期命令有调用顺序屏障。start/res
 
 显式 `retry-details` 沿 CLI/API → controller → runtime → 单次票据 → integration → tracker `enrich` → `collectDetails` 执行。共享 `detail-retry.js` 校验 1–20 个唯一岗位 ID；可选票据字段 `retryDetailJobIds` 精确绑定有序集合，history/DOM 额度为零，详情额度等于集合长度。runtime 仅允许停止状态的手动请求，拒绝在途合并及整组额度不足；完成后不安排持续采集。tracker 在任何 CDP 身份读取前完整检查当前合格目标及隔离状态；phase 只对这一集合临时允许选择，不修改原任务计数或普通公平游标。
 
-`detail-retry-report.mjs` 在读取前保存不可变私有预检，保留原隔离摘要；`beforeCleanup` 回调在标签清理前保存哈希目标及白名单诊断。诊断失败停止后续操作，清理前失败保留标签现场及实际用量。tracker 对补查始终先保存本轮不可变快照与导出，再确认详情运行状态；全失败也返回已保存的 `partial / detail` 结果，成功资料按原交付和正式消费路径处理。导出或运行状态失败保留已保存快照和真实用量。integration 若优先恢复旧材料，本次返回未补查，不自动重发；持久票据消费及预算预留保证进程中断不恢复这次授权。
+`detail-retry-report.mjs` 在读取前保存不可变私有预检，保留原隔离摘要；`beforeCleanup` 回调在标签清理前保存哈希目标及白名单诊断。诊断失败停止后续平台操作；清理前失败保留标签现场及实际用量，已取得的成功资料仍交回 tracker 尝试保存。此时不确认详情运行进度、不在本次推进交付，保留快照供纯本机恢复。tracker 对补查始终先保存本轮不可变快照与导出，再确认详情运行状态；全失败也返回已保存的 `partial / detail` 结果，成功资料按原交付和正式消费路径处理。导出或运行状态失败保留已保存快照和真实用量，不进入本次交付；采集完成后的本机交付异常也必须携带已取得的真实用量，不能默认成零。integration 若优先恢复旧材料，本次返回未补查，不自动重发；持久票据消费及预算预留保证进程中断不恢复这次授权。
 
 详情导航响应不表示新文档已经就绪。CDP adapter 在主动导航前保存旧文档的 URL、document.URL 和 timeOrigin；导航后只有三者仍精确一致时才返回 `navigationPending: true`，保留实际 URL。首次观察到任一不同值后，该次旧文档宽限失效。详情读取先检查登录/验证，再在既有 `maxReads / pollMs` 内等待旧文档离开，期间重置标题稳定计数；耗尽返回 `DETAIL_NAVIGATION_TIMEOUT` 并停止当批，不重复导航或继续下一个岗位。目标文档仍须 URL 与 document.URL 精确匹配目标、readyState 为 complete、timeOrigin 已更新及标题连续稳定，才能形成证据。其它网址变化仍返回 `DETAIL_TAB_UNEXPECTED_URL`；查询和片段不在本次等待规则中放宽。注入 adapter 可省略 `navigationPending`（视为 false），提供时必须为布尔值；该字段只描述本次主动导航的旧文档过渡。
 

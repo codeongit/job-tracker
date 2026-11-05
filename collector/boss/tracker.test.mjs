@@ -1477,7 +1477,7 @@ test('standalone detail saves successful adopted material before reporting a fai
   );
 });
 
-for (const outcome of ['partial', 'failed', 'success', 'export_failed'])
+for (const outcome of ['partial', 'failed', 'success', 'export_failed', 'diagnostic_failed'])
   test(`targeted retry validates before identity access and durably saves ${outcome} details`, async (t) => {
     const { loadRuntimeState } = await import('./persistence/runtime-state.mjs');
     const { collectDetails } = await import('./details/detail-phase.mjs');
@@ -1531,6 +1531,7 @@ for (const outcome of ['partial', 'failed', 'success', 'export_failed'])
     const reports = [],
       visited = [];
     let identities = 0,
+      closeCalls = 0,
       currentUrl;
     const adapter = {
       async createOwnedTab({ ownerToken, initialUrl }) {
@@ -1544,7 +1545,7 @@ for (const outcome of ['partial', 'failed', 'success', 'export_failed'])
           url: currentUrl,
           documentReady: true,
           title:
-            ['success', 'export_failed'].includes(outcome) ||
+            ['success', 'export_failed', 'diagnostic_failed'].includes(outcome) ||
             (outcome === 'partial' && currentUrl.endsWith('/retry_a.html'))
               ? '「合成岗位招聘」_合成公司招聘-BOSS直聘'
               : '加载中',
@@ -1554,7 +1555,9 @@ for (const outcome of ['partial', 'failed', 'success', 'export_failed'])
         currentUrl = nextUrl;
         visited.push(nextUrl);
       },
-      async closeOwnedTab() {},
+      async closeOwnedTab() {
+        closeCalls++;
+      },
     };
     const dependencies = {
       resumeIdentity: async () => {
@@ -1563,7 +1566,19 @@ for (const outcome of ['partial', 'failed', 'success', 'export_failed'])
       },
       createDetailAdapter: () => adapter,
       collectDetailPhase: (options) =>
-        collectDetails({ ...options, wait: async () => {}, maxReads: 2, pollMs: 0 }),
+        collectDetails({
+          ...options,
+          wait: async () => {},
+          maxReads: 2,
+          pollMs: 0,
+          ...(outcome === 'diagnostic_failed'
+            ? {
+                beforeCleanup: async () => {
+                  throw new Error('SYNTHETIC_DISK_FAILURE');
+                },
+              }
+            : {}),
+        }),
     };
     try {
       process.env.JOB_TRACKER_BOSS_DATA_ROOT = root;
@@ -1597,9 +1612,13 @@ for (const outcome of ['partial', 'failed', 'success', 'export_failed'])
     }
     const report = reports.at(-1);
     assert.equal(report.saved, true);
-    if (outcome === 'export_failed') {
-      assert.equal(report.partial, true);
-      assert.equal(report.error, 'JOB_EXPORT_FAILED');
+    assert.equal(closeCalls, outcome === 'diagnostic_failed' ? 0 : 1);
+    if (['export_failed', 'diagnostic_failed'].includes(outcome)) {
+      assert.equal(report.partial, false);
+      assert.equal(
+        report.error,
+        outcome === 'export_failed' ? 'JOB_EXPORT_FAILED' : 'DETAIL_DIAGNOSTIC_SAVE_FAILED',
+      );
       assert.equal(report.usage.detailNavigations, 2);
       assert.equal(identities, 1);
       assert.deepEqual((await loadRuntimeState(directory)).detail.tasks, runtime.detail.tasks);

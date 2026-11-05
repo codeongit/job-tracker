@@ -210,7 +210,9 @@ export function trackerFailureReport(
   return {
     ok: false,
     saved: Boolean(snapshotPath),
-    partial: mode === 'run' || detailRetry,
+    // Local retry failures keep their snapshot for explicit local recovery;
+    // they must not enter the successful/partial delivery path in this run.
+    partial: mode === 'run',
     error: safeError(error),
     ...(snapshotPath ? { file: snapshotPath } : {}),
     ...(mode === 'run' || detailRetry

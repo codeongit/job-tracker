@@ -301,18 +301,26 @@ export async function collectDetails({
       stateError: null,
     };
   }
-  const collected = await collectDetailTitleEvidence({
-    ...input,
-    limit,
-    adapter,
-    now,
-    navigationDelayMs,
-    wait,
-    maxReads,
-    pollMs,
-    stableReads,
-    beforeCleanup,
-  });
+  let collected;
+  let stateError = null;
+  try {
+    collected = await collectDetailTitleEvidence({
+      ...input,
+      limit,
+      adapter,
+      now,
+      navigationDelayMs,
+      wait,
+      maxReads,
+      pollMs,
+      stableReads,
+      beforeCleanup,
+    });
+  } catch (error) {
+    if (error?.code !== 'DETAIL_DIAGNOSTIC_SAVE_FAILED' || !error.collected) throw error;
+    collected = error.collected;
+    stateError = error;
+  }
   let applied;
   try {
     applied = applyDetailEvidenceV2(checked, collected, now());
@@ -323,9 +331,9 @@ export async function collectDetails({
   }
   const updatedAt = now();
   let detailUpdate = null;
-  let stateError = null;
   try {
-    detailUpdate = updateDetailRuntime(current, collected, updatedAt, applied.envelope);
+    if (!stateError)
+      detailUpdate = updateDetailRuntime(current, collected, updatedAt, applied.envelope);
   } catch (error) {
     // The caller owns whether material is saved before its progress calculation.
     // Preserve the adopted envelope even when no runtime candidate is valid.

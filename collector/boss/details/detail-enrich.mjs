@@ -573,6 +573,7 @@ async function saveBeforeCleanup(beforeCleanup, result) {
   } catch {
     throw Object.assign(new Error('DETAIL_DIAGNOSTIC_SAVE_FAILED'), {
       code: 'DETAIL_DIAGNOSTIC_SAVE_FAILED',
+      collected: result,
       usage: { historyRequests: 0, domSwitches: 0, detailNavigations: result.counts.attemptedJobs },
     });
   }
