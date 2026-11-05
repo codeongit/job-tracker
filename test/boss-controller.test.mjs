@@ -507,3 +507,38 @@ test('读取未应用摘要只读取本机快照，不调用采集器或启动�
     await f.cleanup();
   }
 });
+
+test('定点详情操作经单次票据传递目标列表并只保留详情预算', async () => {
+  const f = await setup();
+  try {
+    f.behavior.runner = async () => ({
+      stdout: JSON.stringify({
+        ok: true,
+        usage: { historyRequests: 0, domSwitches: 0, detailNavigations: 2 },
+      }),
+    });
+    const status = await f.controller.action('retry-details', { jobIds: ['job_a', 'job_b'] });
+    assert.equal(status.lifecycle, 'stopped');
+    assert.equal(status.budget.navigationUsed, 2);
+    assert.equal(status.budget.historyUsed, 0);
+    const cycle = f.calls.find((args) => args[1] === 'collect-cycle');
+    assert.deepEqual(cycle.slice(1), [
+      'collect-cycle',
+      '--history-requests',
+      '0',
+      '--detail-limit',
+      '2',
+      '--dom-limit',
+      '0',
+      '--history-mode',
+      'change',
+      '--retry-job-ids',
+      'job_a,job_b',
+    ]);
+    assert.equal(f.inboxConsumer.runs, 1);
+    assert.deepEqual(await readdir(join(f.root, 'inbox', 'controller-authorizations')), []);
+  } finally {
+    await f.controller.stop();
+    await f.cleanup();
+  }
+});

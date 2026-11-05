@@ -1,9 +1,18 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import { chmod, lstat, mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { normalizeDetailRetryJobIds } from '../../../dist/boss/contracts/detail-retry.js';
+import { normalizeDetailDecisionCommand } from '../../../dist/boss/contracts/detail-decision.js';
+import {
+  emptyDetailDecisions,
+  normalizeDetailDecisions,
+  appendDetailDecision,
+  detailCommandDigest,
+} from './detail-decisions.mjs';
 
 export const BOSS_RUNTIME_FORMAT = 'job-tracker-boss-runtime';
-export const BOSS_RUNTIME_VERSION = 1;
+export const BOSS_RUNTIME_VERSION = 2;
+export const BOSS_RUNTIME_MAX_BYTES = 5 * 1024 * 1024;
 export const DEFAULT_RUNTIME_INTERVAL_MS = 2 * 60 * 1_000;
 export const DEFAULT_MANUAL_DEBOUNCE_MS = 10 * 1_000;
 
@@ -27,6 +36,9 @@ export class BossRuntimeError extends Error {
     this.code = SAFE_CODE.test(code) ? code : 'BOSS_RUNTIME_FAILED';
   }
 }
+
+const retryAdmissionError = (code) =>
+  Object.assign(new BossRuntimeError(code), { retryAttempted: false });
 
 const iso = (value) =>
   typeof value === 'string' &&
@@ -60,6 +72,9 @@ const initialHistory = () => ({
 function validateHistory(value) {
   if (
     !value ||
+    typeof value !== 'object' ||
+    Array.isArray(value) ||
+    Object.keys(value).some((key) => !Object.hasOwn(initialHistory(), key)) ||
     !['change', 'backfill'].includes(value.mode) ||
     (value.backfillCursor !== undefined &&
       value.backfillCursor !== null &&
@@ -125,12 +140,19 @@ function initialState(now = new Date()) {
     detailEnrichment: initialDetailEnrichment(),
     history: initialHistory(),
     actions: [],
+    detailDecisions: emptyDetailDecisions(),
   };
 }
 
 export function validateBossRuntimeState(input) {
   const value = structuredClone(input);
+  const legacy = value?.version === 1;
+  if (value?.version === 1 && !Object.hasOwn(value, 'detailDecisions')) {
+    value.version = 2;
+    value.detailDecisions = emptyDetailDecisions();
+  }
   if (
+    legacy &&
     value &&
     typeof value === 'object' &&
     !Array.isArray(value) &&
@@ -138,6 +160,7 @@ export function validateBossRuntimeState(input) {
   )
     value.detailEnrichment = initialDetailEnrichment();
   if (
+    legacy &&
     value &&
     typeof value === 'object' &&
     !Array.isArray(value) &&
@@ -159,6 +182,7 @@ export function validateBossRuntimeState(input) {
     'detailEnrichment',
     'history',
     'actions',
+    'detailDecisions',
   ];
   if (
     !value ||
@@ -192,6 +216,7 @@ export function validateBossRuntimeState(input) {
     throw new BossRuntimeError('BOSS_RUNTIME_STATE_INVALID');
   value.detailEnrichment = validateDetailEnrichment(value.detailEnrichment);
   value.history = validateHistory(value.history);
+  value.detailDecisions = normalizeDetailDecisions(value.detailDecisions);
   for (const action of value.actions) {
     if (
       !action ||
@@ -230,38 +255,130 @@ async function syncDirectory(path) {
 }
 
 export class BossRuntimeStateStore {
-  constructor(path) {
+  constructor(
+    path,
+    {
+      afterRename = async () => {},
+      sync = syncDirectory,
+      openTemporary = open,
+      readBytes = readFile,
+    } = {},
+  ) {
     this.path = path;
+    this.afterRename = afterRename;
+    this.sync = sync;
+    this.openTemporary = openTemporary;
+    this.readBytes = readBytes;
+    this.writerFault = false;
+  }
+
+  assertWritable() {
+    if (this.writerFault) throw new BossRuntimeError('BOSS_RUNTIME_WRITER_FAULT');
+  }
+
+  async raw() {
+    const info = await lstat(this.path);
+    if (!info.isFile() || info.isSymbolicLink() || info.size > BOSS_RUNTIME_MAX_BYTES)
+      throw new BossRuntimeError('BOSS_RUNTIME_PATH_INVALID');
+    const bytes = await this.readBytes(this.path);
+    if (bytes.length > BOSS_RUNTIME_MAX_BYTES)
+      throw new BossRuntimeError('BOSS_RUNTIME_PATH_INVALID');
+    return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
   }
 
   async read(now = new Date()) {
+    let original;
     try {
-      const info = await lstat(this.path);
-      if (!info.isFile() || info.isSymbolicLink() || info.size > 128_000)
-        throw new BossRuntimeError('BOSS_RUNTIME_PATH_INVALID');
-      return validateBossRuntimeState(JSON.parse(await readFile(this.path, 'utf8')));
+      original = await this.raw();
     } catch (error) {
       if (error.code === 'ENOENT') return initialState(now);
       if (error instanceof BossRuntimeError) throw error;
       throw new BossRuntimeError('BOSS_RUNTIME_STATE_INVALID');
     }
+    try {
+      const parsed = JSON.parse(original),
+        value = validateBossRuntimeState(parsed);
+      if (parsed.version === 1) {
+        this.assertWritable();
+        const backup = `${this.path}.v1.json`;
+        let handle;
+        try {
+          handle = await open(backup, 'wx', 0o600);
+          await handle.writeFile(original, 'utf8');
+          await handle.sync();
+        } catch (error) {
+          if (error.code !== 'EEXIST') throw error;
+          const info = await lstat(backup);
+          if (
+            !info.isFile() ||
+            info.isSymbolicLink() ||
+            (await readFile(backup, 'utf8')) !== original
+          )
+            throw new BossRuntimeError('BOSS_RUNTIME_MIGRATION_INVALID');
+        } finally {
+          await handle?.close();
+        }
+        await this.sync(dirname(this.path));
+        return await this.write(value);
+      }
+      // A restarted writer confirms the on-disk state and persistence barriers
+      // before an old command receipt can be reported as durable again.
+      try {
+        await this.barrier();
+      } catch {
+        this.writerFault = true;
+        throw new BossRuntimeError('BOSS_RUNTIME_WRITE_UNCONFIRMED');
+      }
+      return value;
+    } catch (error) {
+      if (error instanceof BossRuntimeError || error?.code?.startsWith('DETAIL_')) throw error;
+      throw new BossRuntimeError('BOSS_RUNTIME_STATE_INVALID');
+    }
+  }
+
+  async barrier() {
+    await chmod(this.path, 0o600);
+    const handle = await open(this.path, 'r');
+    try {
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    await this.sync(dirname(this.path));
   }
 
   async write(input) {
+    this.assertWritable();
     const value = validateBossRuntimeState(input),
+      serialized = `${JSON.stringify(value, null, 2)}\n`,
       directory = dirname(this.path),
       temporary = join(directory, `.runtime-${randomUUID()}`);
+    if (Buffer.byteLength(serialized, 'utf8') > BOSS_RUNTIME_MAX_BYTES)
+      throw new BossRuntimeError('BOSS_RUNTIME_TOO_LARGE');
     await ensurePrivateDirectory(directory);
-    let handle;
+    let handle,
+      replacementAttempted = false;
     try {
-      handle = await open(temporary, 'wx', 0o600);
-      await handle.writeFile(`${JSON.stringify(value, null, 2)}\n`, 'utf8');
+      handle = await this.openTemporary(temporary, 'wx', 0o600);
+      await handle.writeFile(serialized, 'utf8');
       await handle.sync();
       await handle.close();
       handle = null;
+      replacementAttempted = true;
       await rename(temporary, this.path);
-      await chmod(this.path, 0o600);
-      await syncDirectory(directory);
+      await this.afterRename();
+      await this.barrier();
+    } catch (error) {
+      if (!replacementAttempted) throw error;
+      // A lost post-rename acknowledgement is not evidence that the write failed.
+      // Only confirmed bytes plus repeated persistence barriers can advance memory.
+      try {
+        if ((await this.raw()) !== serialized) throw error;
+        await this.barrier();
+      } catch {
+        this.writerFault = true;
+        throw new BossRuntimeError('BOSS_RUNTIME_WRITE_UNCONFIRMED');
+      }
     } finally {
       await handle?.close().catch(() => {});
       await unlink(temporary).catch(() => {});
@@ -323,10 +440,11 @@ export class BossRuntime {
     intervalMs = DEFAULT_RUNTIME_INTERVAL_MS,
     manualDebounceMs = DEFAULT_MANUAL_DEBOUNCE_MS,
     limits = DEFAULT_LIMITS,
+    storeOptions,
   }) {
     if (typeof executeCycle !== 'function')
       throw new BossRuntimeError('BOSS_RUNTIME_EXECUTOR_REQUIRED');
-    this.store = new BossRuntimeStateStore(statePath);
+    this.store = new BossRuntimeStateStore(statePath, storeOptions);
     this.executeCycle = executeCycle;
     this.prepareStart = prepareStart;
     this.verifyResume = verifyResume;
@@ -340,6 +458,7 @@ export class BossRuntime {
     this.state = null;
     this.timer = null;
     this.cycle = null;
+    this.cycleIsDetailRetry = false;
     this.stopRequested = false;
     // Lifecycle commands retain their call order, while durable state writes
     // use a separate queue. A cycle only holds the state queue while it
@@ -351,13 +470,19 @@ export class BossRuntime {
   }
 
   enqueueLifecycle(operation) {
-    const result = this.lifecycleTail.then(operation);
+    const result = this.lifecycleTail.then(() => {
+      this.store.assertWritable();
+      return operation();
+    });
     this.lifecycleTail = result.catch(() => undefined);
     return result;
   }
 
   enqueueState(operation) {
-    const result = this.stateTail.then(operation);
+    const result = this.stateTail.then(() => {
+      this.store.assertWritable();
+      return operation();
+    });
     this.stateTail = result.catch(() => undefined);
     return result;
   }
@@ -512,11 +637,18 @@ export class BossRuntime {
     });
   }
 
-  async runCycle({ scheduled = false, historyMode = 'change' } = {}) {
+  async runCycle({ scheduled = false, historyMode = 'change', retryDetailJobIds } = {}) {
+    const retryIds =
+      retryDetailJobIds === undefined ? null : normalizeDetailRetryJobIds(retryDetailJobIds);
     const admission = await this.enqueueState(async () => {
       await this.initializeState();
-      if (scheduled && this.state.lifecycle !== 'running') return null;
-      if (this.state.lifecycle === 'paused') throw new BossRuntimeError('BOSS_INTEGRATION_PAUSED');
+      if (!retryIds && scheduled && this.state.lifecycle !== 'running') return null;
+      if (this.state.lifecycle === 'paused')
+        throw retryIds
+          ? retryAdmissionError('BOSS_INTEGRATION_PAUSED')
+          : new BossRuntimeError('BOSS_INTEGRATION_PAUSED');
+      if (retryIds && (scheduled || historyMode !== 'change' || this.state.lifecycle !== 'stopped'))
+        throw retryAdmissionError('DETAIL_RETRY_REQUIRES_STOPPED');
       const started = this.now(),
         previousTick = this.state.lastTickAt ? Date.parse(this.state.lastTickAt) : NaN,
         elapsedSincePrevious = started.getTime() - previousTick;
@@ -525,6 +657,7 @@ export class BossRuntime {
       // bypass this guard, and an in-flight cycle is joined in requestCycle.
       if (
         !scheduled &&
+        !retryIds &&
         historyMode !== 'backfill' &&
         Number.isFinite(previousTick) &&
         elapsedSincePrevious >= 0 &&
@@ -538,7 +671,17 @@ export class BossRuntime {
             usage: { historyRequests: 0, domSwitches: 0, detailNavigations: 0 },
           },
         };
-      const budget = this.budget(started),
+      const availableBudget = this.budget(started);
+      if (retryIds && availableBudget.detailActions < retryIds.length)
+        throw retryAdmissionError('DETAIL_RETRY_BUDGET_UNAVAILABLE');
+      const budget = retryIds
+          ? {
+              ...availableBudget,
+              historyRequests: 0,
+              domActions: 0,
+              detailActions: retryIds.length,
+            }
+          : availableBudget,
         baseActions = currentActions(this.state, started),
         reservedUsage = {
           history: budget.historyRequests,
@@ -567,7 +710,12 @@ export class BossRuntime {
     const { started, budget, baseActions, reservedUsage, controlRevision } = admission;
     let result;
     try {
-      result = await this.executeCycle({ budget, scheduled, historyMode });
+      result = await this.executeCycle({
+        budget,
+        scheduled,
+        historyMode,
+        ...(retryIds ? { retryDetailJobIds: retryIds } : {}),
+      });
       const trustedUsage = reportedUsage(result, budget);
       if (!trustedUsage) throw new BossRuntimeError('BOSS_USAGE_INVALID');
       await this.enqueueState(async () => {
@@ -647,15 +795,24 @@ export class BossRuntime {
   }
 
   requestCycle(options = {}) {
+    const retryIds =
+      options.retryDetailJobIds === undefined
+        ? null
+        : normalizeDetailRetryJobIds(options.retryDetailJobIds);
     // Timer and manual triggers join the in-flight cycle. They never enqueue a
     // catch-up run, including after sleep or repeated CLI invocations.
-    if (this.cycle) return this.cycle;
+    if (this.cycle) {
+      if (retryIds || this.cycleIsDetailRetry)
+        return Promise.reject(retryAdmissionError('BOSS_CYCLE_IN_PROGRESS'));
+      return this.cycle;
+    }
     // Lifecycle commands invoked before this trigger complete first. This
     // prevents a request from slipping between pause/start validation and its
     // durable state transition without making pause wait for platform I/O.
     const lifecycleBarrier = this.lifecycleTail;
     let tracked;
-    const execution = lifecycleBarrier.then(() => this.runCycle(options));
+    const cycleOptions = { ...options, ...(retryIds ? { retryDetailJobIds: retryIds } : {}) };
+    const execution = lifecycleBarrier.then(() => this.runCycle(cycleOptions));
     tracked = execution.finally(async () => {
       try {
         await this.enqueueState(async () => {
@@ -663,10 +820,14 @@ export class BossRuntime {
             await this.scheduleState(this.intervalMs);
         });
       } finally {
-        if (this.cycle === tracked) this.cycle = null;
+        if (this.cycle === tracked) {
+          this.cycle = null;
+          this.cycleIsDetailRetry = false;
+        }
       }
     });
     this.cycle = tracked;
+    this.cycleIsDetailRetry = Boolean(retryIds);
     return tracked;
   }
 
@@ -764,6 +925,42 @@ export class BossRuntime {
       });
       return this.status();
     });
+  }
+
+  resolveDetail(input, { verifyAccount, verifyTask, summarize }) {
+    const command = normalizeDetailDecisionCommand(input);
+    if (this.cycle) return Promise.reject(new BossRuntimeError('BOSS_CYCLE_IN_PROGRESS'));
+    return this.enqueueLifecycle(() =>
+      this.enqueueState(async () => {
+        await this.initializeState();
+        if (this.state.lifecycle !== 'stopped')
+          throw new BossRuntimeError('DETAIL_DECISION_REQUIRES_STOPPED');
+        await verifyAccount(command);
+        const prior = this.state.detailDecisions.commands.find(
+          (row) => row.commandId === command.commandId,
+        );
+        if (prior) {
+          if (prior.digest !== detailCommandDigest(command))
+            throw new BossRuntimeError('DETAIL_DECISION_COMMAND_CONFLICT');
+          return { ...structuredClone(prior), replayed: true };
+        }
+        if (command.expectedRevision !== this.state.detailDecisions.revision)
+          throw new BossRuntimeError('DETAIL_DECISION_REVISION_CONFLICT');
+        await verifyTask(command);
+        const detailDecisions = appendDetailDecision(
+          this.state.detailDecisions,
+          command,
+          this.now().toISOString(),
+        );
+        await this.persistState({
+          detailDecisions,
+          ...(summarize
+            ? { detailEnrichment: validateDetailEnrichment(await summarize(detailDecisions)) }
+            : {}),
+        });
+        return { ...structuredClone(detailDecisions.commands.at(-1)), replayed: false };
+      }),
+    );
   }
 
   runWhileStopped(operation) {
@@ -914,10 +1111,19 @@ export class BossRuntime {
     });
   }
 
+  detailDecisionState() {
+    this.store.assertWritable();
+    if (!this.state) throw new BossRuntimeError('BOSS_RUNTIME_NOT_INITIALIZED');
+    return structuredClone(this.state.detailDecisions);
+  }
+
   status() {
     if (!this.state) throw new BossRuntimeError('BOSS_RUNTIME_NOT_INITIALIZED');
+    const { detailDecisions, ...state } = structuredClone(this.state);
     return {
-      ...structuredClone(this.state),
+      ...state,
+      detailDecisionRevision: detailDecisions.revision,
+      writerFault: this.store.writerFault,
       runningCycle: Boolean(this.cycle),
       tickPending: false,
       budget: this.budget(),

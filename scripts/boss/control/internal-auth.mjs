@@ -1,7 +1,10 @@
+import { normalizeDetailPolicy } from '../../../dist/boss/contracts/detail-policy.js';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { chmod, lstat, mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
 import { isAbsolute, join } from 'node:path';
+import { normalizeDetailRetryJobIds } from '../../../dist/boss/contracts/detail-retry.js';
 
+export const BOSS_INTERNAL_AUTH_MAX_BYTES = 80 * 1024;
 const TOKEN = /^[a-f0-9]{64}$/;
 const FORMAT = 'job-tracker-boss-internal-authorization';
 const VERSION = 1;
@@ -44,13 +47,23 @@ async function syncDirectory(path) {
 }
 
 function validateRequest(value) {
+  const hasDetailPolicy = value != null && Object.hasOwn(value, 'detailPolicy');
+  const hasRetryTargets = value != null && Object.hasOwn(value, 'retryDetailJobIds');
   if (
     !value ||
     typeof value !== 'object' ||
     Array.isArray(value) ||
     JSON.stringify(Object.keys(value).sort()) !==
       JSON.stringify(
-        ['command', 'detailLimit', 'domLimit', 'historyRequests', 'historyMode'].sort(),
+        [
+          'command',
+          'detailLimit',
+          'domLimit',
+          'historyRequests',
+          'historyMode',
+          ...(hasRetryTargets ? ['retryDetailJobIds'] : []),
+          ...(hasDetailPolicy ? ['detailPolicy'] : []),
+        ].sort(),
       ) ||
     value.command !== 'collect-cycle' ||
     !['change', 'backfill'].includes(value.historyMode) ||
@@ -65,7 +78,30 @@ function validateRequest(value) {
     value.domLimit > 1
   )
     fail('BOSS_INTERNAL_AUTH_INVALID');
-  return structuredClone(value);
+  if (hasRetryTargets) {
+    let jobIds;
+    try {
+      jobIds = normalizeDetailRetryJobIds(value.retryDetailJobIds);
+    } catch {
+      fail('BOSS_INTERNAL_AUTH_INVALID');
+    }
+    if (
+      value.historyRequests !== 0 ||
+      value.domLimit !== 0 ||
+      value.historyMode !== 'change' ||
+      value.detailLimit !== jobIds.length
+    )
+      fail('BOSS_INTERNAL_AUTH_INVALID');
+  }
+  const normalized = structuredClone(value);
+  if (hasDetailPolicy) {
+    try {
+      normalized.detailPolicy = normalizeDetailPolicy(value.detailPolicy);
+    } catch {
+      fail('BOSS_INTERNAL_AUTH_INVALID');
+    }
+  }
+  return normalized;
 }
 
 function validateTicket(value, token) {
@@ -89,7 +125,7 @@ function validateTicket(value, token) {
 
 async function regularTicket(path) {
   const info = await lstat(path);
-  if (!info.isFile() || info.isSymbolicLink() || info.size > 4096)
+  if (!info.isFile() || info.isSymbolicLink() || info.size > BOSS_INTERNAL_AUTH_MAX_BYTES)
     fail('BOSS_INTERNAL_AUTH_INVALID');
 }
 
@@ -114,9 +150,12 @@ export async function issueBossInternalAuthorization(
       request: safeRequest,
     },
     path = join(directory, `${token}.json`);
+  const serialized = `${JSON.stringify(ticket)}\n`;
+  if (Buffer.byteLength(serialized, 'utf8') > BOSS_INTERNAL_AUTH_MAX_BYTES)
+    fail('BOSS_INTERNAL_AUTH_INVALID');
   const handle = await open(path, 'wx', 0o600);
   try {
-    await handle.writeFile(`${JSON.stringify(ticket)}\n`, 'utf8');
+    await handle.writeFile(serialized, 'utf8');
     await handle.sync();
   } finally {
     await handle.close();

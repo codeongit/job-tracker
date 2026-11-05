@@ -1,3 +1,5 @@
+import { normalizeDetailPolicy } from '../../../dist/boss/contracts/detail-policy.js';
+import { normalizeDetailRetryJobIds } from '../../../dist/boss/contracts/detail-retry.js';
 import {
   projectRoot,
   defaultConfigPath,
@@ -285,7 +287,12 @@ function requestedUsage(trackerMode, trackerArguments) {
   return normalizedUsage({
     historyRequests: trackerMode === 'run' ? argument('--history-requests') : 0,
     domSwitches: trackerMode === 'run' ? argument('--dom-limit') : 0,
-    detailNavigations: trackerMode === 'run' ? argument('--detail-limit') : 0,
+    detailNavigations:
+      trackerMode === 'run'
+        ? argument('--detail-limit')
+        : trackerMode === 'enrich'
+          ? argument('--limit')
+          : 0,
     cdpReconnects: 0,
   });
 }
@@ -629,46 +636,54 @@ export async function checkCommand(
     integrationFail('BOSS_CHECK_TOO_SOON', { nextAllowedAt: duplicateUntil.toISOString() });
   onStage('execute_tracker');
   const trackerOutput = await invokeTracker(config, runner, trackerMode, trackerArguments);
-  onStage('record_loaded_list_read');
-  control = reserveCheckAttempt(control, now());
-  await inbox.writeControl(control);
-  onStage('read_saved_snapshot');
-  const current = await readTrackerSnapshot(fixedOutputSnapshot(config, trackerOutput));
-  const previous = await readCheckpointSnapshot(config, control);
-  const applied = await deliverSaved({
-    mode: 'incremental',
-    inbox,
-    control,
-    previous,
-    current,
-    onStage,
-    initialIdentity,
-  });
-  const successful = validateBossControl({
-    ...applied.control,
-    lastSuccessAt: now().toISOString(),
-    paused: false,
-    pauseCode: '',
-  });
-  onStage('commit_success');
-  await inbox.writeControl(successful);
-  return {
-    recovered,
-    control: successful,
-    checked: true,
-    batch: applied.batch,
-    partial: trackerOutput.partial === true,
-    trackerError:
-      trackerOutput.partial === true ? safeErrorCode({ code: trackerOutput.error }) : '',
-    failureScope: trackerOutput.failureScope,
-    detailEnrichment: trackerOutput.detailEnrichment,
-    history: trackerOutput.history,
-    usage: trackerOutput.usage ?? {
-      historyRequests: 0,
-      domSwitches: 0,
-      detailNavigations: 0,
-    },
-  };
+  try {
+    onStage('record_loaded_list_read');
+    control = reserveCheckAttempt(control, now());
+    await inbox.writeControl(control);
+    onStage('read_saved_snapshot');
+    const current = await readTrackerSnapshot(fixedOutputSnapshot(config, trackerOutput));
+    const previous = await readCheckpointSnapshot(config, control);
+    const applied = await deliverSaved({
+      mode: 'incremental',
+      inbox,
+      control,
+      previous,
+      current,
+      onStage,
+      initialIdentity,
+    });
+    const successful = validateBossControl({
+      ...applied.control,
+      lastSuccessAt: now().toISOString(),
+      paused: false,
+      pauseCode: '',
+    });
+    onStage('commit_success');
+    await inbox.writeControl(successful);
+    return {
+      recovered,
+      control: successful,
+      checked: true,
+      batch: applied.batch,
+      partial: trackerOutput.partial === true,
+      trackerError:
+        trackerOutput.partial === true ? safeErrorCode({ code: trackerOutput.error }) : '',
+      failureScope: trackerOutput.failureScope,
+      detailEnrichment: trackerOutput.detailEnrichment,
+      ...(trackerOutput.detailRetryAttemptId
+        ? { detailRetryAttemptId: trackerOutput.detailRetryAttemptId }
+        : {}),
+      history: trackerOutput.history,
+      usage: trackerOutput.usage,
+    };
+  } catch (error) {
+    // Preserve the tracker's usage report across later local write, validation
+    // or delivery failures; those failures cannot undo issued platform actions.
+    const failure =
+      error instanceof Error ? error : new BossIntegrationError('BOSS_INTEGRATION_FAILED');
+    failure.usage = trackerOutput.usage;
+    throw failure;
+  }
 }
 
 export async function statusCommand(config, inbox) {
@@ -698,9 +713,18 @@ export async function statusCommand(config, inbox) {
 }
 
 function parseArguments(argv) {
+  let detailPolicy;
+  if (argv[0] === 'collect-cycle' && argv.at(-2) === '--detail-policy') {
+    try {
+      detailPolicy = normalizeDetailPolicy(JSON.parse(argv.at(-1)));
+    } catch {
+      integrationFail('BOSS_ARGUMENTS_INVALID');
+    }
+    argv = argv.slice(0, -2);
+  }
   if (argv[0] === 'check') integrationFail('BOSS_USE_UNIFIED_RUNTIME');
   if (
-    argv.length === 9 &&
+    [9, 11].includes(argv.length) &&
     argv[0] === 'collect-cycle' &&
     argv[1] === '--history-requests' &&
     /^(?:[0-9]|1[0-9]|20)$/.test(argv[2]) &&
@@ -709,7 +733,9 @@ function parseArguments(argv) {
     argv[5] === '--dom-limit' &&
     /^[0-1]$/.test(argv[6]) &&
     argv[7] === '--history-mode' &&
-    ['change', 'backfill'].includes(argv[8])
+    ['change', 'backfill'].includes(argv[8]) &&
+    (argv.length === 9 ||
+      (argv[9] === '--retry-job-ids' && argv[8] === 'change' && argv[2] === '0' && argv[6] === '0'))
   )
     return {
       command: argv[0],
@@ -718,6 +744,10 @@ function parseArguments(argv) {
       detailLimit: Number(argv[4]),
       domLimit: Number(argv[6]),
       historyMode: argv[8],
+      ...(detailPolicy ? { detailPolicy } : {}),
+      ...(argv.length === 11
+        ? { retryDetailJobIds: normalizeDetailRetryJobIds(argv[10].split(',')) }
+        : {}),
     };
   if (
     argv.length === 3 &&
@@ -768,16 +798,33 @@ export async function main(
     initialIdentity = APPROVED_INITIAL,
     inboxFactory = (root) => new BossInbox(root),
     configReader = readBossConfig,
+    runner = execFile,
     internalAuthorization = process.env.JOB_TRACKER_BOSS_INTERNAL_AUTHORIZATION || '',
   } = {},
 ) {
-  const { command, evidenceDate, historyRequests, detailLimit, domLimit, historyMode } =
-    parseArguments(argv);
+  const {
+    command,
+    evidenceDate,
+    historyRequests,
+    detailLimit,
+    domLimit,
+    historyMode,
+    retryDetailJobIds,
+    detailPolicy,
+  } = parseArguments(argv);
   if (command === 'collect-cycle')
     await consumeBossInternalAuthorization(
       inboxRoot,
       internalAuthorization,
-      { command, historyRequests, detailLimit, domLimit, historyMode },
+      {
+        command,
+        historyRequests,
+        detailLimit,
+        domLimit,
+        historyMode,
+        ...(retryDetailJobIds ? { retryDetailJobIds } : {}),
+        ...(detailPolicy ? { detailPolicy } : {}),
+      },
       { now },
     );
   const started = now();
@@ -788,6 +835,7 @@ export async function main(
   let config;
   let step = 'read_config';
   let beforeControl = null;
+  let cycleUsage;
   try {
     config = await configReader(configPath);
     if (command === 'preview') {
@@ -947,22 +995,29 @@ export async function main(
         const result = await withProducerLock(inbox, id, () =>
           checkCommand(config, inbox, {
             now,
-            trackerMode: 'run',
+            runner,
+            trackerMode: retryDetailJobIds ? 'enrich' : 'run',
             trackerArguments: [
-              '--history-requests',
-              String(historyRequests),
-              '--detail-limit',
-              String(detailLimit),
-              '--dom-limit',
-              String(domLimit),
-              '--history-mode',
-              historyMode,
+              ...(retryDetailJobIds
+                ? ['--limit', String(detailLimit), '--retry-job-ids', retryDetailJobIds.join(',')]
+                : [
+                    '--history-requests',
+                    String(historyRequests),
+                    '--detail-limit',
+                    String(detailLimit),
+                    '--dom-limit',
+                    String(domLimit),
+                    '--history-mode',
+                    historyMode,
+                  ]),
+              ...(detailPolicy ? ['--detail-policy', JSON.stringify(detailPolicy)] : []),
             ],
             onStage: (value) => {
               checkStep = value;
             },
           }),
         );
+        cycleUsage = result.usage;
         const events = result.batch?.events.length ?? result.recovered.events;
         const counts = {
           browserChecks: result.checked ? 1 : 0,
@@ -999,6 +1054,12 @@ export async function main(
               failureScope: result.failureScope,
               detailEnrichment: result.detailEnrichment,
               history: result.history,
+              ...(retryDetailJobIds
+                ? {
+                    retryAttempted: result.checked && result.usage?.detailNavigations > 0,
+                    detailRetryAttemptId: result.detailRetryAttemptId ?? null,
+                  }
+                : {}),
               paused: result.control.paused,
               counts,
               usage: result.usage,
@@ -1010,6 +1071,7 @@ export async function main(
           ),
         );
       } catch (error) {
+        cycleUsage = error?.usage ?? cycleUsage;
         const latest = (await inbox.readControl()) ?? before;
         const progress = await snapshotProgress(config, before, latest);
         const failed = await recordFailure({
@@ -1038,7 +1100,7 @@ export async function main(
               error: safeErrorCode(error),
               paused: failed?.paused ?? false,
               nextAllowedAt: error?.nextAllowedAt || failed?.nextAllowedAt || '',
-              usage: normalizedUsage(error?.usage),
+              usage: cycleUsage,
               incidents: inbox.incidents,
             },
             null,
@@ -1144,8 +1206,11 @@ export async function main(
     const result = await statusCommand(config, inbox);
     console.log(JSON.stringify({ ok: true, command, ...result, root: inbox.root }, null, 2));
   } catch (error) {
+    cycleUsage = error?.usage ?? cycleUsage;
     if (!(error instanceof BossIntegrationError || error instanceof BossInboxError)) {
-      error = new BossIntegrationError('BOSS_INTEGRATION_FAILED');
+      error = new BossIntegrationError('BOSS_INTEGRATION_FAILED', 'BOSS_INTEGRATION_FAILED', {
+        usage: cycleUsage,
+      });
     }
     let incidentRecorded = false;
     let latest = null;
@@ -1213,7 +1278,7 @@ export async function main(
           error: safeErrorCode(error),
           step,
           incidentRecorded,
-          ...(command === 'collect-cycle' ? { usage: normalizedUsage(error?.usage) } : {}),
+          ...(command === 'collect-cycle' && cycleUsage !== undefined ? { usage: cycleUsage } : {}),
           incidents: inbox.incidents,
         },
         null,

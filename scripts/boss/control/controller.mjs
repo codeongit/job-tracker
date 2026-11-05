@@ -5,12 +5,24 @@ import {
   defaultTrackerDataRoot,
 } from '../shared/paths.mjs';
 import { bossAttributionSummary } from '../../../dist/boss/rules/attribution.js';
+import {
+  DETAIL_RETRY_NOT_STARTED_CODES,
+  normalizeDetailRetryJobIds,
+} from '../../../dist/boss/contracts/detail-retry.js';
 import { latest as latestCollectorSnapshot } from '../../../collector/boss/persistence/storage.mjs';
 import { execFile as execFileCallback } from 'node:child_process';
 import { lstat } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 import { BossRuntime, BossRuntimeError } from './runtime.mjs';
+import { loadRuntimeState } from '../../../collector/boss/persistence/runtime-state.mjs';
+import {
+  normalizeDetailDecisionCommand,
+  normalizeExpectedDetailTask,
+} from '../../../dist/boss/contracts/detail-decision.js';
+import { normalizeDetailPolicy } from '../../../dist/boss/contracts/detail-policy.js';
+import { stoppedDetailJobIds } from './detail-decisions.mjs';
+import { detailTasksView, requireDetailAccount, requireDetailTask } from './detail-tasks.mjs';
 import { BossInbox } from '../delivery/inbox.mjs';
 import {
   issueBossInternalAuthorization,
@@ -96,6 +108,7 @@ export function createBossController({
   now = () => new Date(),
   setTimer,
   clearTimer,
+  runtimeStoreOptions,
 } = {}) {
   if (!config || typeof config.account !== 'string' || !inboxRoot || !workspaceStore)
     throw new BossRuntimeError('BOSS_CONTROLLER_CONFIG_INVALID');
@@ -117,6 +130,7 @@ export function createBossController({
 
   const runtime = new BossRuntime({
     statePath: join(inboxRoot, 'tracking.json'),
+    storeOptions: runtimeStoreOptions,
     now,
     ...(setTimer ? { setTimer } : {}),
     ...(clearTimer ? { clearTimer } : {}),
@@ -131,12 +145,22 @@ export function createBossController({
       await executeJson(integrationScript, ['resume'], runner);
     },
     recoverPage: () => trackerAction('recover-page'),
-    executeCycle: async ({ budget, historyMode = 'change' }) => {
+    executeCycle: async ({ budget, historyMode = 'change', retryDetailJobIds }) => {
       try {
         await requireWorkspace();
       } catch (error) {
         error.usage = { historyRequests: 0, domSwitches: 0, detailNavigations: 0 };
         throw error;
+      }
+      let detailPolicy;
+      if (runtime.detailDecisionState().records.some((row) => row.status === 'stopped')) {
+        const snapshot = await latestCollectorSnapshot(join(trackerDataRoot, config.account));
+        if (!snapshot?.envelope?.accountNamespace)
+          throw new BossRuntimeError('DETAIL_ACCOUNT_CHANGED');
+        const accountNamespace = snapshot.envelope.accountNamespace;
+        const excludedJobIds = stoppedDetailJobIds(runtime.detailDecisionState(), accountNamespace);
+        if (excludedJobIds.length)
+          detailPolicy = normalizeDetailPolicy({ accountNamespace, excludedJobIds });
       }
       const request = {
           command: 'collect-cycle',
@@ -144,6 +168,8 @@ export function createBossController({
           detailLimit: budget.detailActions,
           domLimit: budget.domActions,
           historyMode,
+          ...(retryDetailJobIds ? { retryDetailJobIds } : {}),
+          ...(detailPolicy ? { detailPolicy } : {}),
         },
         authorization = await issueBossInternalAuthorization(inboxRoot, request, { now }),
         args = [
@@ -156,6 +182,8 @@ export function createBossController({
           String(budget.domActions),
           '--history-mode',
           historyMode,
+          ...(retryDetailJobIds ? ['--retry-job-ids', retryDetailJobIds.join(',')] : []),
+          ...(detailPolicy ? ['--detail-policy', JSON.stringify(detailPolicy)] : []),
         ];
       let output;
       try {
@@ -200,13 +228,95 @@ export function createBossController({
     },
   });
 
+  async function detailContext(expectedAccount) {
+    const current = await requireWorkspace();
+    const directory = join(trackerDataRoot, config.account);
+    const [snapshot, collectorRuntime] = await Promise.all([
+      latestCollectorSnapshot(directory),
+      loadRuntimeState(directory),
+    ]);
+    const envelope = snapshot?.envelope;
+    requireDetailAccount(current, envelope, expectedAccount);
+    return { current, envelope, collectorRuntime };
+  }
+  function projectDetails(context, decisions = runtime.detailDecisionState()) {
+    return detailTasksView({
+      ...context,
+      decisions,
+      tracking: runtime.status(),
+      now: now().toISOString(),
+    });
+  }
+
   return {
     async initialize() {
       await runtime.initialize();
       return this.status();
     },
-    async action(action) {
+    async inspectDetails() {
+      return projectDetails(await detailContext());
+    },
+    async resolveDetail(input) {
+      const command = normalizeDetailDecisionCommand(input);
+      let context;
+      const decision = await runtime.resolveDetail(command, {
+        verifyAccount: async () => {
+          context = await detailContext(command.accountNamespace);
+        },
+        verifyTask: async () => {
+          const item = requireDetailTask(projectDetails(context), command);
+          if (
+            command.reason === 'reopen'
+              ? item.resolution?.status !== 'stopped'
+              : item.status === 'manually_stopped' || item.status === 'inactive'
+          )
+            throw new BossRuntimeError('DETAIL_TASK_CHANGED');
+          if (
+            command.reason === 'manual_details' &&
+            (command.workspaceRevision !== context.current.revision ||
+              !item.canCompleteWithDetails ||
+              item.matchingOpportunityId !== command.opportunityId)
+          )
+            throw new BossRuntimeError('DETAIL_WORKSPACE_CHANGED');
+        },
+        summarize: (decisions) => projectDetails(context, decisions).summary,
+      });
+      return { details: projectDetails(context), decision };
+    },
+    async action(action, { jobIds, expectedTask } = {}) {
+      if (action !== 'retry-details' && (jobIds !== undefined || expectedTask !== undefined))
+        throw new BossRuntimeError('BOSS_RUNTIME_ARGUMENT_INVALID');
       if (action === 'start') return runtime.start();
+      if (action === 'retry-details') {
+        let retryDetailJobIds;
+        try {
+          retryDetailJobIds = normalizeDetailRetryJobIds(jobIds);
+          if (runtime.detailDecisionState().records.some((row) => row.status === 'stopped')) {
+            const context = await detailContext();
+            const stopped = stoppedDetailJobIds(
+              runtime.detailDecisionState(),
+              context.envelope.accountNamespace,
+            );
+            if (retryDetailJobIds.some((id) => stopped.includes(id)))
+              throw new BossRuntimeError('DETAIL_TASK_MANUALLY_STOPPED');
+          }
+          if (expectedTask !== undefined) {
+            const expected = normalizeExpectedDetailTask(expectedTask);
+            if (retryDetailJobIds.length !== 1 || retryDetailJobIds[0] !== expected.jobId)
+              throw new BossRuntimeError('DETAIL_RETRY_TARGETS_INVALID');
+            const item = requireDetailTask(
+              projectDetails(await detailContext(expected.accountNamespace)),
+              expected,
+            );
+            if (!item.canRetry) throw new BossRuntimeError('DETAIL_RETRY_TARGETS_INVALID');
+          }
+        } catch (error) {
+          if (DETAIL_RETRY_NOT_STARTED_CODES.includes(error?.code)) error.retryAttempted = false;
+          throw error;
+        }
+        const result = await runtime.requestCycle({ retryDetailJobIds });
+        return { ...runtime.status(), result };
+      }
       if (action === 'run') {
         const result = await runtime.requestCycle({ scheduled: false });
         return { ...runtime.status(), result };
@@ -320,7 +430,20 @@ export function createBossController({
           candidateCompany: '',
         });
       }
-      return { ...this.status(), attribution };
+      let details = null;
+      if (snapshot?.envelope) {
+        const collectorRuntime = await loadRuntimeState(join(trackerDataRoot, config.account));
+        try {
+          details = projectDetails({ current, envelope: snapshot.envelope, collectorRuntime });
+        } catch (error) {
+          if (error.code !== 'DETAIL_ACCOUNT_CHANGED') throw error;
+        }
+      }
+      return {
+        ...this.status(),
+        ...(details ? { detailEnrichment: details.summary } : {}),
+        attribution,
+      };
     },
     status() {
       return {
