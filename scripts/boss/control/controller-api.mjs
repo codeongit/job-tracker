@@ -4,7 +4,10 @@ import {
   normalizeDetailDecisionCommand,
   normalizeExpectedDetailTask,
 } from '../../../dist/boss/contracts/detail-decision.js';
-import { normalizeDetailRetryJobIds } from '../../../dist/boss/contracts/detail-retry.js';
+import {
+  DETAIL_RETRY_NOT_STARTED_CODES,
+  normalizeDetailRetryJobIds,
+} from '../../../dist/boss/contracts/detail-retry.js';
 
 const ACTIONS = new Set([
   'start',
@@ -38,6 +41,7 @@ export async function handleBossControllerApi(req, res, { controller }) {
     return true;
   }
   let detailDecisionRequest = false;
+  let detailRetryRequest = false;
   try {
     if (req.method === 'GET') {
       const view = new URL(req.url, 'http://127.0.0.1').searchParams.get('view');
@@ -96,24 +100,35 @@ export async function handleBossControllerApi(req, res, { controller }) {
       return true;
     }
     const retry = body.action === 'retry-details';
-    const expected =
-      body.expectedTask === undefined ? undefined : normalizeExpectedDetailTask(body.expectedTask);
-    if (
-      JSON.stringify(Object.keys(body).sort()) !==
-      JSON.stringify(
-        retry
-          ? expected
-            ? ['action', 'expectedTask', 'jobIds']
-            : ['action', 'jobIds']
-          : ['action'],
+    detailRetryRequest = retry;
+    let retryOptions;
+    try {
+      const expected =
+        body.expectedTask === undefined
+          ? undefined
+          : normalizeExpectedDetailTask(body.expectedTask);
+      if (
+        JSON.stringify(Object.keys(body).sort()) !==
+        JSON.stringify(
+          retry
+            ? expected
+              ? ['action', 'expectedTask', 'jobIds']
+              : ['action', 'jobIds']
+            : ['action'],
+        )
       )
-    )
-      throw new BossRuntimeError('BOSS_RUNTIME_ARGUMENT_INVALID');
-    const status = retry
-      ? await controller.action(body.action, {
+        throw new BossRuntimeError('BOSS_RUNTIME_ARGUMENT_INVALID');
+      if (retry)
+        retryOptions = {
           jobIds: normalizeDetailRetryJobIds(body.jobIds),
           ...(expected ? { expectedTask: expected } : {}),
-        })
+        };
+    } catch (error) {
+      if (retry) error.retryAttempted = false;
+      throw error;
+    }
+    const status = retry
+      ? await controller.action(body.action, retryOptions)
       : await controller.action(body.action);
     send(200, { protocolVersion: 1, status });
   } catch (error) {
@@ -122,6 +137,11 @@ export async function handleBossControllerApi(req, res, { controller }) {
       code: known ? error.code : 'BOSS_RUNTIME_FAILED',
       ...(detailDecisionRequest && DETAIL_DECISION_NOT_COMMITTED_CODES.includes(error?.code)
         ? { committed: false }
+        : {}),
+      ...(detailRetryRequest &&
+      DETAIL_RETRY_NOT_STARTED_CODES.includes(error?.code) &&
+      error.retryAttempted === false
+        ? { retryAttempted: false }
         : {}),
       message: detailDecisionRequest
         ? DETAIL_DECISION_NOT_COMMITTED_CODES.includes(error?.code)

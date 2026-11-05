@@ -36,7 +36,7 @@ export function createBossDetailReview({
       !details.cycleInProgress
     ) {
       const row = details.items.find((item) => item.jobId === pending.jobId);
-      if (!row)
+      if (!row || row.status === 'inactive')
         publish({
           retryUnconfirmed: null,
           error: '',
@@ -62,11 +62,21 @@ export function createBossDetailReview({
   };
   const saved = (command, details) => {
     accept(details);
+    const row = details.items.find((item) => item.jobId === command.jobId);
+    const currentReason = row?.resolution?.reason;
+    const changed = currentReason !== command.reason;
+    const currentResult =
+      row?.resolution?.status === 'stopped'
+        ? '当前已停止详情采集。'
+        : row?.resolution?.status === 'reopened'
+          ? '当前已撤销停止，尚未因此发起重试。'
+          : '请按当前任务清单核对采集状态。';
     publish({
       pendingCommand: null,
       error: '',
-      feedback:
-        command.reason === 'reopen'
+      feedback: changed
+        ? `原请求已确认，当前决定已变化；${currentResult}`
+        : command.reason === 'reopen'
           ? '已撤销人工处理；按当前材料重新显示任务，尚未发起重试。'
           : '已人工停止该岗位详情采集；原失败记录保留，岗位资料与消息仍分别处理。',
     });
@@ -168,19 +178,13 @@ export function createBossDetailReview({
           publish({ stale: true, error: '补查结果已返回，但任务列表刷新失败，请刷新本机状态。' });
         }
       } catch (error) {
-        const denied =
-          error.status === 409 &&
-          [
-            'DETAIL_RETRY_REQUIRES_STOPPED',
-            'DETAIL_RETRY_BUDGET_UNAVAILABLE',
-            'BOSS_CYCLE_IN_PROGRESS',
-            'BOSS_INTEGRATION_PAUSED',
-          ].includes(error.code);
+        const denied = error.status === 409 && error.retryAttempted === false;
         publish({
           stale: true,
           ...(denied ? { retryUnconfirmed: null } : {}),
-          error:
-            state.retryUnconfirmed && !denied
+          error: denied
+            ? '本次补查未执行，请刷新后重新核对岗位和跟踪状态。'
+            : state.retryUnconfirmed
               ? '本次补查结果尚未确认，请刷新任务状态或查看运行记录；不会自动重试。'
               : error.message,
         });

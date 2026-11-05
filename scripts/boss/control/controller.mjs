@@ -5,7 +5,10 @@ import {
   defaultTrackerDataRoot,
 } from '../shared/paths.mjs';
 import { bossAttributionSummary } from '../../../dist/boss/rules/attribution.js';
-import { normalizeDetailRetryJobIds } from '../../../dist/boss/contracts/detail-retry.js';
+import {
+  DETAIL_RETRY_NOT_STARTED_CODES,
+  normalizeDetailRetryJobIds,
+} from '../../../dist/boss/contracts/detail-retry.js';
 import { latest as latestCollectorSnapshot } from '../../../collector/boss/persistence/storage.mjs';
 import { execFile as execFileCallback } from 'node:child_process';
 import { lstat } from 'node:fs/promises';
@@ -285,25 +288,31 @@ export function createBossController({
         throw new BossRuntimeError('BOSS_RUNTIME_ARGUMENT_INVALID');
       if (action === 'start') return runtime.start();
       if (action === 'retry-details') {
-        const retryDetailJobIds = normalizeDetailRetryJobIds(jobIds);
-        if (runtime.detailDecisionState().records.some((row) => row.status === 'stopped')) {
-          const context = await detailContext();
-          const stopped = stoppedDetailJobIds(
-            runtime.detailDecisionState(),
-            context.envelope.accountNamespace,
-          );
-          if (retryDetailJobIds.some((id) => stopped.includes(id)))
-            throw new BossRuntimeError('DETAIL_TASK_MANUALLY_STOPPED');
-        }
-        if (expectedTask !== undefined) {
-          const expected = normalizeExpectedDetailTask(expectedTask);
-          if (retryDetailJobIds.length !== 1 || retryDetailJobIds[0] !== expected.jobId)
-            throw new BossRuntimeError('DETAIL_RETRY_TARGETS_INVALID');
-          const item = requireDetailTask(
-            projectDetails(await detailContext(expected.accountNamespace)),
-            expected,
-          );
-          if (!item.canRetry) throw new BossRuntimeError('DETAIL_RETRY_TARGETS_INVALID');
+        let retryDetailJobIds;
+        try {
+          retryDetailJobIds = normalizeDetailRetryJobIds(jobIds);
+          if (runtime.detailDecisionState().records.some((row) => row.status === 'stopped')) {
+            const context = await detailContext();
+            const stopped = stoppedDetailJobIds(
+              runtime.detailDecisionState(),
+              context.envelope.accountNamespace,
+            );
+            if (retryDetailJobIds.some((id) => stopped.includes(id)))
+              throw new BossRuntimeError('DETAIL_TASK_MANUALLY_STOPPED');
+          }
+          if (expectedTask !== undefined) {
+            const expected = normalizeExpectedDetailTask(expectedTask);
+            if (retryDetailJobIds.length !== 1 || retryDetailJobIds[0] !== expected.jobId)
+              throw new BossRuntimeError('DETAIL_RETRY_TARGETS_INVALID');
+            const item = requireDetailTask(
+              projectDetails(await detailContext(expected.accountNamespace)),
+              expected,
+            );
+            if (!item.canRetry) throw new BossRuntimeError('DETAIL_RETRY_TARGETS_INVALID');
+          }
+        } catch (error) {
+          if (DETAIL_RETRY_NOT_STARTED_CODES.includes(error?.code)) error.retryAttempted = false;
+          throw error;
         }
         const result = await runtime.requestCycle({ retryDetailJobIds });
         return { ...runtime.status(), result };

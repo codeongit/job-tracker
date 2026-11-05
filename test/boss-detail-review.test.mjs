@@ -32,6 +32,52 @@ const details = () => ({
   },
   items: [structuredClone(item)],
 });
+const decidedDetails = (reason = 'not_needed', revision = 4) => ({
+  ...details(),
+  revision,
+  items: [
+    {
+      ...item,
+      status: reason === 'reopen' ? 'isolated' : 'manually_stopped',
+      resolution: {
+        status: reason === 'reopen' ? 'reopened' : 'stopped',
+        reason,
+        at: '2026-11-05T02:00:00.000Z',
+      },
+    },
+  ],
+});
+
+for (const [original, current] of [
+  ['not_needed', 'reopen'],
+  ['reopen', 'not_needed'],
+]) {
+  test(`回查旧 ${original} 请求时保留另一页面更新的 ${current} 决定并准确提示`, async () => {
+    const writes = [];
+    const review = createBossDetailReview({
+      makeId: () => commandId,
+      client: {
+        details: async () => (original === 'reopen' ? decidedDetails() : details()),
+        resolveDetail: async (command) => {
+          writes.push(command);
+          if (writes.length === 1) throw Error('saved but reply lost');
+          return decidedDetails(current, 6);
+        },
+      },
+    });
+    await review.resolve('job_a', original, () => true);
+    await review.reconcile();
+    assert.equal(writes.length, 2);
+    assert.deepEqual(writes[1], writes[0]);
+    assert.equal(review.getState().details.items[0].resolution.reason, current);
+    assert.equal(review.getState().pendingCommand, null);
+    assert.match(review.getState().feedback, /原请求已确认.*当前决定已变化/);
+    assert.match(
+      review.getState().feedback,
+      current === 'reopen' ? /当前已撤销停止/ : /当前已停止详情采集/,
+    );
+  });
+}
 
 test('响应未知保留同一人工命令；刷新不重发，主动核对只复用原幂等键和版本', async () => {
   const writes = [];
@@ -42,7 +88,7 @@ test('响应未知保留同一人工命令；刷新不重发，主动核对只�
       resolveDetail: async (command) => {
         writes.push(command);
         if (writes.length === 1) throw new Error('transport lost');
-        return { ...details(), revision: 4 };
+        return decidedDetails();
       },
     },
   });
@@ -95,7 +141,7 @@ test('资料确认绑定新鲜的工作区版本，取消和运行中不提交�
       }),
       resolveDetail: async (command) => {
         commands.push(command);
-        return details();
+        return decidedDetails(command.reason);
       },
     },
   });
@@ -119,7 +165,7 @@ test('已确认保存后的列表刷新失败保留成功反馈与原清单，�
         if (unavailable) throw Error('本机不可达');
         return details();
       },
-      resolveDetail: async () => ({ ...details(), revision: 4 }),
+      resolveDetail: async () => decidedDetails(),
     },
   });
   await review.resolve('job_a', 'not_needed', () => true);
@@ -219,6 +265,102 @@ test('补查响应丢失后任务已不在清单，只确认待办状态，不�
   assert.equal(review.getState().retryUnconfirmed, null);
   assert.match(review.getState().feedback, /已无.*待办/);
   assert.match(review.getState().feedback, /不代表.*采集成功/);
+});
+
+test('停止决定已撤销的补查丢响应后，保留的inactive记录也能解除未知状态', async () => {
+  let completed = false,
+    requests = 0;
+  const review = createBossDetailReview({
+    client: {
+      details: async () => {
+        const current = decidedDetails('reopen');
+        if (completed) {
+          current.items[0].status = 'inactive';
+          current.items[0].lastAttemptAt = '';
+          current.items[0].canRetry = false;
+        }
+        return current;
+      },
+      retryDetail: async () => {
+        requests++;
+        throw Error('reply lost');
+      },
+    },
+  });
+  await review.retry('job_a', () => true);
+  assert.ok(review.getState().retryUnconfirmed);
+  completed = true;
+  await review.refresh();
+  assert.equal(requests, 1);
+  assert.equal(review.getState().retryUnconfirmed, null);
+  assert.equal(review.getState().details.items[0].resolution.reason, 'reopen');
+  assert.match(review.getState().feedback, /已无.*待办/);
+  assert.match(review.getState().feedback, /不代表.*采集成功/);
+});
+
+test('服务明确未执行补查时解除锁定，下一次须重新读取和确认', async () => {
+  for (const code of [
+    'DETAIL_TASK_CHANGED',
+    'DETAIL_ACCOUNT_CHANGED',
+    'DETAIL_TASK_MANUALLY_STOPPED',
+    'DETAIL_RETRY_TARGETS_INVALID',
+  ]) {
+    let reads = 0,
+      requests = 0,
+      confirmations = 0;
+    const review = createBossDetailReview({
+      client: {
+        details: async () => {
+          reads++;
+          return details();
+        },
+        retryDetail: async () => {
+          requests++;
+          throw Object.assign(Error('target changed before execution'), {
+            status: 409,
+            code,
+            retryAttempted: false,
+          });
+        },
+      },
+    });
+    const confirm = () => {
+      confirmations++;
+      return true;
+    };
+    await review.retry('job_a', confirm);
+    assert.equal(review.getState().retryUnconfirmed, null, code);
+    assert.match(review.getState().error, /未执行.*刷新.*核对/);
+    await review.refresh();
+    assert.equal(requests, 1);
+    await review.retry('job_a', confirm);
+    assert.equal(reads, 3);
+    assert.equal(confirmations, 2);
+    assert.equal(requests, 2);
+  }
+});
+
+test('没有明确未执行依据的409保留未知补查，客户端保留服务的执行标志', async () => {
+  const client = bossInboxClient('c'.repeat(64), commandId, async () => ({
+    ok: false,
+    status: 409,
+    json: async () => ({ code: 'DETAIL_TASK_CHANGED', retryAttempted: false }),
+  }));
+  await assert.rejects(
+    client.retryDetail({ accountNamespace, jobId: item.jobId, taskVersion: item.taskVersion }),
+    (error) => error.retryAttempted === false && error.code === 'DETAIL_TASK_CHANGED',
+  );
+  const review = createBossDetailReview({
+    client: {
+      details: async () => details(),
+      retryDetail: async () => {
+        throw Object.assign(Error('unconfirmed'), { status: 409, code: 'DETAIL_TASK_CHANGED' });
+      },
+    },
+  });
+  await review.retry('job_a', () => true);
+  await review.refresh();
+  assert.ok(review.getState().retryUnconfirmed);
 });
 
 test('人工停止先读取当前任务，明确确认后提交绑定账号、版本和持久幂等键的命令', async () => {

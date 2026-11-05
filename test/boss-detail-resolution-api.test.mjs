@@ -174,6 +174,7 @@ test('真实API与控制器列出故障，人工停止/撤销并重启保留且�
     const retry = await request(f.controller, { action: 'retry-details', jobIds: ['job_a'] });
     assert.equal(retry.status, 409);
     assert.equal(retry.result.code, 'DETAIL_TASK_MANUALLY_STOPPED');
+    assert.equal(retry.result.retryAttempted, false);
     const restarted = f.create();
     await restarted.initialize();
     const replay = await request(restarted, { action: 'resolve-detail', command });
@@ -314,20 +315,17 @@ test('任务变化拒绝新决定和网页重试，已保存命令仍可回查',
       (await request(f.controller, { action: 'resolve-detail', command })).result.code,
       'DETAIL_TASK_CHANGED',
     );
-    assert.equal(
-      (
-        await request(f.controller, {
-          action: 'retry-details',
-          jobIds: ['job_a'],
-          expectedTask: {
-            accountNamespace: ACCOUNT,
-            jobId: 'job_a',
-            taskVersion: command.taskVersion,
-          },
-        })
-      ).result.code,
-      'DETAIL_TASK_CHANGED',
-    );
+    const retry = await request(f.controller, {
+      action: 'retry-details',
+      jobIds: ['job_a'],
+      expectedTask: {
+        accountNamespace: ACCOUNT,
+        jobId: 'job_a',
+        taskVersion: command.taskVersion,
+      },
+    });
+    assert.equal(retry.result.code, 'DETAIL_TASK_CHANGED');
+    assert.equal(retry.result.retryAttempted, false);
     const updated = (await request(f.controller)).result.details;
     const current = decision(updated);
     assert.equal(
@@ -342,6 +340,144 @@ test('任务变化拒绝新决定和网页重试，已保存命令仍可回查',
     assert.equal(f.platformCalls(), 0);
   } finally {
     await f.cleanup();
+  }
+});
+
+test('真实API在暂停状态拒绝定点重试并明确本次未开始', async () => {
+  const f = await fixture();
+  try {
+    await f.controller.action('pause');
+    const result = await request(f.controller, { action: 'retry-details', jobIds: ['job_a'] });
+    assert.equal(result.status, 409);
+    assert.equal(result.result.code, 'BOSS_INTEGRATION_PAUSED');
+    assert.equal(result.result.retryAttempted, false);
+    assert.equal(f.platformCalls(), 0);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test('真实API在账号、目标及审阅格式变化时明确拒绝重试且零平台调用', async () => {
+  const f = await fixture();
+  try {
+    const details = (await request(f.controller)).result.details;
+    const expectedTask = {
+      accountNamespace: ACCOUNT,
+      jobId: 'job_a',
+      taskVersion: details.items[0].taskVersion,
+    };
+    for (const [patch, code] of [
+      [
+        { expectedTask: { ...expectedTask, accountNamespace: `boss-geek:${'b'.repeat(64)}` } },
+        'DETAIL_ACCOUNT_CHANGED',
+      ],
+      [{ jobIds: ['job_b'] }, 'DETAIL_RETRY_TARGETS_INVALID'],
+      [{ jobIds: [] }, 'DETAIL_RETRY_TARGETS_INVALID'],
+      [
+        { expectedTask: { ...expectedTask, taskVersion: 'invalid' } },
+        'DETAIL_DECISION_COMMAND_INVALID',
+      ],
+    ]) {
+      const result = await request(f.controller, {
+        action: 'retry-details',
+        jobIds: ['job_a'],
+        expectedTask,
+        ...patch,
+      });
+      assert.equal(result.status, 409);
+      assert.equal(result.result.code, code);
+      assert.equal(result.result.retryAttempted, false);
+      assert.equal(f.platformCalls(), 0);
+    }
+  } finally {
+    await f.cleanup();
+  }
+});
+
+const successfulRetry = () => ({
+  stdout: JSON.stringify({
+    ok: true,
+    usage: { historyRequests: 0, domSwitches: 0, detailNavigations: 1 },
+  }),
+});
+
+test('真实API在运行或额度不足时拒绝新增重试，不增加平台调用', async () => {
+  const f = await fixture();
+  try {
+    f.behavior.runner = async () => successfulRetry();
+    await f.controller.action('start');
+    const startedCalls = f.platformCalls();
+    const running = await request(f.controller, { action: 'retry-details', jobIds: ['job_a'] });
+    assert.equal(running.result.code, 'DETAIL_RETRY_REQUIRES_STOPPED');
+    assert.equal(running.result.retryAttempted, false);
+    assert.equal(f.platformCalls(), startedCalls);
+    await f.controller.action('stop');
+    assert.equal(
+      (await request(f.controller, { action: 'retry-details', jobIds: ['job_a'] })).status,
+      200,
+    );
+    const retryCalls = f.platformCalls();
+    const unavailable = await request(f.controller, { action: 'retry-details', jobIds: ['job_a'] });
+    assert.equal(unavailable.result.code, 'DETAIL_RETRY_BUDGET_UNAVAILABLE');
+    assert.equal(unavailable.result.retryAttempted, false);
+    assert.equal(f.platformCalls(), retryCalls);
+  } finally {
+    await f.controller.action('stop');
+    await f.cleanup();
+  }
+});
+
+test('真实API在已有在途轮次时明确新重试未开始，不加入或再发平台动作', async () => {
+  const f = await fixture();
+  let release, entered;
+  const gate = new Promise((resolve) => (release = resolve));
+  const ready = new Promise((resolve) => (entered = resolve));
+  let pending;
+  try {
+    f.behavior.runner = async () => {
+      entered();
+      await gate;
+      return successfulRetry();
+    };
+    pending = request(f.controller, { action: 'retry-details', jobIds: ['job_a'] });
+    await ready;
+    const result = await request(f.controller, { action: 'retry-details', jobIds: ['job_a'] });
+    assert.equal(result.result.code, 'BOSS_CYCLE_IN_PROGRESS');
+    assert.equal(result.result.retryAttempted, false);
+    assert.equal(f.platformCalls(), 1);
+    release();
+    assert.equal((await pending).status, 200);
+  } finally {
+    release();
+    await pending;
+    await f.cleanup();
+  }
+});
+
+test('真实API不把执行阶段同码错误或未知故障当成明确未开始', async () => {
+  for (const code of [
+    'DETAIL_RETRY_TARGETS_INVALID',
+    'DETAIL_RETRY_BUDGET_UNAVAILABLE',
+    'DETAIL_ACCOUNT_CHANGED',
+    'BOSS_INTEGRATION_PAUSED',
+    'SYNTHETIC_EXECUTION_FAILED',
+  ]) {
+    const f = await fixture();
+    try {
+      f.behavior.runner = async () => ({
+        stdout: JSON.stringify({
+          ok: false,
+          error: code,
+          usage: { historyRequests: 0, domSwitches: 0, detailNavigations: 0 },
+        }),
+      });
+      const result = await request(f.controller, { action: 'retry-details', jobIds: ['job_a'] });
+      assert.equal(result.result.code, code);
+      assert.equal(Object.hasOwn(result.result, 'retryAttempted'), false);
+      assert.equal(f.platformCalls(), 1);
+    } finally {
+      await f.cleanup();
+    }
   }
 });
 

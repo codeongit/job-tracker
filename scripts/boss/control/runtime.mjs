@@ -37,6 +37,9 @@ export class BossRuntimeError extends Error {
   }
 }
 
+const retryAdmissionError = (code) =>
+  Object.assign(new BossRuntimeError(code), { retryAttempted: false });
+
 const iso = (value) =>
   typeof value === 'string' &&
   /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value) &&
@@ -252,10 +255,20 @@ async function syncDirectory(path) {
 }
 
 export class BossRuntimeStateStore {
-  constructor(path, { afterRename = async () => {}, sync = syncDirectory } = {}) {
+  constructor(
+    path,
+    {
+      afterRename = async () => {},
+      sync = syncDirectory,
+      openTemporary = open,
+      readBytes = readFile,
+    } = {},
+  ) {
     this.path = path;
     this.afterRename = afterRename;
     this.sync = sync;
+    this.openTemporary = openTemporary;
+    this.readBytes = readBytes;
     this.writerFault = false;
   }
 
@@ -267,7 +280,7 @@ export class BossRuntimeStateStore {
     const info = await lstat(this.path);
     if (!info.isFile() || info.isSymbolicLink() || info.size > BOSS_RUNTIME_MAX_BYTES)
       throw new BossRuntimeError('BOSS_RUNTIME_PATH_INVALID');
-    const bytes = await readFile(this.path);
+    const bytes = await this.readBytes(this.path);
     if (bytes.length > BOSS_RUNTIME_MAX_BYTES)
       throw new BossRuntimeError('BOSS_RUNTIME_PATH_INVALID');
     return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
@@ -346,7 +359,7 @@ export class BossRuntimeStateStore {
     let handle,
       replacementAttempted = false;
     try {
-      handle = await open(temporary, 'wx', 0o600);
+      handle = await this.openTemporary(temporary, 'wx', 0o600);
       await handle.writeFile(serialized, 'utf8');
       await handle.sync();
       await handle.close();
@@ -630,9 +643,12 @@ export class BossRuntime {
     const admission = await this.enqueueState(async () => {
       await this.initializeState();
       if (!retryIds && scheduled && this.state.lifecycle !== 'running') return null;
-      if (this.state.lifecycle === 'paused') throw new BossRuntimeError('BOSS_INTEGRATION_PAUSED');
+      if (this.state.lifecycle === 'paused')
+        throw retryIds
+          ? retryAdmissionError('BOSS_INTEGRATION_PAUSED')
+          : new BossRuntimeError('BOSS_INTEGRATION_PAUSED');
       if (retryIds && (scheduled || historyMode !== 'change' || this.state.lifecycle !== 'stopped'))
-        throw new BossRuntimeError('DETAIL_RETRY_REQUIRES_STOPPED');
+        throw retryAdmissionError('DETAIL_RETRY_REQUIRES_STOPPED');
       const started = this.now(),
         previousTick = this.state.lastTickAt ? Date.parse(this.state.lastTickAt) : NaN,
         elapsedSincePrevious = started.getTime() - previousTick;
@@ -657,7 +673,7 @@ export class BossRuntime {
         };
       const availableBudget = this.budget(started);
       if (retryIds && availableBudget.detailActions < retryIds.length)
-        throw new BossRuntimeError('DETAIL_RETRY_BUDGET_UNAVAILABLE');
+        throw retryAdmissionError('DETAIL_RETRY_BUDGET_UNAVAILABLE');
       const budget = retryIds
           ? {
               ...availableBudget,
@@ -787,7 +803,7 @@ export class BossRuntime {
     // catch-up run, including after sleep or repeated CLI invocations.
     if (this.cycle) {
       if (retryIds || this.cycleIsDetailRetry)
-        return Promise.reject(new BossRuntimeError('BOSS_CYCLE_IN_PROGRESS'));
+        return Promise.reject(retryAdmissionError('BOSS_CYCLE_IN_PROGRESS'));
       return this.cycle;
     }
     // Lifecycle commands invoked before this trigger complete first. This

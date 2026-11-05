@@ -94,6 +94,7 @@ export function bossInboxClient(session, workspaceSourceId, fetcher = fetch) {
     if (!response.ok) {
       const error = integrationError(result.message || '本机 BOSS 接入失败。', result.code);
       error.status = response.status;
+      if (typeof result.retryAttempted === 'boolean') error.retryAttempted = result.retryAttempted;
       throw error;
     }
     return result;

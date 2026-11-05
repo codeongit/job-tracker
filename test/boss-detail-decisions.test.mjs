@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, readFile, writeFile, stat } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, writeFile, stat, open, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -57,6 +57,55 @@ test('旧状态升级保留原件、未知字段拒写，rename后回查屏障�
   }
 });
 const verify = { verifyAccount: async () => {}, verifyTask: async () => {} };
+
+test('rename前临时文件写入I/O失败保留旧状态，重启同请求仅提交一次', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'boss-decisions-write-fault-'));
+  try {
+    const path = join(root, 'tracking.json');
+    const store = new BossRuntimeStateStore(path);
+    await store.write(await store.read(new Date(stamp)));
+    const before = await readFile(path, 'utf8');
+    let platform = 0;
+    const create = (storeOptions) =>
+      new BossRuntime({
+        statePath: path,
+        now: () => new Date(stamp),
+        executeCycle: async () => {
+          platform++;
+        },
+        storeOptions,
+      });
+    const runtime = create({
+      openTemporary: async (...args) => {
+        const handle = await open(...args);
+        return {
+          writeFile: async (contents, encoding) => {
+            await handle.writeFile(contents.slice(0, 64), encoding);
+            throw Object.assign(new Error('synthetic partial write'), { code: 'EIO' });
+          },
+          sync: () => handle.sync(),
+          close: () => handle.close(),
+        };
+      },
+    });
+    await runtime.initialize();
+    await assert.rejects(runtime.resolveDetail(command(), verify), { code: 'EIO' });
+    assert.equal(await readFile(path, 'utf8'), before);
+    assert.equal(runtime.detailDecisionState().revision, 0);
+    assert.equal(runtime.status().writerFault, false);
+    assert.deepEqual(await readdir(root), ['tracking.json']);
+    const restarted = create();
+    await restarted.initialize();
+    const saved = await restarted.resolveDetail(command(), verify);
+    assert.equal(saved.replayed, false);
+    assert.equal(saved.revision, 1);
+    assert.equal((await restarted.resolveDetail(command(), verify)).replayed, true);
+    assert.equal(restarted.detailDecisionState().commands.length, 1);
+    assert.equal(platform, 0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test('人工停止及撤销持久保留，原命令重放不再次判断已变化任务', async () => {
   const root = await mkdtemp(join(tmpdir(), 'boss-decisions-'));
@@ -142,6 +191,65 @@ test('无法确认rename后屏障时锁住写者，重启可回查已保存命�
     await restored.initialize();
     assert.equal((await restored.resolveDetail(command(), verify)).replayed, true);
     assert.equal(restored.detailDecisionState().records[0].status, 'stopped');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('rename后回读I/O失败隔离旧内存写者，重启原请求回查已落盘决定', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'boss-decisions-read-fault-'));
+  try {
+    const path = join(root, 'tracking.json');
+    let failReadback = false,
+      platform = 0;
+    const create = (storeOptions) =>
+      new BossRuntime({
+        statePath: path,
+        now: () => new Date(stamp),
+        executeCycle: async () => {
+          platform++;
+        },
+        prepareStart: async () => {
+          platform++;
+        },
+        storeOptions,
+      });
+    const runtime = create({
+      afterRename: async () => {
+        failReadback = true;
+        throw Object.assign(new Error('synthetic post-rename I/O'), { code: 'EIO' });
+      },
+      readBytes: async (...args) => {
+        if (failReadback)
+          throw Object.assign(new Error('synthetic read-back I/O'), { code: 'EIO' });
+        return readFile(...args);
+      },
+    });
+    await runtime.initialize();
+    await assert.rejects(runtime.resolveDetail(command(), verify), {
+      code: 'BOSS_RUNTIME_WRITE_UNCONFIRMED',
+    });
+    const committed = await readFile(path, 'utf8');
+    assert.equal(JSON.parse(committed).detailDecisions.revision, 1);
+    assert.equal(runtime.status().writerFault, true);
+    failReadback = false;
+    await assert.rejects(runtime.resolveDetail(command(), verify), {
+      code: 'BOSS_RUNTIME_WRITER_FAULT',
+    });
+    await assert.rejects(runtime.stop(), { code: 'BOSS_RUNTIME_WRITER_FAULT' });
+    await assert.rejects(runtime.start(), { code: 'BOSS_RUNTIME_WRITER_FAULT' });
+    await assert.rejects(runtime.requestCycle(), { code: 'BOSS_RUNTIME_WRITER_FAULT' });
+    assert.equal(await readFile(path, 'utf8'), committed);
+    const restarted = create();
+    await restarted.initialize();
+    const replay = await restarted.resolveDetail(command(), {
+      ...verify,
+      verifyTask: async () => assert.fail('回查不再次判断已提交任务'),
+    });
+    assert.equal(replay.replayed, true);
+    assert.equal(replay.revision, 1);
+    assert.equal(restarted.detailDecisionState().commands.length, 1);
+    assert.equal(platform, 0);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

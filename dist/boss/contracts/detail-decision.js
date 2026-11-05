@@ -49,7 +49,7 @@ export function normalizeDetailDecisionCommand(value) {
     !HASH.test(value.taskVersion ?? '') ||
     !['manual_details', 'not_needed', 'reopen'].includes(value.reason) ||
     (value.reason === 'manual_details'
-      ? !UUID.test(value.opportunityId ?? '') ||
+      ? !value.opportunityId ||
         !Number.isSafeInteger(value.workspaceRevision) ||
         value.workspaceRevision < 1
       : value.opportunityId !== '' || value.workspaceRevision !== null)

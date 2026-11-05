@@ -72,8 +72,7 @@ function matchingOpportunity(current, accountNamespace, jobId, canonicalUrl) {
   if (current.workspace.pending) return blocked('请先处理同步冲突，再确认资料已补齐。', target.id);
   if (!target.company?.trim() || !target.role?.trim())
     return blocked('岗位公司或名称尚未补齐。', target.id);
-  if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(target.id))
-    return blocked('岗位标识需要核对。', target.id);
+  if (typeof target.id !== 'string' || !target.id) return blocked('岗位标识需要核对。', target.id);
   return {
     matchingOpportunityId: target.id,
     canCompleteWithDetails: true,
