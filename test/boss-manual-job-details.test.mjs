@@ -8,6 +8,7 @@ import { applyBossBatch, bindBossAccount } from '../dist/boss/application/integr
 import { emptyData } from '../dist/model.js';
 import { stableHash } from '../scripts/boss/delivery/integration.mjs';
 import { bossApplicationId, bossFactId } from '../dist/source-identity.js';
+import { bossIntegrationView } from '../dist/settings-view.js';
 
 const ACCOUNT = `boss-geek:${'a'.repeat(64)}`;
 const OTHER_ACCOUNT = `boss-geek:${'b'.repeat(64)}`;
@@ -125,6 +126,32 @@ function retired(data, id = 'deleted-copy', overrides = {}) {
   data.opportunities.push(row);
   return row;
 }
+
+test('后台处理期间只开放忽略前核对，资料确认与恢复重放仍禁用', () => {
+  const { data, options } = fixture();
+  const status = {
+    available: true,
+    serverManaged: true,
+    sourceId: SOURCE_ID,
+    revision: 7,
+    restoreReview: [{ batchId: 'synthetic-batch', missing: 1 }],
+    accounts: [{ accountNamespace: OTHER_ACCOUNT, label: '合成账号', bound: false }],
+  };
+  const render = (patch) =>
+    bossIntegrationView(
+      { ...status, ...patch },
+      {
+        data,
+        selected: new Set(options.applicationIds),
+      },
+    );
+  assert.match(render({}), /data-boss-confirm="[^"]+" >确认资料对应此岗位/);
+  const busy = render({ inspectionPending: true, revision: undefined });
+  assert.match(busy, /data-boss-ignore="true" >忽略所选观察/);
+  assert.match(busy, /data-boss-confirm="[^"]+" disabled>确认资料对应此岗位/);
+  assert.match(busy, /data-boss-replay="[^"]+" disabled/);
+  assert.match(busy, /data-boss-bind="[^"]+" disabled/);
+});
 
 function rejectsWithoutMutation(data, options) {
   const original = structuredClone(data);

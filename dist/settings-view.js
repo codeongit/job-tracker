@@ -43,7 +43,7 @@ function bossImportProgressView(progress) {
       failed: '等待下一轮本机检查',
     }[progress.phase] || '处理已保存材料';
   const count = (value) => (Number.isSafeInteger(value) && value >= 0 ? value : 0);
-  return `<section class="settings-waiting" role="status"><h3>正在处理本机材料</h3><p>${phase}${count(progress.total) ? ` · 已检查 ${count(progress.completed)} / ${count(progress.total)} 个批次` : ''}。</p><p>本轮完成处理 ${count(progress.processed)} 个批次${count(progress.waiting) ? `，${count(progress.waiting)} 个批次仍有等待项` : ''}${count(progress.isolated) ? `，${count(progress.isolated)} 个批次保留故障材料` : ''}。</p><small>仅处理已保存在本机的材料；待核对清单将在处理结束后刷新，当前不可确认或忽略。检查进度不是新增岗位或消息数量。${progress.rescanPending ? '新入队材料将在当前检查后继续处理。' : ''}</small></section>`;
+  return `<section class="settings-waiting" role="status"><h3>正在处理本机材料</h3><p>${phase}${count(progress.total) ? ` · 已检查 ${count(progress.completed)} / ${count(progress.total)} 个批次` : ''}。</p><p>本轮完成处理 ${count(progress.processed)} 个批次${count(progress.waiting) ? `，${count(progress.waiting)} 个批次仍有等待项` : ''}${count(progress.isolated) ? `，${count(progress.isolated)} 个批次保留故障材料` : ''}。</p><small>仅处理已保存在本机的材料；完整检查结果将在处理结束后刷新；已显示的等待项可以选择忽略，忽略前会读取最新记录供你确认。检查进度不是新增岗位或消息数量。${progress.rescanPending ? '新入队材料将在当前检查后继续处理。' : ''}</small></section>`;
 }
 
 function bossBudgetView(budget, lifecycle) {
@@ -338,7 +338,7 @@ export function bossIntegrationView(
         .flatMap((group) => group.observations)
         .filter(
           (item) =>
-            item.status === 'review' &&
+            ['waiting', 'review'].includes(item.status) &&
             !rawItems.some((row) => row.applicationId === item.applicationId),
         )
     : [];
@@ -373,12 +373,12 @@ export function bossIntegrationView(
     ignoreDisabled =
       !status.serverManaged ||
       status.connectionStale ||
-      status.inspectionPending ||
       Boolean(status.error) ||
       offline ||
       pendingConflict ||
-      busy ||
-      !Number.isSafeInteger(status.revision),
+      busy,
+    confirmationDisabled =
+      ignoreDisabled || status.inspectionPending || !Number.isSafeInteger(status.revision),
     candidateLabel = (item) =>
       item.candidate
         ? `候选岗位：${esc(item.candidateCompany)} / ${esc(item.candidate)}`
@@ -388,17 +388,15 @@ export function bossIntegrationView(
     ? '本机服务尚未连接，恢复后才能确认。'
     : busy
       ? '正在保存，请稍候。'
-      : status.inspectionPending
-        ? '本机材料正在处理，可以先勾选；清单刷新后才能确认。'
-        : pendingConflict
-          ? '请先处理同步冲突；可以先勾选，冲突处理后再确认。'
-          : status.connectionStale || status.error
-            ? '状态尚未更新，可以先勾选；刷新成功后才能确认忽略。'
-            : !status.serverManaged
-              ? '忽略观察需要连接本机服务。'
-              : !Number.isSafeInteger(status.revision)
-                ? '等待本机状态加载完成，可以先勾选。'
-                : '';
+      : pendingConflict
+        ? '请先处理同步冲突；可以先勾选，冲突处理后再确认。'
+        : status.connectionStale || status.error
+          ? '状态尚未更新，可以先勾选；刷新成功后才能确认忽略。'
+          : !status.serverManaged
+            ? '忽略观察需要连接本机服务。'
+            : status.inspectionPending
+              ? '本机材料正在处理；忽略前会读取最新记录供你确认。'
+              : '';
   const groups = [
     {
       title: '需要核对',
@@ -477,7 +475,7 @@ export function bossIntegrationView(
               : '';
             const reviewCount = item.observations.filter((row) => row.status === 'review').length;
             const confirmAction = confirmation.allowed
-              ? `<div class="button-row"><button class="secondary" id="boss-confirm-${esc(item.applicationId)}" data-boss-confirm="${esc(confirmation.applicationIds.join(','))}" ${ignoreDisabled ? 'disabled' : ''}>确认资料对应此岗位</button><small>本次可完成 ${confirmation.observationCount} 项普通资料处理${confirmation.excludedApplicationIds?.length ? `，其他 ${confirmation.excludedApplicationIds.length} 项保留` : ''}。</small></div>`
+              ? `<div class="button-row"><button class="secondary" id="boss-confirm-${esc(item.applicationId)}" data-boss-confirm="${esc(confirmation.applicationIds.join(','))}" ${confirmationDisabled ? 'disabled' : ''}>确认资料对应此岗位</button><small>本次可完成 ${confirmation.observationCount} 项普通资料处理${confirmation.excludedApplicationIds?.length ? `，其他 ${confirmation.excludedApplicationIds.length} 项保留` : ''}。</small></div>`
               : item.observations.some((row) =>
                     ['missing_job_details', 'identity_conflict'].includes(row.reason),
                   )
