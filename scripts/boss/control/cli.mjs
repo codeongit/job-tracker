@@ -1,5 +1,6 @@
 import { main as legacyMain } from '../delivery/integration.mjs';
 import { serviceStatus } from '../../service-control.mjs';
+import { normalizeDetailRetryJobIds } from '../../../dist/boss/contracts/detail-retry.js';
 
 const RUNTIME_COMMANDS = new Set([
   'start',
@@ -9,6 +10,7 @@ const RUNTIME_COMMANDS = new Set([
   'pause',
   'resume',
   'resume-details',
+  'retry-details',
   'stop',
   'recover-page',
   'recover-saved',
@@ -17,8 +19,11 @@ const RUNTIME_COMMANDS = new Set([
 ]);
 const LEGACY_COMMANDS = new Set(['preview', 'enqueue', 'enqueue-yesterday', 'enqueue-resume']);
 
-async function runtimeRequest(action, fetcher = fetch) {
-  const service = await serviceStatus(undefined, fetcher);
+async function runtimeRequest(
+  action,
+  { fetcher = fetch, jobIds, serviceStatus: readServiceStatus = serviceStatus } = {},
+) {
+  const service = await readServiceStatus(undefined, fetcher);
   if (!service.running) throw Object.assign(new Error(service.code), { code: service.code });
   const origin = `http://127.0.0.1:${service.port}`,
     sessionResponse = await fetcher(`${origin}/__local/session`, {
@@ -47,9 +52,14 @@ async function runtimeRequest(action, fetcher = fetch) {
         },
         body: readOnly
           ? undefined
-          : JSON.stringify({ action: action === 'check' ? 'run' : action }),
+          : JSON.stringify({
+              action: action === 'check' ? 'run' : action,
+              ...(jobIds ? { jobIds } : {}),
+            }),
         signal: AbortSignal.timeout(
-          ['run', 'check', 'backfill', 'recover-saved'].includes(action) ? 25 * 60_000 : 30_000,
+          ['run', 'check', 'backfill', 'retry-details', 'recover-saved'].includes(action)
+            ? 25 * 60_000
+            : 30_000,
         ),
       },
     );
@@ -71,8 +81,13 @@ async function runtimeRequest(action, fetcher = fetch) {
 export async function main(argv = process.argv.slice(2), options = {}) {
   const command = argv[0];
   if (LEGACY_COMMANDS.has(command)) return legacyMain(argv, options.legacyOptions);
-  if (argv.length !== 1 || !RUNTIME_COMMANDS.has(command))
+  let jobIds;
+  if (command === 'retry-details') {
+    if (argv.length !== 3 || argv[1] !== '--job-ids' || typeof argv[2] !== 'string')
+      throw Object.assign(new Error('BOSS_ARGUMENTS_INVALID'), { code: 'BOSS_ARGUMENTS_INVALID' });
+    jobIds = normalizeDetailRetryJobIds(argv[2].split(','));
+  } else if (argv.length !== 1 || !RUNTIME_COMMANDS.has(command))
     throw Object.assign(new Error('BOSS_ARGUMENTS_INVALID'), { code: 'BOSS_ARGUMENTS_INVALID' });
-  const result = await runtimeRequest(command, options.fetcher);
+  const result = await runtimeRequest(command, { ...options, jobIds });
   process.stdout.write(`${JSON.stringify({ ok: true, command, ...result }, null, 2)}\n`);
 }

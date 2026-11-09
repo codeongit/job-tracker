@@ -8,6 +8,10 @@ import { clone, equal, live } from '../model.js';
 import { sourceReviewCounts, bossWaitingItems } from '../source-ledger.js';
 import { bossAttributionSummary } from './rules/attribution.js';
 import { bossObservationGroups } from './application/observations.js';
+import {
+  normalizeDetailDecisionCommand,
+  normalizeExpectedDetailTask,
+} from './contracts/detail-decision.js';
 
 const BATCH_ID = /^boss-batch-[a-f0-9]{64}$/;
 const ACCOUNT_NAMESPACE = /^boss-geek:[a-f0-9]{64}$/;
@@ -130,11 +134,52 @@ export function bossInboxClient(session, workspaceSourceId, fetcher = fetch) {
     if (!response.ok) {
       const error = integrationError(result.message || '本机 BOSS 接入失败。', result.code);
       error.status = response.status;
+      if (typeof result.retryAttempted === 'boolean') error.retryAttempted = result.retryAttempted;
       throw error;
     }
     return result;
   }
   return {
+    details: async () => (await request('./__local/boss-runtime?view=details', {}, 30000)).details,
+    resolveDetail: async (command) =>
+      (
+        await request(
+          './__local/boss-runtime',
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              action: 'resolve-detail',
+              command: normalizeDetailDecisionCommand(command),
+            }),
+          },
+          30000,
+        )
+      ).details,
+    retryDetail: async (expectedTask) => {
+      const checked = normalizeExpectedDetailTask(expectedTask);
+      return (
+        await request(
+          './__local/boss-runtime',
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              action: 'retry-details',
+              jobIds: [checked.jobId],
+              expectedTask: checked,
+            }),
+          },
+          25 * 60_000,
+        )
+      ).status;
+    },
+    stopTracking: async () =>
+      (
+        await request(
+          './__local/boss-runtime',
+          { method: 'POST', body: JSON.stringify({ action: 'stop' }) },
+          25 * 60_000,
+        )
+      ).status,
     progress: async () => (await request('./__local/boss-runtime?view=progress', {}, 30000)).status,
     index: () =>
       request(
@@ -505,7 +550,17 @@ export function createBossQueueConsumer({
     );
   }
 
+  async function control(method, ...args) {
+    if (!(await connect()) || !serverManaged)
+      throw integrationError('详情任务处理仅适用于已连接的本机服务。', 'LOCAL_UNAVAILABLE');
+    return client[method](...args);
+  }
+
   return {
+    details: () => control('details'),
+    resolveDetail: (command) => control('resolveDetail', command),
+    retryDetail: (task) => control('retryDetail', task),
+    stopTracking: () => control('stopTracking'),
     run,
     bind,
     replay,

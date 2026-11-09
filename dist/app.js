@@ -62,6 +62,7 @@ import { githubClient, syncWorkspace, validateConfig } from './github.js';
 import { discoverLocalSsh, localSshClient } from './local-ssh.js';
 import { bindCommittedTextInput, trackComposition } from './text-input.js';
 import { createBossQueueConsumer, reviewAndIgnoreBossObservations } from './boss/client.js';
+import { createBossDetailReview } from './boss/detail-review.js';
 import {
   bossWaitingReviewTarget,
   bossWaitingReviewCandidates,
@@ -97,6 +98,27 @@ let bossFeedback = null,
   bossConfirmationOrigin = null,
   syncConflictOrigin = null;
 let syncReviewWorkspaceId = '';
+const bossDetailReview = createBossDetailReview({
+  client: {
+    details: () => bossQueue.details(),
+    resolveDetail: (command) => bossQueue.resolveDetail(command),
+    retryDetail: (task) => bossQueue.retryDetail(task),
+    stopTracking: () => bossQueue.stopTracking(),
+  },
+  onChange: (review, { detailsUpdated }) => {
+    if (detailsUpdated) {
+      bossStatus = {
+        ...bossStatus,
+        tracking: {
+          ...bossStatus.tracking,
+          lifecycle: review.details.lifecycle,
+          detailEnrichment: review.details.summary,
+        },
+      };
+    }
+    if (state && view === 'settings') render(true);
+  },
+});
 const scrollPositions = new Map(),
   expandedDetails = new Map(),
   boundEvents = new WeakMap(),
@@ -503,6 +525,7 @@ function render(preserveDrafts = false) {
             bossIgnoreSelected,
             bossIgnoreBusy,
             bossFeedback,
+            bossDetailReview: bossDetailReview.getState(),
             persistence: storageStatus(),
           })
         : !live(state.data.opportunities).length && view !== 'list'
@@ -729,7 +752,7 @@ function refreshCompanyMatchHint(form) {
     )}</span>${matches.length > shown.length ? `<span>另有 ${matches.length - shown.length} 个，可在岗位页搜索公司查看。</span>` : ''}`;
   hint.hidden = false;
 }
-function openEditor(id = '', source) {
+function openEditor(id = '', source, initialValues = {}) {
   if (id && !live(state.data.opportunities).some((o) => o.id === id))
     throw new Error('这个草稿对应的岗位已删除，内容仍可在草稿箱查看和复制。');
   let original = state.data.opportunities.find((o) => o.id === id) || {};
@@ -757,6 +780,7 @@ function openEditor(id = '', source) {
     description: '',
     ...original,
     ...getOpportunityStatus(original),
+    ...(!id ? initialValues : {}),
   };
   if (hasBossSourceBinding && !original.readState) o.readState = '';
   const bossReadStateOption = hasBossSourceBinding
@@ -1174,6 +1198,9 @@ $('#import-dialog').addEventListener('close', () => {
   bossConfirmationOrigin = null;
   restoreDetailOrigin(origin);
 });
+$('#editor-dialog').addEventListener('close', () => {
+  if (view === 'settings' && bossDetailReview.getState().details) void bossDetailReview.refresh();
+});
 
 async function synchronize(allowCreate = false) {
   if (syncing) return;
@@ -1248,6 +1275,44 @@ document.addEventListener('click', async (e) => {
   const b = e.target.closest('button');
   if (!b) return;
   try {
+    if (b.dataset.bossDetailAction) {
+      const action = b.dataset.bossDetailAction,
+        jobId = b.dataset.bossDetailJob;
+      if (action === 'refresh') await bossDetailReview.refresh();
+      else if (action === 'reconcile') await bossDetailReview.reconcile();
+      else if (action === 'stop')
+        await bossDetailReview.stop(() =>
+          confirm('停止 BOSS 跟踪并等待当前轮次收尾？已有岗位和失败记录保留。'),
+        );
+      else if (action === 'edit') {
+        const details = await bossDetailReview.refresh();
+        const row = details?.items.find((item) => item.jobId === jobId);
+        if (!row) throw new Error('详情任务尚未核对，请刷新后重试。');
+        state = await readState();
+        if (row.matchingOpportunityId) openEditor(row.matchingOpportunityId);
+        else if (row.canCreateOpportunity) {
+          const parsed = parseBossJobUrl(row.canonicalUrl);
+          if (parsed?.jobId !== row.jobId) throw new Error('原岗位链接无法核对，未预填资料。');
+          openEditor('', undefined, { url: parsed.canonicalUrl });
+          $('#editor-error').textContent =
+            '已填入原岗位链接。请人工核对公司和岗位名称；保存资料后，返回本页决定是否停止详情采集。';
+        } else throw new Error('存在需要核对的岗位记录，请到岗位列表确认，避免重复建立岗位。');
+      } else if (action === 'retry')
+        await bossDetailReview.retry(jobId, (row) =>
+          confirm(
+            `仅重新读取这个岗位的详情一次？\n${row.canonicalUrl}\n失败仍保留隔离；不会开始持续跟踪。`,
+          ),
+        );
+      else if (['manual_details', 'not_needed', 'reopen'].includes(action))
+        await bossDetailReview.resolve(jobId, action, (row) =>
+          confirm(
+            action === 'reopen'
+              ? `撤销这个岗位的人工处理？\n${row.canonicalUrl}\n将按当前材料重新显示任务，不会自动重试或开始跟踪。`
+              : `${action === 'manual_details' ? '已人工核对本机公司和岗位资料，停止该岗位的自动详情采集？' : '不再自动采集这个岗位的详情？'}\n${row.canonicalUrl}\n原失败记录保留，消息采集和岗位跟进不变；仅此电脑生效，可撤销。`,
+          ),
+        );
+      return;
+    }
     if (b.dataset.close) {
       if (b.dataset.close === 'import-dialog' && bossConfirmation && bossIgnoreBusy) return;
       document.getElementById(b.dataset.close).close();
@@ -1646,6 +1711,14 @@ async function startWorkspace() {
   });
   void bossQueue.run();
   setInterval(() => void bossQueue?.run(), 30000);
+  setInterval(() => {
+    if (
+      view === 'settings' &&
+      bossDetailReview.getState().details &&
+      document.visibilityState === 'visible'
+    )
+      void bossDetailReview.refresh();
+  }, 30000);
   // Service-side ingestion continues without an open page. Refresh the local view
   // from its authority without submitting or replaying source applications.
   let refreshingWorkspace = false;

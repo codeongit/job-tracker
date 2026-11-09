@@ -542,7 +542,8 @@ export function createCdpController({
     let ownedTargetId = null,
       owner = null,
       expectedDetailUrl = null,
-      previousDocumentTimeOrigin = null;
+      previousDocumentTimeOrigin = null,
+      pendingNavigationDocument = null;
     const verifyHandle = (handle, ownerToken) => {
       if (
         !handle ||
@@ -588,6 +589,7 @@ export function createCdpController({
         ownedTargetId = await createTarget(binding.endpoint, initialUrl);
         expectedDetailUrl = initialUrl;
         previousDocumentTimeOrigin = null;
+        pendingNavigationDocument = null;
         await waitForTarget(binding.endpoint.port, ownedTargetId, initialUrl);
         return { ownerToken, tabId: ownedTargetId, windowId: connection.browserInstanceId };
       },
@@ -595,6 +597,15 @@ export function createCdpController({
         verifyHandle(handle, handle?.ownerToken);
         const { target } = await ownedTarget();
         const value = await readDocument(target);
+        // A navigation response can precede replacement of the old document.
+        // Once any different document is observed, never reopen this allowance.
+        const navigationPending = Boolean(
+          pendingNavigationDocument &&
+          value.url === pendingNavigationDocument.url &&
+          value.documentUrl === pendingNavigationDocument.documentUrl &&
+          value.timeOrigin === pendingNavigationDocument.timeOrigin,
+        );
+        if (!navigationPending) pendingNavigationDocument = null;
         return {
           ...handle,
           url: value.url,
@@ -602,6 +613,7 @@ export function createCdpController({
           readyState: value.readyState,
           timeOrigin: value.timeOrigin,
           documentUrl: value.documentUrl,
+          navigationPending,
           documentReady:
             value.readyState === 'complete' &&
             value.url === expectedDetailUrl &&
@@ -623,6 +635,11 @@ export function createCdpController({
         previousDocumentTimeOrigin = prior.timeOrigin;
         await navigate(target, nextUrl);
         expectedDetailUrl = nextUrl;
+        pendingNavigationDocument = {
+          url: prior.url,
+          documentUrl: prior.documentUrl,
+          timeOrigin: prior.timeOrigin,
+        };
       },
       async closeOwnedTab(handle, { ownerToken, expectedUrl }) {
         verifyHandle(handle, ownerToken);
@@ -639,6 +656,7 @@ export function createCdpController({
         owner = null;
         expectedDetailUrl = null;
         previousDocumentTimeOrigin = null;
+        pendingNavigationDocument = null;
       },
     };
   }

@@ -1,4 +1,13 @@
 import { BossRuntimeError } from './runtime.mjs';
+import {
+  DETAIL_DECISION_NOT_COMMITTED_CODES,
+  normalizeDetailDecisionCommand,
+  normalizeExpectedDetailTask,
+} from '../../../dist/boss/contracts/detail-decision.js';
+import {
+  DETAIL_RETRY_NOT_STARTED_CODES,
+  normalizeDetailRetryJobIds,
+} from '../../../dist/boss/contracts/detail-retry.js';
 
 const ACTIONS = new Set([
   'start',
@@ -7,6 +16,8 @@ const ACTIONS = new Set([
   'pause',
   'resume',
   'resume-details',
+  'retry-details',
+  'resolve-detail',
   'stop',
   'recover-page',
   'recover-saved',
@@ -29,11 +40,17 @@ export async function handleBossControllerApi(req, res, { controller }) {
     });
     return true;
   }
+  let detailDecisionRequest = false;
+  let detailRetryRequest = false;
   try {
     if (req.method === 'GET') {
       const view = new URL(req.url, 'http://127.0.0.1').searchParams.get('view');
-      if (view && !['doctor', 'progress'].includes(view))
+      if (view && !['doctor', 'progress', 'details'].includes(view))
         throw new BossRuntimeError('BOSS_RUNTIME_ARGUMENT_INVALID');
+      if (view === 'details') {
+        send(200, { protocolVersion: 1, details: await controller.inspectDetails() });
+        return true;
+      }
       send(
         200,
         view === 'doctor'
@@ -63,7 +80,7 @@ export async function handleBossControllerApi(req, res, { controller }) {
     const chunks = [];
     for await (const chunk of req) {
       size += chunk.length;
-      if (size > 1024) throw new BossRuntimeError('BOSS_RUNTIME_ARGUMENT_INVALID');
+      if (size > 8192) throw new BossRuntimeError('BOSS_RUNTIME_ARGUMENT_INVALID');
       chunks.push(chunk);
     }
     let body;
@@ -72,22 +89,67 @@ export async function handleBossControllerApi(req, res, { controller }) {
     } catch {
       throw new BossRuntimeError('BOSS_RUNTIME_ARGUMENT_INVALID');
     }
-    if (
-      !body ||
-      typeof body !== 'object' ||
-      Array.isArray(body) ||
-      Object.keys(body).length !== 1 ||
-      !ACTIONS.has(body.action)
-    )
+    if (!body || typeof body !== 'object' || Array.isArray(body) || !ACTIONS.has(body.action))
       throw new BossRuntimeError('BOSS_RUNTIME_ARGUMENT_INVALID');
-    send(200, { protocolVersion: 1, status: await controller.action(body.action) });
+    if (body.action === 'resolve-detail') {
+      detailDecisionRequest = true;
+      if (JSON.stringify(Object.keys(body).sort()) !== JSON.stringify(['action', 'command']))
+        throw new BossRuntimeError('BOSS_RUNTIME_ARGUMENT_INVALID');
+      const result = await controller.resolveDetail(normalizeDetailDecisionCommand(body.command));
+      send(200, { protocolVersion: 1, ...result });
+      return true;
+    }
+    const retry = body.action === 'retry-details';
+    detailRetryRequest = retry;
+    let retryOptions;
+    try {
+      const expected =
+        body.expectedTask === undefined
+          ? undefined
+          : normalizeExpectedDetailTask(body.expectedTask);
+      if (
+        JSON.stringify(Object.keys(body).sort()) !==
+        JSON.stringify(
+          retry
+            ? expected
+              ? ['action', 'expectedTask', 'jobIds']
+              : ['action', 'jobIds']
+            : ['action'],
+        )
+      )
+        throw new BossRuntimeError('BOSS_RUNTIME_ARGUMENT_INVALID');
+      if (retry)
+        retryOptions = {
+          jobIds: normalizeDetailRetryJobIds(body.jobIds),
+          ...(expected ? { expectedTask: expected } : {}),
+        };
+    } catch (error) {
+      if (retry) error.retryAttempted = false;
+      throw error;
+    }
+    const status = retry
+      ? await controller.action(body.action, retryOptions)
+      : await controller.action(body.action);
+    send(200, { protocolVersion: 1, status });
   } catch (error) {
     const known = error instanceof BossRuntimeError || /^[A-Z][A-Z0-9_]{2,100}$/.test(error?.code);
     send(known ? 409 : 500, {
       code: known ? error.code : 'BOSS_RUNTIME_FAILED',
-      message: known
-        ? '跟踪状态未按请求改变，请查看状态和故障材料。'
-        : '跟踪控制失败，现有正式数据和任务页未改动。',
+      ...(detailDecisionRequest && DETAIL_DECISION_NOT_COMMITTED_CODES.includes(error?.code)
+        ? { committed: false }
+        : {}),
+      ...(detailRetryRequest &&
+      DETAIL_RETRY_NOT_STARTED_CODES.includes(error?.code) &&
+      error.retryAttempted === false
+        ? { retryAttempted: false }
+        : {}),
+      message: detailDecisionRequest
+        ? DETAIL_DECISION_NOT_COMMITTED_CODES.includes(error?.code)
+          ? '请求已拒绝，未保存本次人工决定。'
+          : '人工处理结果尚未确认，请保留原请求并刷新核对。'
+        : known
+          ? '跟踪状态未按请求改变，请查看状态和故障材料。'
+          : '跟踪控制失败，现有正式数据和任务页未改动。',
     });
   }
   return true;

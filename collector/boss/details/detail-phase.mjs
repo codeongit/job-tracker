@@ -3,6 +3,8 @@ import {
   listEnrichmentTargetsV2,
   validateEnvelope,
 } from '../materials/model-v2.mjs';
+import { normalizeExcludedDetailJobIds } from '../../../dist/boss/contracts/detail-policy.js';
+import { normalizeDetailRetryJobIds } from '../../../dist/boss/contracts/detail-retry.js';
 import {
   collectDetailTitleEvidence,
   DETAIL_NAVIGATION_DELAY_MS,
@@ -76,8 +78,11 @@ export function fairDetailInputs(
     timeLabel = null,
     runtime = null,
     now = new Date().toISOString(),
+    retryJobIds = null,
+    excludedJobIds = [],
   } = {},
 ) {
+  const excluded = new Set(normalizeExcludedDetailJobIds(excludedJobIds));
   const checked = validateEnvelope(envelope);
   const input = detailInputs(checked, timeLabel);
   const reviewKeys = new Set(
@@ -87,6 +92,7 @@ export function fairDetailInputs(
   );
   const eligible = input.candidates.filter(
     (item) =>
+      !excluded.has(item.jobId) &&
       !item.jobName &&
       !reviewKeys.has(JSON.stringify([item.conversationKey, item.jobId, item.detailUrl])),
   );
@@ -100,8 +106,22 @@ export function fairDetailInputs(
       runtime ? detailTaskDisposition(runtime, item.jobId, now) : 'ready',
     ]),
   );
+  const requested = retryJobIds === null ? null : normalizeDetailRetryJobIds(retryJobIds);
+  if (requested && !runtime?.detail?.blocked) {
+    if (
+      requested.some(
+        (id) =>
+          !jobs.some((job) => job.jobId === id) ||
+          runtime?.detail?.tasks.find((task) => task.jobId === id)?.status !== 'isolated',
+      )
+    )
+      throw new Error('DETAIL_RETRY_TARGETS_INVALID');
+    if (limit < requested.length) throw new Error('DETAIL_RETRY_BUDGET_UNAVAILABLE');
+  }
   const selectable = jobs.filter((item) => dispositions.get(item.jobId) === 'ready');
-  const fair = selectFair(selectable, { cursor, limit, key: (item) => item.jobId });
+  const fair = requested
+    ? { cursor, selected: runtime?.detail?.blocked ? [] : requested.map((jobId) => ({ jobId })) }
+    : selectFair(selectable, { cursor, limit, key: (item) => item.jobId });
   const selectedIds = fair.selected.map((item) => item.jobId);
   return {
     cursor: fair.cursor,
@@ -121,10 +141,12 @@ function completedDetailCursor(input, collected, priorCursor) {
   return attempted ? input.selectedIds[attempted - 1] : priorCursor;
 }
 
-export function currentDetailSummary(envelope, runtime, now = new Date().toISOString()) {
+export function currentDetailSummary(envelope, runtime, options = {}) {
+  const { now = new Date().toISOString(), excludedJobIds = [] } =
+    typeof options === 'string' ? { now: options } : options;
   const input =
     envelope && [2, 3, 4, 5, 6, 7, 8].includes(envelope.version)
-      ? fairDetailInputs(envelope, { limit: 1, runtime, now })
+      ? fairDetailInputs(envelope, { limit: 1, runtime, now, excludedJobIds })
       : null;
   return detailRuntimeSummary(runtime, {
     pending: input?.pendingJobs ?? 0,
@@ -138,7 +160,7 @@ const accountDetailFailure = (code) =>
     code ?? '',
   );
 
-function updateDetailRuntime(runtime, collected, at, envelope) {
+function updateDetailRuntime(runtime, collected, at, envelope, excludedJobIds) {
   let next = runtime;
   const completed = new Set(
     [...collected.observations, ...collected.candidates].map((item) => item.jobId),
@@ -169,7 +191,7 @@ function updateDetailRuntime(runtime, collected, at, envelope) {
   }
   return {
     detail: next.detail,
-    summary: currentDetailSummary(envelope, next, at),
+    summary: currentDetailSummary(envelope, next, { now: at, excludedJobIds }),
   };
 }
 
@@ -235,6 +257,9 @@ export async function collectDetails({
   maxReads,
   pollMs,
   stableReads,
+  retryJobIds = null,
+  beforeCleanup = null,
+  excludedJobIds = [],
 }) {
   if (!Number.isInteger(limit) || limit < 0 || limit > MAX_DETAIL_ENRICH_JOBS)
     throw new TypeError(`limit must be an integer from 0 to ${MAX_DETAIL_ENRICH_JOBS}`);
@@ -244,7 +269,9 @@ export async function collectDetails({
   const startedAt = now();
   let input = fairDetailInputs(checked, {
     cursor: current.cursors.detail,
-    limit: Math.max(1, limit),
+    limit: retryJobIds === null ? Math.max(1, limit) : limit,
+    retryJobIds,
+    excludedJobIds,
     timeLabel,
     runtime: current,
     now: startedAt,
@@ -276,23 +303,32 @@ export async function collectDetails({
               eligibleJobIds: input.eligibleJobIds,
               now: startedAt,
             })
-          : currentDetailSummary(checked, current, startedAt),
+          : currentDetailSummary(checked, current, { now: startedAt, excludedJobIds }),
       updatedAt: startedAt,
       skippedReason,
       stateError: null,
     };
   }
-  const collected = await collectDetailTitleEvidence({
-    ...input,
-    limit,
-    adapter,
-    now,
-    navigationDelayMs,
-    wait,
-    maxReads,
-    pollMs,
-    stableReads,
-  });
+  let collected;
+  let stateError = null;
+  try {
+    collected = await collectDetailTitleEvidence({
+      ...input,
+      limit,
+      adapter,
+      now,
+      navigationDelayMs,
+      wait,
+      maxReads,
+      pollMs,
+      stableReads,
+      beforeCleanup,
+    });
+  } catch (error) {
+    if (error?.code !== 'DETAIL_DIAGNOSTIC_SAVE_FAILED' || !error.collected) throw error;
+    collected = error.collected;
+    stateError = error;
+  }
   let applied;
   try {
     applied = applyDetailEvidenceV2(checked, collected, now());
@@ -303,9 +339,15 @@ export async function collectDetails({
   }
   const updatedAt = now();
   let detailUpdate = null;
-  let stateError = null;
   try {
-    detailUpdate = updateDetailRuntime(current, collected, updatedAt, applied.envelope);
+    if (!stateError)
+      detailUpdate = updateDetailRuntime(
+        current,
+        collected,
+        updatedAt,
+        applied.envelope,
+        excludedJobIds,
+      );
   } catch (error) {
     // The caller owns whether material is saved before its progress calculation.
     // Preserve the adopted envelope even when no runtime candidate is valid.
@@ -317,7 +359,10 @@ export async function collectDetails({
     collected,
     applied,
     detailRuntime: detailUpdate?.detail ?? null,
-    detailCursor: completedDetailCursor(input, collected, current.cursors.detail),
+    detailCursor:
+      retryJobIds === null
+        ? completedDetailCursor(input, collected, current.cursors.detail)
+        : current.cursors.detail,
     detailEnrichment: detailUpdate?.summary ?? null,
     updatedAt,
     skippedReason: null,

@@ -126,11 +126,17 @@ function normalizeRead(value, handle) {
   if (
     typeof value.url !== 'string' ||
     typeof value.title !== 'string' ||
-    (Object.hasOwn(value, 'documentReady') && typeof value.documentReady !== 'boolean')
+    (Object.hasOwn(value, 'documentReady') && typeof value.documentReady !== 'boolean') ||
+    (Object.hasOwn(value, 'navigationPending') && typeof value.navigationPending !== 'boolean')
   ) {
     throw Object.assign(new Error('DETAIL_TAB_READ_INVALID'), { code: 'DETAIL_TAB_READ_INVALID' });
   }
-  return { url: value.url, title: value.title, documentReady: value.documentReady !== false };
+  return {
+    url: value.url,
+    title: value.title,
+    documentReady: value.documentReady !== false,
+    navigationPending: value.navigationPending === true,
+  };
 }
 
 function groupCandidates(candidates) {
@@ -175,6 +181,38 @@ function classify(group, evidence, reused) {
   return { accepted, candidates };
 }
 
+function readDiagnostic(state, targetUrl, readCount, titleStable = false) {
+  let location = null;
+  try {
+    if (state) location = new URL(state.url);
+  } catch {
+    // Invalid URLs are classified without retaining their private contents.
+  }
+  const parsedUrl = state ? parseBossJobUrl(state.url) : null;
+  return {
+    readCount,
+    urlKind: !state
+      ? null
+      : LOGIN_OR_SECURITY.test(state.url)
+        ? 'login_or_security'
+        : state.url === targetUrl
+          ? 'target'
+          : state.url === 'about:blank'
+            ? 'blank'
+            : parsedUrl
+              ? 'other_job'
+              : 'other',
+    sameCanonicalJob: state ? parsedUrl?.canonicalUrl === targetUrl : null,
+    queryPresent: state ? Boolean(location?.search) : null,
+    fragmentPresent: state ? Boolean(location?.hash) : null,
+    documentReady: state?.documentReady ?? null,
+    navigationPending: state?.navigationPending ?? null,
+    titlePresent: state ? Boolean(state.title.trim()) : null,
+    titleParsed: state ? Boolean(parseBossDetailTitle(state.title)) : null,
+    titleStable: state ? titleStable : null,
+  };
+}
+
 async function stableEvidence({
   adapter,
   handle,
@@ -188,21 +226,45 @@ async function stableEvidence({
   let previousTitle = null;
   let repeats = 0;
   let lastState = null;
+  let diagnostic = readDiagnostic(null, targetUrl, 0);
+  let observedTitle = null;
+  let observedRepeats = 0;
   for (let attempt = 0; attempt < maxReads; attempt += 1) {
     if (attempt) await wait(pollMs);
-    const state = normalizeRead(await adapter.readOwnedTab(handle), handle);
+    let state;
+    try {
+      state = normalizeRead(await adapter.readOwnedTab(handle), handle);
+    } catch (error) {
+      const code = safeCode(error, 'DETAIL_UNKNOWN_OPERATION_FAILED');
+      return {
+        halt: { code, stage: 'read' },
+        diagnostic: { ...diagnostic, readCount: attempt + 1 },
+        state: lastState,
+        owned: code !== 'DETAIL_TAB_OWNERSHIP_MISMATCH',
+      };
+    }
+    observedRepeats = state.title === observedTitle ? observedRepeats + 1 : 1;
+    observedTitle = state.title;
+    diagnostic = readDiagnostic(state, targetUrl, attempt + 1, observedRepeats >= stableReads);
     lastState = state;
     if (LOGIN_OR_SECURITY.test(state.url)) {
       return {
         halt: { code: 'VERIFICATION_OR_LOGIN_REQUIRED', stage: 'read', url: state.url },
+        diagnostic,
         state,
         owned: true,
       };
+    }
+    if (state.navigationPending) {
+      previousTitle = null;
+      repeats = 0;
+      continue;
     }
     if (state.url !== targetUrl) {
       if (state.url === 'about:blank') continue;
       return {
         halt: { code: 'DETAIL_TAB_UNEXPECTED_URL', stage: 'read', url: state.url },
+        diagnostic,
         state,
         owned: true,
       };
@@ -235,13 +297,23 @@ async function stableEvidence({
           observedAt,
           source: 'detail_page_title',
         },
+        diagnostic,
         state,
         owned: true,
       };
     }
   }
+  if (lastState?.navigationPending) {
+    return {
+      halt: { code: 'DETAIL_NAVIGATION_TIMEOUT', stage: 'read' },
+      diagnostic,
+      state: lastState,
+      owned: true,
+    };
+  }
   return {
     failure: { code: 'DETAIL_TITLE_NOT_READY', stage: 'read' },
+    diagnostic,
     state: lastState,
     owned: true,
   };
@@ -267,6 +339,7 @@ export async function collectDetailTitleEvidence({
   wait = delay,
   now = () => new Date().toISOString(),
   makeOwnerToken = randomUUID,
+  beforeCleanup = null,
 }) {
   if (!Array.isArray(candidates)) throw new TypeError('candidates must be an array');
   if (!Array.isArray(knownEvidence)) throw new TypeError('knownEvidence must be an array');
@@ -293,6 +366,8 @@ export async function collectDetailTitleEvidence({
   ) {
     throw new TypeError('wait, now and makeOwnerToken must be functions');
   }
+  if (beforeCleanup !== null && typeof beforeCleanup !== 'function')
+    throw new TypeError('beforeCleanup must be a function or null');
   validateAdapter(adapter);
   const normalized = candidates.map(normalizeCandidate);
   const groups = groupCandidates(normalized);
@@ -305,6 +380,7 @@ export async function collectDetailTitleEvidence({
 
   const result = {
     observations: [],
+    diagnostics: [],
     candidates: [],
     failures: [],
     skipped: [],
@@ -348,6 +424,7 @@ export async function collectDetailTitleEvidence({
 
   if (!browse.length) {
     result.counts = counts(result, 0);
+    await saveBeforeCleanup(beforeCleanup, result);
     return result;
   }
 
@@ -370,6 +447,12 @@ export async function collectDetailTitleEvidence({
         stage: 'create',
         jobId: browse[0].jobId,
       };
+      result.diagnostics.push({
+        jobId: browse[0].jobId,
+        code: result.halted.code,
+        stage: 'create',
+        ...readDiagnostic(null, browse[0].detailUrl, 0),
+      });
       result.remaining.unshift(
         ...browse.flatMap((group) =>
           group.candidates.map((item) => ({
@@ -384,8 +467,8 @@ export async function collectDetailTitleEvidence({
     }
 
     for (const group of browse) {
-      attemptedJobs += 1;
       if (result.halted) break;
+      attemptedJobs += 1;
       let stage = 'read';
       try {
         if (currentUrl !== null && currentUrl !== group.detailUrl) {
@@ -407,6 +490,12 @@ export async function collectDetailTitleEvidence({
           stableReads,
           wait,
           now,
+        });
+        result.diagnostics.push({
+          jobId: group.jobId,
+          code: observed.halt?.code ?? observed.failure?.code ?? null,
+          stage: 'read',
+          ...observed.diagnostic,
         });
         currentUrl = observed.state?.url ?? currentUrl;
         owned = observed.owned !== false;
@@ -430,6 +519,12 @@ export async function collectDetailTitleEvidence({
         const code = safeCode(error, 'DETAIL_UNKNOWN_OPERATION_FAILED');
         if (code === 'DETAIL_TAB_OWNERSHIP_MISMATCH') owned = false;
         result.halted = { code, stage, jobId: group.jobId };
+        result.diagnostics.push({
+          jobId: group.jobId,
+          code,
+          stage,
+          ...readDiagnostic(null, group.detailUrl, 0),
+        });
       }
     }
 
@@ -447,6 +542,8 @@ export async function collectDetailTitleEvidence({
       }
     }
   } finally {
+    result.counts = counts(result, attemptedJobs);
+    await saveBeforeCleanup(beforeCleanup, result);
     if (handle && owned && currentUrl) {
       try {
         await adapter.closeOwnedTab(handle, { ownerToken, expectedUrl: currentUrl });
@@ -467,6 +564,19 @@ export async function collectDetailTitleEvidence({
   }
   result.counts = counts(result, attemptedJobs);
   return result;
+}
+
+async function saveBeforeCleanup(beforeCleanup, result) {
+  if (!beforeCleanup) return;
+  try {
+    await beforeCleanup(result);
+  } catch {
+    throw Object.assign(new Error('DETAIL_DIAGNOSTIC_SAVE_FAILED'), {
+      code: 'DETAIL_DIAGNOSTIC_SAVE_FAILED',
+      collected: result,
+      usage: { historyRequests: 0, domSwitches: 0, detailNavigations: result.counts.attemptedJobs },
+    });
+  }
 }
 
 function counts(result, attemptedJobs) {

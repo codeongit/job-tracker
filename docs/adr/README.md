@@ -75,6 +75,8 @@
 | [D057](0057-archify-browser-exception.md)                  | 允许 Archify 在隔离浏览器中检查生成物              | 已获用户授权                                     | 用户明确放开该技能的浏览器限制             |
 | [D058](0058-manual-version-releases.md)                    | 用户主动发起版本发布与关键变更摘要                 | 已确认；验证随 PR 记录                           | 用户确认按 PR 汇总并主动打标签发布         |
 | [D059](0059-standalone-uml-viewer.md)                      | 独立接入本地 UML 源码浏览器                        | 已决定；检查与桌面验收随 PR 记录                 | 用户明确要求独立接入                       |
+| [D060](0060-explicit-isolated-detail-retry.md)             | 显式定点补查已隔离的岗位详情                       | 已决定；实现与真实补查结果随 PR 记录             | 用户同意对两个隔离岗位各做一次受控补查     |
+| [D061](0061-local-manual-detail-resolution.md)             | 详情异常的本机人工处理                             | 已决定；实现与验收随 PR 记录                     | 用户确认网页路径及仅本机保存               |
 
 ## 新决策模板
 

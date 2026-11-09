@@ -230,6 +230,22 @@ test('legacy injected reads remain compatible, while a provided readiness flag m
   }
 });
 
+test('a provided navigation-pending flag must be boolean', async () => {
+  const { adapter } = adapterFixture([
+    {
+      url: url('aaa'),
+      title: '「平台工程师招聘」_示例公司招聘-BOSS直聘',
+      navigationPending: 'true',
+    },
+  ]);
+  const result = await collectDetailTitleEvidence({
+    ...runOptions(adapter),
+    candidates: [candidate('conversation-a', 'aaa', '示例公司')],
+  });
+  assert.equal(result.observations.length, 0);
+  assert.equal(result.halted.code, 'DETAIL_TAB_READ_INVALID');
+});
+
 test('waits for the configured human-paced interval before navigating to another detail', async () => {
   const pages = [
     { url: url('aaa'), title: '「平台工程师招聘」_公司甲招聘-BOSS直聘' },
@@ -546,4 +562,113 @@ test('collected flat results apply directly to the v2 evidence model', async () 
   assert.equal(applied.envelope.jobs.evidence[0].title, '「平台工程师招聘」_公司甲招聘-BOSS直聘');
   assert.equal(applied.envelope.snapshot.capturedAt, capturedAt);
   assert.equal(applied.envelope.state.lastCapturedAt, capturedAt);
+});
+
+test('detail diagnostics are available before cleanup without exposing page text or URL', async () => {
+  const { adapter, calls } = adapterFixture([
+    { url: `${url('aaa')}?secret=value#private`, title: 'private title', documentReady: false },
+  ]);
+  let saved;
+  const result = await collectDetailTitleEvidence({
+    ...runOptions(adapter),
+    candidates: [candidate('conversation-a', 'aaa', '公司甲')],
+    beforeCleanup: async (value) => {
+      assert.equal(
+        calls.some(([name]) => name === 'close'),
+        false,
+      );
+      saved = structuredClone(value);
+    },
+  });
+  assert.equal(saved.counts.attemptedJobs, 1);
+  assert.deepEqual(saved.diagnostics, [
+    {
+      jobId: 'aaa',
+      code: 'DETAIL_TAB_UNEXPECTED_URL',
+      stage: 'read',
+      readCount: 1,
+      urlKind: 'other_job',
+      sameCanonicalJob: true,
+      queryPresent: true,
+      fragmentPresent: true,
+      documentReady: false,
+      navigationPending: false,
+      titlePresent: true,
+      titleParsed: false,
+      titleStable: false,
+    },
+  ]);
+  assert.equal(JSON.stringify(saved.diagnostics).includes('private'), false);
+  assert.equal(JSON.stringify(saved.diagnostics).includes('secret'), false);
+  assert.equal(JSON.stringify(saved.diagnostics).includes('https:'), false);
+  assert.equal(result.cleanup.status, 'closed');
+});
+
+test('diagnostic persistence failure preserves the tab and reports the issued usage', async () => {
+  const { adapter, calls } = adapterFixture([
+    { url: url('aaa'), title: '「平台工程师招聘」_公司甲招聘-BOSS直聘' },
+  ]);
+  await assert.rejects(
+    collectDetailTitleEvidence({
+      ...runOptions(adapter),
+      candidates: [candidate('conversation-a', 'aaa', '公司甲')],
+      beforeCleanup: async () => {
+        throw new Error('private filesystem details');
+      },
+    }),
+    (error) => {
+      assert.equal(error.code, 'DETAIL_DIAGNOSTIC_SAVE_FAILED');
+      assert.equal(error.message, 'DETAIL_DIAGNOSTIC_SAVE_FAILED');
+      assert.deepEqual(error.usage, { historyRequests: 0, domSwitches: 0, detailNavigations: 1 });
+      return true;
+    },
+  );
+  assert.equal(
+    calls.some(([name]) => name === 'close'),
+    false,
+  );
+});
+
+test('a failed first read counts only its attempted job and retains untouched targets', async () => {
+  const { adapter, calls } = adapterFixture([]);
+  adapter.readOwnedTab = async () => {
+    throw new Error('private page content');
+  };
+  const result = await collectDetailTitleEvidence({
+    ...runOptions(adapter),
+    candidates: [candidate('a', 'aaa', '公司甲'), candidate('b', 'bbb', '公司乙')],
+  });
+  assert.equal(result.counts.attemptedJobs, 1);
+  assert.deepEqual(
+    result.remaining.map(({ jobId }) => jobId),
+    ['bbb'],
+  );
+  assert.equal(result.diagnostics[0].code, 'DETAIL_UNKNOWN_OPERATION_FAILED');
+  assert.equal(result.diagnostics[0].readCount, 1);
+  assert.equal(result.diagnostics[0].urlKind, null);
+  assert.equal(
+    calls.some(([name]) => name === 'navigate'),
+    false,
+  );
+});
+
+test('unready and unparseable titles produce distinct safe diagnostics', async () => {
+  for (const scenario of [
+    { title: 'private unsupported title', documentReady: true, titleParsed: false },
+    { title: '「平台工程师招聘」_公司甲招聘-BOSS直聘', documentReady: false, titleParsed: true },
+  ]) {
+    const { adapter } = adapterFixture([{ url: url('aaa'), ...scenario }]);
+    const result = await collectDetailTitleEvidence({
+      ...runOptions(adapter),
+      maxReads: 2,
+      candidates: [candidate('conversation-a', 'aaa', '公司甲')],
+    });
+    assert.equal(result.failures[0].code, 'DETAIL_TITLE_NOT_READY');
+    assert.equal(result.diagnostics[0].readCount, 2);
+    assert.equal(result.diagnostics[0].documentReady, scenario.documentReady);
+    assert.equal(result.diagnostics[0].titleParsed, scenario.titleParsed);
+    assert.equal(result.diagnostics[0].titleStable, true);
+    assert.equal(result.diagnostics[0].urlKind, 'target');
+    assert.equal(JSON.stringify(result.diagnostics).includes(scenario.title), false);
+  }
 });

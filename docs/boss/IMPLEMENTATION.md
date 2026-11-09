@@ -60,17 +60,17 @@ sequenceDiagram
 
 ## 状态与数据所有者
 
-| 状态                                 | 唯一职责及所有者                                                                         | 持久位置或交付物                                                                    |
-| ------------------------------------ | ---------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
-| 跟踪生命周期、轮次预留和滚动预算     | `control/runtime.mjs`，controller 负责固定入口、正式工作区准入和票据                     | `.local/boss-integration/tracking.json`                                             |
-| 浏览器与任务页绑定                   | `cdp-browser` 检查实例、target、URL；`extract` 核验账号；`storage` 保存连接元数据        | 采集账号目录的连接文件与专用 profile                                                |
-| 已取得的列表、岗位证据及消息观察     | `model-v2 / resume-history` 维护采集模型，`storage` 保存不可变快照                       | `.local/boss-collector/<账号>/`                                                     |
-| 历史任务、水位、分页、详情退避及轮转 | `change-history` 计算任务；`runtime-state` 保存；tracker 串联阶段                        | `.runtime-v3.json`，读取旧 runtime v1/v2 并保留旧文件                               |
-| 可恢复的历史页材料                   | `runtime-state` 安全读写；由 `history-phase` 编排；变化任务提交由 `history-commit` 协调  | `.change-checkpoint-v1.json`、`.resume-checkpoint-v1.json`；路径 v1 不表示内容仍 v1 |
-| 标准批次、交付进度、生产者暂停       | `delivery/saved / snapshots / conversion / inbox` 分别负责交付编排、材料校验、转换及入队 | `.local/boss-integration/` 的 inbox、runs、control 与交付检查点                     |
-| 事实及应用决定                       | `workspace-consumer` 准备当前工作区候选，纯规则判断；`workspace-store` 唯一提交          | `.local/workspace/` 不可变提交与原子 HEAD                                           |
-| 批次回执                             | inbox 在正式提交之后记录，由 consumer 核对                                               | `.local/boss-integration/receipts/`                                                 |
-| 页面正式数据                         | 页面读取服务，IndexedDB 只作本机读取缓存                                                 | 服务失联停止正式写入，保留缓存与草稿                                                |
+| 状态                                           | 唯一职责及所有者                                                                         | 持久位置或交付物                                                                    |
+| ---------------------------------------------- | ---------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| 跟踪生命周期、本机详情决定、轮次预留和滚动预算 | `control/runtime.mjs`，controller 负责固定入口、正式工作区准入和票据                     | `.local/boss-integration/tracking.json`                                             |
+| 浏览器与任务页绑定                             | `cdp-browser` 检查实例、target、URL；`extract` 核验账号；`storage` 保存连接元数据        | 采集账号目录的连接文件与专用 profile                                                |
+| 已取得的列表、岗位证据及消息观察               | `model-v2 / resume-history` 维护采集模型，`storage` 保存不可变快照                       | `.local/boss-collector/<账号>/`                                                     |
+| 历史任务、水位、分页、详情退避及轮转           | `change-history` 计算任务；`runtime-state` 保存；tracker 串联阶段                        | `.runtime-v3.json`，读取旧 runtime v1/v2 并保留旧文件                               |
+| 可恢复的历史页材料                             | `runtime-state` 安全读写；由 `history-phase` 编排；变化任务提交由 `history-commit` 协调  | `.change-checkpoint-v1.json`、`.resume-checkpoint-v1.json`；路径 v1 不表示内容仍 v1 |
+| 标准批次、交付进度、生产者暂停                 | `delivery/saved / snapshots / conversion / inbox` 分别负责交付编排、材料校验、转换及入队 | `.local/boss-integration/` 的 inbox、runs、control 与交付检查点                     |
+| 事实及应用决定                                 | `workspace-consumer` 准备当前工作区候选，纯规则判断；`workspace-store` 唯一提交          | `.local/workspace/` 不可变提交与原子 HEAD                                           |
+| 批次回执                                       | inbox 在正式提交之后记录，由 consumer 核对                                               | `.local/boss-integration/receipts/`                                                 |
+| 页面正式数据                                   | 页面读取服务，IndexedDB 只作本机读取缓存                                                 | 服务失联停止正式写入，保留缓存与草稿                                                |
 
 完成标记不能互相代替：保存快照是取得材料，入队是交付材料，正式提交是保存业务结果，回执是处理记录。生产者暂停、跟踪授权和业务等待也分别管理。私有目录及文件使用 `0700 / 0600`，profile、原始快照和真实资料不进入源码或 `dist/`。
 
@@ -130,16 +130,17 @@ sequenceDiagram
 
 正式共享数据与工作区版本不同于采集格式；完整版本表及迁移规则见[共享存储契约](../DATA_AND_RECOVERY.md#版本与两种存储模式)。本节维护采集材料自身的兼容门槛。
 
-| 内容               | 当前写入                                                                      | 兼容读取及约束                                                               |
-| ------------------ | ----------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
-| 采集快照与标准批次 | v8                                                                            | 读取旧 v1–v7，成功保存另建不可变快照，不覆盖原件                             |
-| 历史检查点内容     | v7                                                                            | 读取旧 v1–v6，路径仍沿用两个 checkpoint-v1 文件名                            |
-| DOM 检查点内容     | v2                                                                            | 读取旧 v1，路径仍为 `.dom-supplement-checkpoint-v1.json`；未知切换不自动重放 |
-| 采集运行状态       | `.runtime-v3.json` / v3                                                       | 读取旧 v1/v2，保留旧文件、公平游标、详情退避和连接重试状态                   |
-| 语义依据 v1        | 类型、白名单字段、固定文字                                                    | `field=none` 和旧 type4 仅观察；旧 type1 文字不能提升为发送                  |
-| 语义依据 v2        | v1 字段加 bizType、bodyType、templateId、hyperLinkType                        | 至少快照/批次 v6，检查点 v4                                                  |
-| 语义依据 v3        | version、messageType、field、text、bodyType、templateId、actionAid、annexType | 至少快照/批次 v7，检查点 v5；field 为 body.action，发送文案固定              |
-| 语义依据 v4        | v3 动作字段加 extensionFormat、platformContract                               | 至少快照/批次 v8，检查点 v6；opaque_string、固定已核实契约、annexType=null   |
+| 内容               | 当前写入                                                                      | 兼容读取及约束                                                                  |
+| ------------------ | ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| 采集快照与标准批次 | v8                                                                            | 读取旧 v1–v7，成功保存另建不可变快照，不覆盖原件                                |
+| 历史检查点内容     | v7                                                                            | 读取旧 v1–v6，路径仍沿用两个 checkpoint-v1 文件名                               |
+| DOM 检查点内容     | v2                                                                            | 读取旧 v1，路径仍为 `.dom-supplement-checkpoint-v1.json`；未知切换不自动重放    |
+| 采集运行状态       | `.runtime-v3.json` / v3                                                       | 读取旧 v1/v2，保留旧文件、公平游标、详情退避和连接重试状态                      |
+| 本机采集控制状态   | `tracking.json` / v2                                                          | 读取 v1 并在首次新写前保留原件；决定、持久命令回执与预算共同保存，旧服务拒绝 v2 |
+| 语义依据 v1        | 类型、白名单字段、固定文字                                                    | `field=none` 和旧 type4 仅观察；旧 type1 文字不能提升为发送                     |
+| 语义依据 v2        | v1 字段加 bizType、bodyType、templateId、hyperLinkType                        | 至少快照/批次 v6，检查点 v4                                                     |
+| 语义依据 v3        | version、messageType、field、text、bodyType、templateId、actionAid、annexType | 至少快照/批次 v7，检查点 v5；field 为 body.action，发送文案固定                 |
+| 语义依据 v4        | v3 动作字段加 extensionFormat、platformContract                               | 至少快照/批次 v8，检查点 v6；opaque_string、固定已核实契约、annexType=null      |
 
 校验每层字段白名单及版本，旧容器不得夹带新依据，未知字段、未知契约和未来版本拒绝写入。旧无依据观察升级只补 null，不改变身份、类别或自动确认发送；旧卡片及已存档 no_effect 不因格式升级取得可信地位。
 
@@ -300,7 +301,21 @@ runtime 串行平台轮次，生命周期命令有调用顺序屏障。start/res
 
 详情的用人公司可以与聊天中的招聘方不同；精确岗位身份一致时，这个名称差异不单独构成冲突。详情证据选择与工作台的普通资料应用仍是两个步骤，具体规则见[岗位资料与平台状态](DESIGN.md#岗位资料与平台状态)。
 
-`collectDetails` 在零额度、阻断或无目标时不访问页面操作函数；游标沿用完成结果中的 attemptedJobs 计算，不按选中目标提前推进。保留既有 catch 分支的计数语义，未在本轮另行修改。采用失败抛出异常并保留已取得的导航用量；状态候选计算失败返回材料及 `stateError`，候选不可提交。独立详情入口先保存成功材料或导出，再抛出状态错误；正常轮次在最终快照前抛出。两者均不确认失败的运行进度。
+`collectDetails` 在零额度、阻断或无目标时不访问页面操作函数；普通游标按实际 attemptedJobs 计算，不按选中目标提前推进。读取异常停批后不计未执行的下一目标。采用失败抛出异常并保留已取得的导航用量；状态候选计算失败返回材料及 `stateError`，候选不可提交。独立详情入口先保存成功材料或导出，再抛出状态错误；正常轮次在最终快照前抛出。两者均不确认失败的运行进度。
+
+显式 `retry-details` 沿 CLI/API → controller → runtime → 单次票据 → integration → tracker `enrich` → `collectDetails` 执行。共享 `detail-retry.js` 校验 1–20 个唯一岗位 ID；可选票据字段 `retryDetailJobIds` 精确绑定有序集合，history/DOM 额度为零，详情额度等于集合长度。runtime 仅允许停止状态的手动请求，拒绝在途合并及整组额度不足；完成后不安排持续采集。tracker 在任何 CDP 身份读取前完整检查当前合格目标及隔离状态；phase 只对这一集合临时允许选择，不修改原任务计数或普通公平游标。
+
+人工停止决定保存在控制器 `tracking.json` v2 的 `detailDecisions` 中，独立决定 revision、当前记录和持久命令回执一起保存；`detail-decision.js` 规范命令，`control/detail-decisions.mjs` 负责决定演算，`control/detail-tasks.mjs` 负责当前任务、决定记录与本机岗位的投影。`GET view=details` 不执行历史批次消费；网页 `detail-review.js` 保留审阅版本和结果未知时的原命令，`detail-review-view.js` 展示任务、原链接与人工处理记录。`resolve-detail` 只在停止且无在途轮次时执行，按账号、任务指纹、决定 revision 及必要的正式工作区 revision 校验；撤销不改写技术任务。
+
+原人工命令回查成功时，页面仍以返回的当前决定说明状态，不能用旧回执覆盖另一页面后续保存的决定。单次补查只有在 API/controller/runtime 准入阶段明确拒绝、且属于共享拒绝契约时，错误响应才带 `retryAttempted:false`；后续执行即使返回同名错误也不据此推断未执行。页面收到明确未执行依据后解除锁定，下一次仍需重新读取并确认；未知结果只刷新本机状态。当前任务已消失或仅剩 `inactive` 人工记录时可解除未知状态，但不据此宣称平台采集成功。
+
+完整控制文件最终 UTF-8 字节上限为 5 MiB，读取与写入同界，所有状态写入前检查大小。首次升级保留 v1 原件，未知字段或未来版本拒写；命令回执不淘汰。原子替换后附属失败须回读候选并完成权限和目录持久化屏障，才能确认成功；不确定时进入写入故障状态，拒绝后续生命周期和状态写入，防止旧内存覆盖已落盘决定。
+
+每轮的可选 `detailPolicy` 包含账号和明确停止的岗位集合，经控制器单次票据精确绑定，integration 转交 tracker。共享 `detail-policy.js` 限 1000 个唯一 ID、完整策略 JSON 64,000 UTF-8 字节；完整票据另限 80 KiB，读写同界并在写前预检。tracker 在任何 CDP 读取前核对策略账号，普通详情选择、定点重试与数量计算共用排除规则；定点重试命中人工停止项直接拒绝。原技术失败、其他账号及岗位不受影响，恢复业务工作区也不会清空本机策略。
+
+`detail-retry-report.mjs` 在读取前保存不可变私有预检，保留原隔离摘要；`beforeCleanup` 回调在标签清理前保存哈希目标及白名单诊断。诊断失败停止后续平台操作；清理前失败保留标签现场及实际用量，已取得的成功资料仍交回 tracker 尝试保存。此时不确认详情运行进度、不在本次推进交付，保留快照供纯本机恢复。tracker 对补查始终先保存本轮不可变快照与导出，再确认详情运行状态；全失败也返回已保存的 `partial / detail` 结果，成功资料按原交付和正式消费路径处理。导出或运行状态失败保留已保存快照和真实用量，不进入本次交付；采集完成后的本机交付异常也必须携带已取得的真实用量，不能默认成零。integration 若优先恢复旧材料，本次返回未补查，不自动重发；持久票据消费及预算预留保证进程中断不恢复这次授权。
+
+详情导航响应不表示新文档已经就绪。CDP adapter 在主动导航前保存旧文档的 URL、document.URL 和 timeOrigin；导航后只有三者仍精确一致时才返回 `navigationPending: true`，保留实际 URL。首次观察到任一不同值后，该次旧文档宽限失效。详情读取先检查登录/验证，再在既有 `maxReads / pollMs` 内等待旧文档离开，期间重置标题稳定计数；耗尽返回 `DETAIL_NAVIGATION_TIMEOUT` 并停止当批，不重复导航或继续下一个岗位。目标文档仍须 URL 与 document.URL 精确匹配目标、readyState 为 complete、timeOrigin 已更新及标题连续稳定，才能形成证据。其它网址变化仍返回 `DETAIL_TAB_UNEXPECTED_URL`；查询和片段不在本次等待规则中放宽。注入 adapter 可省略 `navigationPending`（视为 false），提供时必须为布尔值；该字段只描述本次主动导航的旧文档过渡。
 
 #### 5. 保存、恢复与导出
 
@@ -336,6 +351,7 @@ runtime 串行平台轮次，生命周期命令有调用顺序屏障。start/res
 | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
 | [tracker.test.mjs](../../collector/boss/tracker.test.mjs)                       | 参数、目标选择和汇总；两种历史入口、请求用量、检查点恢复、平台版本检查及保存/导出失败 |
 | [cdp-browser.test.mjs](../../collector/boss/cdp-browser.test.mjs)               | 绑定与任务页复用、列表就绪等待、账号/浏览器/目标变化、受控详情标签操作                |
+| [detail-navigation.test.mjs](../../collector/boss/detail-navigation.test.mjs)   | CDP adapter 到详情阶段的导航过渡、真实网址漂移、有限等待及超时后的资料/退避/游标保留  |
 | [extract.test.mjs](../../collector/boss/extract.test.mjs)                       | 已加载列表、稳定会话身份、回执和覆盖统计，异常字段与页面结构                          |
 | [receipt.test.mjs](../../collector/boss/receipt.test.mjs)                       | 已读/送达标签与样式匹配；缺失、隐藏或矛盾保持未知                                     |
 | [change-history.test.mjs](../../collector/boss/change-history.test.mjs)         | 初始化与变化排队、旧任务指纹、失败等待/隔离和其他任务继续                             |
