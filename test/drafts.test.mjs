@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { DRAFT_FIELDS, validateDrafts } from '../dist/draft-data.js';
-import { DraftStore } from '../dist/drafts.js';
+import { DraftStore, createDraftManager } from '../dist/drafts.js';
 import { initialWorkspace, createBackup, parseBackup } from '../dist/workspace.js';
 
 class MemoryStorage {
@@ -65,6 +65,92 @@ function workspace() {
   state.base = structuredClone(state.data);
   return state;
 }
+
+function draftForm(t, kind = 'editor') {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, 'document');
+  globalThis.document = {
+    createElement: () => ({ dataset: {}, setAttribute() {} }),
+  };
+  t.after(() => {
+    if (previous) Object.defineProperty(globalThis, 'document', previous);
+    else delete globalThis.document;
+  });
+  const fields = new Map(DRAFT_FIELDS[kind].map((name) => [name, { value: '' }]));
+  const form = new EventTarget();
+  form.elements = { namedItem: (name) => fields.get(name) };
+  form.append = () => {};
+  return form;
+}
+
+for (const [kind, values] of [
+  [
+    'editor',
+    { company: '中文草稿公司', role: '尚未提交的工程师', notes: '关页前最后输入：继续保留 🚀' },
+  ],
+  ['task', { text: '联系招聘者', dueAt: '2026-11-10' }],
+  ['activity', { text: '收到面试安排', date: '2026-11-10', type: '沟通记录' }],
+]) {
+  test(`恢复${kind}草稿提交期间的同值事件不产生新修订，成功后清理本次草稿`, (t) => {
+    const store = new DraftStore(new MemoryStorage());
+    const source = draft(kind, {
+      ...Object.fromEntries(DRAFT_FIELDS[kind].map((name) => [name, ''])),
+      ...values,
+    });
+    store.save(source);
+    const form = draftForm(t, kind);
+    const manager = createDraftManager({ store, report: assert.fail });
+    manager.bind(form, { kind, opportunityId: source.opportunityId, source });
+    const captured = manager.capture(form);
+    assert.notEqual(captured.id, source.id, '恢复仍使用新的草稿 ID');
+    for (const type of ['input', 'change', 'compositionend']) form.dispatchEvent(new Event(type));
+    manager.complete(form, captured);
+    assert.deepEqual(store.list(), [], '同值事件不能把已提交内容变成未提交的新稿');
+    form.dispatchEvent(new Event('change'));
+    assert.deepEqual(store.list(), [], '完成后的旧表单不再重新写入草稿');
+  });
+}
+
+test('提交期间真正的新输入仍保留，后续同值事件不替换新修订', (t) => {
+  const store = new DraftStore(new MemoryStorage());
+  const form = draftForm(t);
+  const manager = createDraftManager({ store, report: assert.fail });
+  manager.bind(form, { kind: 'editor' });
+  form.elements.namedItem('notes').value = '本次提交的内容';
+  form.dispatchEvent(new Event('input'));
+  const captured = manager.capture(form);
+  form.elements.namedItem('notes').value = '提交后继续输入的内容';
+  form.dispatchEvent(new Event('input'));
+  const newer = manager.capture(form);
+  assert.notEqual(newer.revision, captured.revision);
+  form.dispatchEvent(new Event('change'));
+  manager.complete(form, captured);
+  assert.deepEqual(store.list(), [newer]);
+  form.elements.namedItem('notes').value = '仍可以继续编辑';
+  form.dispatchEvent(new Event('input'));
+  assert.equal(store.list()[0].values.notes, '仍可以继续编辑');
+});
+
+test('同值事件仍重试前次失败的草稿写入，成功后才停止重复保存', (t) => {
+  const storage = new MemoryStorage();
+  const store = new DraftStore(storage);
+  const form = draftForm(t);
+  const failures = [];
+  const manager = createDraftManager({ store, report: (error) => failures.push(error) });
+  manager.bind(form, { kind: 'editor' });
+  storage.failOnSet = storage.setAttempts + 1;
+  form.elements.namedItem('notes').value = '配额失败后保留的中文';
+  form.dispatchEvent(new Event('input'));
+  assert.equal(failures.length, 1);
+  assert.deepEqual(store.list(), []);
+  storage.failOnSet = Infinity;
+  form.dispatchEvent(new Event('change'));
+  const saved = manager.capture(form);
+  assert.deepEqual(store.list(), [saved]);
+  const attempts = storage.setAttempts;
+  form.dispatchEvent(new Event('compositionend'));
+  assert.equal(storage.setAttempts, attempts);
+  assert.deepEqual(store.list(), [saved]);
+});
 
 test('草稿接受中文、换行及未完成字段，不按正式记录校验或修改输入', () => {
   const rows = [
