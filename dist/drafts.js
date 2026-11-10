@@ -158,6 +158,9 @@ export function createDraftManager({ store = new DraftStore(), report, onCount =
           String(form.elements.namedItem(name)?.value ?? ''),
         ]),
       );
+      // Duplicate input/change/composition events must not create a revision
+      // that outlives the same content already captured for submission.
+      if (!entry.unsaved && equal(values, entry.draft.values)) return;
       const next = {
         ...entry.draft,
         values,
