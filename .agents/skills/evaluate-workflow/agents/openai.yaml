@@ -1,0 +1,5 @@
+interface:
+  display_name: '研发流程评估'
+  short_description: '按实际任务证据评估研发流程落实、效果与成本，提出可验证的调整建议。'
+policy:
+  allow_implicit_invocation: false

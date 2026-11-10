@@ -7,6 +7,7 @@ export const ownedSkillDirectories = [
   '.agents/skills/codebase-design',
   '.agents/skills/diagnosing-bugs',
   '.agents/skills/domain-modeling',
+  '.agents/skills/evaluate-workflow',
   '.agents/skills/grill-with-docs',
   '.agents/skills/grilling',
   '.agents/skills/implement',
