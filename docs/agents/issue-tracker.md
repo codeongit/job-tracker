@@ -46,7 +46,7 @@
 ```sh
 # 只读检查；head 为已审查提交，base 为已核对的 main 提交，均使用完整 SHA
 pnpm pr:merge <PR编号> --head <headSHA> --base <baseSHA>
-# 已获本次合并授权后执行；可等待检查完成
+# 已获本次合并授权后执行；合并后自动等待对应 main CI
 pnpm pr:merge <PR编号> --head <headSHA> --base <baseSHA> --wait 600 --execute
 ```
 
@@ -54,9 +54,11 @@ pnpm pr:merge <PR编号> --head <headSHA> --base <baseSHA> --wait 600 --execute
 
 执行使用 GitHub 合并 API 的 `sha` 条件锁定 head，保留 merge commit。base 在合并前核对；GitHub 此接口没有原子 base 条件，合并后另核对实际父提交。若在最后核对后 base 前进，结果明确为“已合并但需核对”，不能声称该竞态已被阻止。API 要求与字段见 [GitHub 合并接口](https://docs.github.com/en/rest/pulls/pulls#merge-a-pull-request)。
 
-成功依据为回读到 `MERGED` 和有效 merge commit；请求失败或响应未知时先回读，本次不重发。已合并的同一 PR/head 再次调用只核对已有结果；默认只读，执行模式可刷新匹配仓库的 `origin/main`，工作树及本地分支保持原状。合并状态直接使用 GitHub 原生记录，正文继续由 [pr](../../.agents/skills/pr/SKILL.md) 按实际需要维护。
+回读到 `MERGED` 和有效 merge commit 只证明代码已合并。脚本随后固定该提交，查询 `.github/workflows/ci.yml` 在 `main` 上由 `push` 触发的运行，等待最新运行及其当前尝试的 `verify` 和全部作业成功后才返回完整成功；PR 分支的绿灯不能替代它。查询使用 [GitHub workflow runs API](https://docs.github.com/en/rest/actions/workflow-runs#list-workflow-runs-for-a-workflow) 的提交筛选及 [run attempt jobs API](https://docs.github.com/en/rest/actions/workflow-jobs#list-jobs-for-a-workflow-run-attempt)，核对期间重跑时重新读取，查询结果不完整则保留未确认。合并前与合并后采用独立等待预算，参数默认值与上限以 `pnpm pr:merge --help` 为准。
 
-输出 JSON 区分 `ready`、`blocked`、`unconfirmed` 和 `merged`，时间使用北京时间。合并父提交未能确认或引用刷新失败时，保留 `merged` 及提交号，并列出待处理项。参数与退出码见 `pnpm pr:merge --help`；检查就绪只表示机械条件满足，响应未知先回查，合并后的附属失败单独处理。
+CI 失败、取消、跳过、仍在等待或查询失败时，保留合并提交和实际状态，输出非零退出码、运行链接及可取得的失败作业/步骤；已合并事实不能被附属检查失败改写为未合并。超时或查询失败可按原 PR/head/base 再次只读调用，补查同一 merge commit，不改为观察后来 main 的绿灯。请求失败或响应未知仍先回读，本次不重发；已合并重入不再提交合并请求，CI 也不自动重跑、取消或回退。执行模式仍可刷新匹配仓库的 `origin/main`，工作树及本地分支保持原状。正文继续由 [pr](../../.agents/skills/pr/SKILL.md) 按实际需要维护。
+
+输出 JSON 区分 `ready`、`blocked`、`unconfirmed` 和 `merged`，时间使用北京时间。已合并结果同时包含 `mainCi` 的 `passed / failed / pending / unconfirmed`。只有 `mainCi.status=passed` 且无其他待处理项时退出码为 0；CI 未通过或未确认、合并父提交未能确认、引用刷新失败均返回 3，保留 `merged` 及提交号。参数与退出码见 `pnpm pr:merge --help`；检查就绪只表示机械条件满足，响应未知先回查，合并后的附属失败单独处理。
 
 ## 分流与标签
 

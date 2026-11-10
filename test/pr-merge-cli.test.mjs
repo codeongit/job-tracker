@@ -47,6 +47,10 @@ const mergeCommit = '${mergeCommit}';
 const merged = existsSync(process.env.MERGE_TEST_STATE);
 const scenario = process.env.MERGE_TEST_SCENARIO;
 const output = (value, status = 0) => { process.stdout.write(JSON.stringify(value)); process.exit(status); };
+const mainConclusion = scenario === 'main-ci-failed' ? 'failure' : 'success';
+const mainRun = { id: 100, workflow_id: 10, path: '.github/workflows/ci.yml',
+  head_sha: mergeCommit, head_branch: 'main', event: 'push', status: 'completed',
+  conclusion: mainConclusion, run_attempt: 1, created_at: '2026-10-30T01:00:01Z' };
 if (tool === 'git') {
   if (args.join(' ') === 'remote get-url origin') {
     process.stdout.write('git@github.com:codeongit/job-tracker.git\\n');
@@ -85,6 +89,13 @@ if (tool === 'gh' && args[0] === 'api' &&
   }
   if (endpoint === 'repos/codeongit/job-tracker/git/commits/' + mergeCommit)
     output({ sha: mergeCommit, parents: [{ sha: base }, { sha: head }] });
+  if (endpoint === 'repos/codeongit/job-tracker/actions/workflows/ci.yml/runs?branch=main&event=push&head_sha=' + mergeCommit + '&per_page=100')
+    output({ total_count: 1, workflow_runs: [mainRun] });
+  if (endpoint === 'repos/codeongit/job-tracker/actions/runs/100') output(mainRun);
+  if (endpoint === 'repos/codeongit/job-tracker/actions/runs/100/attempts/1/jobs?per_page=100')
+    output({ total_count: 1, jobs: [{ id: 200, run_id: 100, run_attempt: 1, head_sha: mergeCommit,
+      name: 'verify', status: 'completed', conclusion: mainConclusion,
+      steps: [{ name: 'Browser regression tests', conclusion: mainConclusion }] }] });
 }
 process.stderr.write('Unexpected synthetic command: ' + JSON.stringify({ tool, args }));
 process.exit(91);
@@ -120,6 +131,7 @@ test('PR merge CLI sends the reviewed head once and reports a confirmed merge', 
   assert.equal(summary.head, head);
   assert.equal(summary.base, base);
   assert.equal(summary.mergeCommit, mergeCommit);
+  assert.equal(summary.mainCi.status, 'passed');
   const calls = await fixture.calls();
   const writes = remoteWrites(calls);
   assert.equal(writes.length, 1);
@@ -130,6 +142,23 @@ test('PR merge CLI sends the reviewed head once and reports a confirmed merge', 
   assert.ok(
     calls.some(({ tool, args }) => tool === 'git' && args.join(' ') === 'fetch origin main'),
   );
+});
+
+test('PR merge CLI reports main failure and read-only reentry never merges or reruns again', async (t) => {
+  const fixture = await cliFixture(t, 'main-ci-failed');
+  for (const args of [['--execute'], ['--wait-main', '0']]) {
+    const result = fixture.run(...args);
+    assert.equal(result.status, 3, result.stderr || result.stdout);
+    const summary = JSON.parse(result.stdout);
+    assert.equal(summary.status, 'merged');
+    assert.equal(summary.mainCi.status, 'failed');
+    assert.equal(summary.mainCi.commit, mergeCommit);
+    assert.equal(summary.mainCi.runId, 100);
+    assert.deepEqual(summary.mainCi.failedJobs[0].steps, ['Browser regression tests']);
+  }
+  const calls = await fixture.calls();
+  assert.equal(remoteWrites(calls).length, 1, 'Only the original merge PUT is allowed');
+  assert.equal(calls.filter(({ tool, args }) => tool === 'git' && args[0] === 'fetch').length, 1);
 });
 
 test('PR merge CLI blocks a failing CI result before any remote write', async (t) => {
