@@ -37,6 +37,33 @@ const checks = () =>
     bucket: 'pass',
     state: 'SUCCESS',
   }));
+const mainRun = () => ({
+  id: 100,
+  workflow_id: 10,
+  path: '.github/workflows/ci.yml',
+  head_sha: MERGE,
+  head_branch: 'main',
+  event: 'push',
+  status: 'completed',
+  conclusion: 'success',
+  run_attempt: 1,
+  created_at: '2026-10-29T16:10:01Z',
+});
+const mainJobs = () => ({
+  total_count: 1,
+  jobs: [
+    {
+      id: 200,
+      run_id: 100,
+      run_attempt: 1,
+      head_sha: MERGE,
+      name: 'verify',
+      status: 'completed',
+      conclusion: 'success',
+      steps: [],
+    },
+  ],
+});
 function github(overrides = {}) {
   const calls = [];
   let current = pr();
@@ -62,6 +89,14 @@ function github(overrides = {}) {
       argv.includes(`repos/codeongit/job-tracker/git/commits/${MERGE}`)
     )
       value = { sha: MERGE, parents: [{ sha: BASE }, { sha: HEAD }] };
+    else if (command === 'gh' && argv.some((a) => a.includes('/actions/workflows/ci.yml/runs?')))
+      value = overrides.mainRuns
+        ? overrides.mainRuns(calls)
+        : { total_count: 1, workflow_runs: [mainRun()] };
+    else if (command === 'gh' && argv.some((a) => a.includes('/attempts/1/jobs?')))
+      value = overrides.mainJobs ? overrides.mainJobs(calls) : mainJobs();
+    else if (command === 'gh' && argv.includes('repos/codeongit/job-tracker/actions/runs/100'))
+      value = overrides.mainRun ? overrides.mainRun(calls) : mainRun();
     else if (command === 'git' && argv[0] === 'remote')
       return { status: 0, stdout: 'git@github.com:codeongit/job-tracker.git\n' };
     else if (command === 'git' && argv[0] === 'fetch') return { status: 0, stdout: '' };
@@ -76,6 +111,250 @@ function github(overrides = {}) {
     },
   };
 }
+
+test('合并前绿灯不能覆盖合并后main失败，保留合并事实并返回非零', async () => {
+  const io = github({
+    mainRuns: () => ({ total_count: 1, workflow_runs: [{ ...mainRun(), conclusion: 'failure' }] }),
+    mainJobs: () => ({
+      ...mainJobs(),
+      jobs: [
+        {
+          ...mainJobs().jobs[0],
+          conclusion: 'failure',
+          steps: [{ name: 'Browser regression tests', conclusion: 'failure' }],
+        },
+      ],
+    }),
+  });
+  const result = await runMerge([...args, '--execute'], { run: io.run });
+  assert.equal(result.status, 'merged');
+  assert.equal(result.exitCode, 3);
+  assert.equal(result.mergeCommit, MERGE);
+  assert.equal(result.mainCi.status, 'failed');
+  assert.equal(result.mainCi.runId, 100);
+  assert.match(result.mainCi.url, /actions\/runs\/100$/);
+  assert.deepEqual(result.mainCi.failedJobs[0].steps, ['Browser regression tests']);
+  assert.equal(io.calls.filter(({ argv }) => argv.includes('PUT')).length, 1);
+});
+
+async function observeMain(overrides, wait = '0') {
+  const io = github(overrides);
+  io.setPR(merged());
+  let clock = 0;
+  const result = await runMerge([...args, '--wait-main', wait], {
+    run: io.run,
+    now: () => clock,
+    sleep: async (ms) => {
+      clock += ms;
+    },
+  });
+  assert.ok(
+    io.calls.every(
+      ({ command, argv }) =>
+        command === 'gh' &&
+        !argv.includes('PUT') &&
+        !argv.includes('POST') &&
+        !argv.includes('PATCH'),
+    ),
+  );
+  assert.equal(result.status, 'merged');
+  assert.equal(result.mergeCommit, MERGE);
+  return { result, io, clock };
+}
+
+test('合并后从CI尚未建立等到完成，锁定merge commit及同次verify作业', async () => {
+  let queries = 0;
+  const { result, io, clock } = await observeMain(
+    {
+      mainRuns: () =>
+        ++queries === 1
+          ? { total_count: 0, workflow_runs: [] }
+          : {
+              total_count: 1,
+              workflow_runs: [
+                {
+                  ...mainRun(),
+                  ...(queries === 2 ? { status: 'in_progress', conclusion: null } : {}),
+                },
+              ],
+            },
+    },
+    '20',
+  );
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.mainCi.status, 'passed');
+  assert.equal(clock, 10000);
+  assert.ok(io.calls.some(({ argv }) => argv.some((arg) => arg.includes(`head_sha=${MERGE}`))));
+  assert.ok(io.calls.some(({ argv }) => argv.some((arg) => arg.includes('/attempts/1/jobs?'))));
+});
+
+for (const state of ['missing', 'in_progress', 'queued']) {
+  test(`main CI ${state}到超时仍是已合并但未完成`, async () => {
+    const { result, clock } = await observeMain(
+      {
+        mainRuns: () =>
+          state === 'missing'
+            ? { total_count: 0, workflow_runs: [] }
+            : {
+                total_count: 1,
+                workflow_runs: [{ ...mainRun(), status: state, conclusion: null }],
+              },
+      },
+      '10',
+    );
+    assert.equal(result.exitCode, 3);
+    assert.equal(result.mainCi.status, 'pending');
+    assert.equal(result.mainCi.timedOut, true);
+    assert.equal(clock, 10000);
+  });
+}
+
+for (const conclusion of ['failure', 'cancelled', 'skipped', 'timed_out', 'neutral']) {
+  test(`main CI ${conclusion}不算成功`, async () => {
+    const { result } = await observeMain({
+      mainRuns: () => ({ total_count: 1, workflow_runs: [{ ...mainRun(), conclusion }] }),
+    });
+    assert.equal(result.exitCode, 3);
+    assert.equal(result.mainCi.status, 'failed');
+    assert.equal(result.mainCi.conclusion, conclusion);
+  });
+}
+
+for (const other of [
+  { head_sha: HEAD },
+  { head_branch: 'feature' },
+  { event: 'pull_request' },
+  { event: 'workflow_dispatch' },
+  { path: '.github/workflows/other.yml' },
+]) {
+  test(`无关绿灯${JSON.stringify(other)}不能替代合并提交push CI`, async () => {
+    const { result } = await observeMain({
+      mainRuns: () => ({ total_count: 1, workflow_runs: [{ ...mainRun(), ...other }] }),
+    });
+    assert.equal(result.exitCode, 3);
+    assert.equal(result.mainCi.status, 'pending');
+  });
+}
+
+test('同提交最新运行失败时不退回旧绿灯，顺序不影响选择', async () => {
+  const { result } = await observeMain({
+    mainRuns: () => ({
+      total_count: 2,
+      workflow_runs: [
+        mainRun(),
+        { ...mainRun(), id: 101, created_at: '2026-10-29T16:11:00Z', conclusion: 'failure' },
+      ],
+    }),
+  });
+  assert.equal(result.mainCi.status, 'failed');
+  assert.equal(result.mainCi.runId, 101);
+  assert.equal(result.mainCi.detailsUnavailable, true);
+});
+
+test('作业读取期间发生重跑时不能沿用旧尝试绿灯', async () => {
+  const { result } = await observeMain({
+    mainRun: () => ({ ...mainRun(), run_attempt: 2, status: 'queued', conclusion: null }),
+  });
+  assert.equal(result.exitCode, 3);
+  assert.equal(result.mainCi.status, 'pending');
+  assert.equal(result.mainCi.attempt, 2);
+});
+
+for (const jobs of [
+  [],
+  [{ ...mainJobs().jobs[0], name: 'unrelated' }],
+  [{ ...mainJobs().jobs[0], head_sha: HEAD }],
+  [{ ...mainJobs().jobs[0], run_attempt: 2 }],
+  [{ ...mainJobs().jobs[0], run_id: 101 }],
+  [{ ...mainJobs().jobs[0], conclusion: 'skipped' }],
+  [...mainJobs().jobs, { ...mainJobs().jobs[0], id: 201, name: 'extra', conclusion: 'failure' }],
+]) {
+  test(`作业缺失、错配或非成功不能放行：${JSON.stringify(jobs)}`, async () => {
+    const { result } = await observeMain({ mainJobs: () => ({ total_count: jobs.length, jobs }) });
+    assert.equal(result.exitCode, 3);
+    assert.notEqual(result.mainCi.status, 'passed');
+  });
+}
+
+for (const response of [
+  null,
+  {},
+  { total_count: 2, workflow_runs: [mainRun()] },
+  { total_count: 1, workflow_runs: [{ ...mainRun(), id: null }] },
+]) {
+  test(`main CI不完整或无效响应不能误报未合并：${JSON.stringify(response)}`, async () => {
+    const { result } = await observeMain({ mainRuns: () => response });
+    assert.equal(result.exitCode, 3);
+    assert.equal(result.mainCi.status, 'unconfirmed');
+  });
+}
+
+test('main CI查询失败保留合并事实和回查指引', async () => {
+  const { result } = await observeMain({
+    run(command, argv) {
+      if (command === 'gh' && argv.some((arg) => arg.includes('/actions/')))
+        return { status: 1, stdout: '' };
+    },
+  });
+  assert.equal(result.exitCode, 3);
+  assert.equal(result.mainCi.status, 'unconfirmed');
+});
+
+test('main运行中被取消时停止等待并保留已合并事实', async () => {
+  let queries = 0;
+  const { result, clock } = await observeMain(
+    {
+      mainRuns: () => ({
+        total_count: 1,
+        workflow_runs: [
+          {
+            ...mainRun(),
+            ...(++queries === 1
+              ? { status: 'in_progress', conclusion: null }
+              : { conclusion: 'cancelled' }),
+          },
+        ],
+      }),
+    },
+    '20',
+  );
+  assert.equal(result.exitCode, 3);
+  assert.equal(result.mainCi.conclusion, 'cancelled');
+  assert.equal(clock, 5000);
+});
+
+test('默认预算也会等待main，且合并前等待不消耗合并后预算', async () => {
+  let clock = 0;
+  const absent = () => ({ total_count: 0, workflow_runs: [] });
+  const io = github({ mainRuns: absent });
+  io.setPR(merged());
+  const deps = {
+    run: io.run,
+    now: () => clock,
+    sleep: async (ms) => {
+      clock += ms;
+    },
+  };
+  const result = await runMerge(args, deps);
+  assert.equal(result.mainCi.status, 'pending');
+  assert.equal(clock, 900000);
+
+  clock = 0;
+  let checksRead = 0;
+  const separate = github({
+    checks: () =>
+      ++checksRead === 1
+        ? checks().map((c) => ({ ...c, bucket: 'pending', state: 'IN_PROGRESS' }))
+        : checks(),
+    mainRuns: absent,
+  });
+  const after = await runMerge([...args, '--execute', '--wait', '10', '--wait-main', '10'], {
+    ...deps,
+    run: separate.run,
+  });
+  assert.equal(after.exitCode, 3);
+  assert.equal(clock, 15000);
+});
 
 test('默认只读核对已指定版本与 CI，不发合并或更新命令', async () => {
   const io = github();
@@ -298,6 +577,10 @@ test('无效或重复参数在任何外部调用前拒绝', async () => {
     [...args, '--admin'],
     [...args, '--wait', '601'],
     [...args, '--wait'],
+    [...args, '--wait-main', '1801'],
+    [...args, '--wait-main', '-1'],
+    [...args, '--wait-main'],
+    [...args, '--wait-main', '0', '--wait-main', '1'],
   ]) {
     const result = await runMerge(argv, {
       run() {

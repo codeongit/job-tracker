@@ -2,6 +2,7 @@ import { spawnSync } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
+import { waitForMergedCI } from './pr-merge-ci.mjs';
 
 const REPO = 'codeongit/job-tracker';
 const TARGET = `github.com/${REPO}`;
@@ -10,7 +11,7 @@ const SHA = /^[a-f0-9]{40}$/;
 const FIELDS =
   'number,url,state,isDraft,isCrossRepository,headRefOid,baseRefName,baseRefOid,mergeable,mergeStateStatus,reviewDecision,latestReviews,mergedAt,mergeCommit';
 const USAGE =
-  '用法：pnpm pr:merge <PR编号> --head <已审查完整SHA> --base <已核对main完整SHA> [--execute] [--wait <0-600秒>]\n默认只读检查；已有独立审查、适用验收和用户合并授权后，才使用 --execute。\n--wait 默认 0 秒，只等待 CI 或合并状态；单个命令另有 30 秒超时。\n退出码：0 检查就绪或已合并，1 执行前阻断，2 请求后尚未确认，3 已合并但有待处理项。';
+  '用法：pnpm pr:merge <PR编号> --head <已审查完整SHA> --base <已核对main完整SHA> [--execute] [--wait <0-600秒>] [--wait-main <0-1800秒>]\n默认只读检查；已有独立审查、适用验收和用户合并授权后，才使用 --execute。\n--wait 默认 0 秒，等待合并前 CI 或合并状态；--wait-main 默认 900 秒，从确认已合并后独立等待 main CI，0 表示只查一次。单个命令另有 30 秒超时。\n退出码：0 检查就绪或已合并且 main CI 通过，1 执行前阻断，2 请求后尚未确认，3 已合并但 main CI 未通过/未确认或有其他待处理项。';
 
 function command(executable, args, input) {
   return spawnSync(executable, args, {
@@ -24,11 +25,11 @@ function command(executable, args, input) {
 }
 function parse(argv) {
   if (!/^[1-9]\d*$/.test(argv[0] ?? '')) throw new Error(USAGE);
-  const options = { pr: Number(argv[0]), execute: false, wait: 0 };
+  const options = { pr: Number(argv[0]), execute: false, wait: 0, 'wait-main': 900 };
   const seen = new Set();
   for (let i = 1; i < argv.length; i++) {
     const key = argv[i];
-    if (!['--head', '--base', '--execute', '--wait'].includes(key) || seen.has(key))
+    if (!['--head', '--base', '--execute', '--wait', '--wait-main'].includes(key) || seen.has(key))
       throw new Error(`未知或重复参数：${key}。\n${USAGE}`);
     seen.add(key);
     if (key === '--execute') options.execute = true;
@@ -39,10 +40,13 @@ function parse(argv) {
     !SHA.test(options.head ?? '') ||
     !SHA.test(options.base ?? '') ||
     !/^\d+$/.test(String(options.wait)) ||
-    Number(options.wait) > 600
+    Number(options.wait) > 600 ||
+    !/^\d+$/.test(String(options['wait-main'])) ||
+    Number(options['wait-main']) > 1800
   )
     throw new Error(USAGE);
   options.wait = Number(options.wait);
+  options.waitMain = Number(options['wait-main']);
   return options;
 }
 
@@ -129,7 +133,7 @@ export async function runMerge(argv, { run = command, sleep = delay, now = Date.
     const api = (path) => json(['api', '--hostname', 'github.com', `repos/${REPO}/${path}`]);
     const readPR = () =>
       json(['pr', 'view', String(options.pr), '--repo', TARGET, '--json', FIELDS]);
-    const finishMerged = (confirmed) => {
+    const finishMerged = async (confirmed) => {
       validateIdentity(confirmed, options);
       if (
         confirmed.state !== 'MERGED' ||
@@ -182,19 +186,28 @@ export async function runMerge(argv, { run = command, sleep = delay, now = Date.
           second: '2-digit',
           hourCycle: 'h23',
         }).format(new Date(confirmed.mergedAt)) + ' +08:00';
+      const mainCi = await waitForMergedCI({
+        commit: mergeCommit,
+        api,
+        waitSeconds: options.waitMain,
+        sleep,
+        now,
+      });
+      if (mainCi.status !== 'passed') warnings.push(mainCi.message);
       return {
         status: 'merged',
         exitCode: warnings.length ? 3 : 0,
         ...identity,
         mergeCommit,
         mergedAt,
+        mainCi,
         warnings,
       };
     };
     const end = now() + options.wait * 1000;
     while (true) {
       const current = readPR();
-      if (current.state === 'MERGED') return finishMerged(current);
+      if (current.state === 'MERGED') return await finishMerged(current);
       validatePR(current, options);
       const checkResult = run('gh', [
         'pr',
@@ -216,7 +229,7 @@ export async function runMerge(argv, { run = command, sleep = delay, now = Date.
       )
         throw new Error('CI 查询退出状态与检查结果不一致。');
       const latest = readPR();
-      if (latest.state === 'MERGED') return finishMerged(latest);
+      if (latest.state === 'MERGED') return await finishMerged(latest);
       validatePR(latest, options);
       if (api('branches/main').commit?.sha !== options.base)
         throw new Error('main 已变化，请核对受影响结果。');
@@ -246,7 +259,7 @@ export async function runMerge(argv, { run = command, sleep = delay, now = Date.
     } catch {
       // 传输失败不能证明远端未应用；下面仍独立回读，且本次不重发。
     }
-    return finishMerged(readPR());
+    return await finishMerged(readPR());
   } catch (error) {
     return {
       status: attempted ? 'unconfirmed' : 'blocked',
